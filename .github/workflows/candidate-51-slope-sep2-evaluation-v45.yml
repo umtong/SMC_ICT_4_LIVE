@@ -1,0 +1,191 @@
+name: candidate-51-slope-sep2-evaluation-v45
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-slope-sep2-evaluation-v45.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-slope-sep2-evaluation-v45
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: eval_2024_03, data_start: 2024-02-22, start: 2024-03-01, end: 2024-03-14}
+          - {interval: eval_2024_06, data_start: 2024-05-24, start: 2024-06-01, end: 2024-06-14}
+          - {interval: eval_2024_10, data_start: 2024-09-23, start: 2024-10-01, end: 2024-10-14}
+          - {interval: eval_2025_05, data_start: 2025-04-23, start: 2025-05-01, end: 2025-05-14}
+          - {interval: eval_2025_11, data_start: 2025-10-24, start: 2025-11-01, end: 2025-11-14}
+          - {interval: eval_2026_03, data_start: 2026-02-21, start: 2026-03-01, end: 2026-03-14}
+          - {interval: eval_2026_07, data_start: 2026-06-23, start: 2026-07-01, end: 2026-07-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install frozen Slope sep2 system
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_slope_repair.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_slope_repair.py research/candidate-51/strategy.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          python research/candidate-51/slope_sep2_evaluation_prepare.py \
+            --output .work/candidate-51-slope-sep2-evaluation-v45
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          from strategy import Candidate35Config
+          fields = set(Candidate35Config.__struct_fields__)
+          assert {"slope_min_separation_activation_multiple", "slope_repair_management"} <= fields
+          cfg = json.loads(Path(".work/candidate-51-slope-sep2-evaluation-v45/frozen_sep2.json").read_text())["strategy"]
+          assert cfg["slope_min_separation_activation_multiple"] == 2.0
+          assert cfg["slope_stop_mode"] == "signal_slow_atr"
+          assert cfg["slope_exit_mode"] == "corrected_symmetric"
+          assert cfg["slope_repair_management"] == "source"
+          print("Frozen Slope sep2 configuration verified")
+          PY
+      - name: Run frozen system once on new evaluation interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=.work/candidate-51-slope-sep2-evaluation-v45
+          root=artifacts/candidate-51/slope-sep2-evaluation-v45/${{ matrix.interval }}/frozen_sep2
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only_warmup.py \
+            --config "$work/frozen_sep2.json" \
+            --data-start "${{ matrix.data_start }}" \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-51-slope-sep2-evaluation-v45/${{ matrix.interval }}" \
+            --output "$root" \
+            --workspace "$work/ws-${{ matrix.interval }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-sep2-evaluation-v45-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-sep2-evaluation-v45/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/slope-sep2-evaluation-v45/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/slope-sep2-evaluation-v45/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/slope-sep2-evaluation-v45/${{ matrix.interval }}/**/equity.csv
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-slope-sep2-evaluation-v45-*
+          path: downloaded
+          merge-multiple: true
+      - name: Aggregate frozen evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/slope-sep2-evaluation-v45
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/slope-sep2-evaluation-v45/*)
+                relative="${file#*artifacts/candidate-51/slope-sep2-evaluation-v45/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          python research/candidate-51/slope_sep2_evaluation_prepare.py \
+            --output .work/candidate-51-slope-sep2-evaluation-v45
+          cp .work/candidate-51-slope-sep2-evaluation-v45/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/slope_dope_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/slope-sep2-evaluation-v45")
+          manifest = json.loads((root / "MANIFEST.json").read_text())
+          rows = []
+          for interval in manifest["intervals"]:
+              folder = root / interval / "frozen_sep2"
+              if not (folder / "metrics.json").exists():
+                  rows.append({"interval": interval, "status": "missing"})
+                  continue
+              metrics = json.loads((folder / "metrics.json").read_text())
+              diagnostics = json.loads((folder / "strategy_diagnostics.json").read_text())
+              rows.append({
+                  "interval": interval,
+                  "status": "complete",
+                  "ending_equity": metrics.get("ending_equity"),
+                  "return_fraction": metrics.get("return_fraction"),
+                  "daily_geometric_growth": metrics.get("daily_geometric_growth"),
+                  "max_drawdown_fraction": metrics.get("max_drawdown_fraction"),
+                  "valid_trades": metrics.get("valid_trade_count"),
+                  "all_closed_records": metrics.get("all_closed_record_count"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "fill_invalidations": diagnostics.get("fill_invalidations", 0),
+                  "global_position_violations": diagnostics.get("global_position_violations", 0),
+              })
+          complete = [row for row in rows if row["status"] == "complete"]
+          summary = {
+              "frozen_variant": "frozen_sep2",
+              "period_results": rows,
+              "all_intervals_complete": len(complete) == len(rows),
+              "positive_interval_count": sum((row.get("return_fraction") or 0.0) > 0.0 for row in complete),
+              "total_valid_trades": sum(int(row.get("valid_trades") or 0) for row in complete),
+              "total_days": 14 * len(complete),
+              "zero_global_position_violations": all(int(row.get("global_position_violations") or 0) == 0 for row in complete),
+          }
+          (root / "EVALUATION_SUMMARY.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-sep2-evaluation-v45-summary
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-sep2-evaluation-v45/ANATOMY.*
+            artifacts/candidate-51/slope-sep2-evaluation-v45/EVALUATION_SUMMARY.json
+      - name: Commit compact frozen evaluation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/slope-sep2-evaluation-v45
+          destination=research/candidate-51/evidence/slope-sep2-evaluation-v45
+          test -s "$source/ANATOMY.json"
+          test -s "$source/EVALUATION_SUMMARY.json"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          cp "$source/EVALUATION_SUMMARY.json" "$destination/EVALUATION_SUMMARY.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record frozen Slope sep2 evaluation"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
