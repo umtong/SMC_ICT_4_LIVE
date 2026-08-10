@@ -1,0 +1,172 @@
+name: candidate-51-slope-terminal-v48
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-slope-terminal-v48.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-slope-terminal-v48
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: dev_2024_01, data_start: 2023-12-24, start: 2024-01-01, end: 2024-01-14}
+          - {interval: dev_2024_08, data_start: 2024-07-24, start: 2024-08-01, end: 2024-08-14}
+          - {interval: dev_2025_01, data_start: 2024-12-24, start: 2025-01-01, end: 2025-01-14}
+          - {interval: dev_2025_04, data_start: 2025-03-24, start: 2025-04-01, end: 2025-04-14}
+          - {interval: dev_2025_07, data_start: 2025-06-23, start: 2025-07-01, end: 2025-07-14}
+          - {interval: dev_2025_10, data_start: 2025-09-23, start: 2025-10-01, end: 2025-10-14}
+          - {interval: dev_2026_02, data_start: 2026-01-24, start: 2026-02-01, end: 2026-02-14}
+          - {interval: dev_2026_05, data_start: 2026-04-23, start: 2026-05-01, end: 2026-05-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install and materialize terminal Slope system
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_slope_repair.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_slope_terminal.py research/candidate-51/strategy.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          python research/candidate-51/slope_terminal_prepare.py \
+            --output .work/candidate-51-slope-terminal-v48
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          from strategy import Candidate35Config, Candidate35Strategy
+          fields = set(Candidate35Config.__struct_fields__)
+          assert {
+              "slope_min_separation_activation_multiple",
+              "slope_repair_management",
+              "slope_terminal_mode",
+          } <= fields
+          root = Path(".work/candidate-51-slope-terminal-v48")
+          expected = {
+              "ma_control": ("ma_only", "source", "none"),
+              "ma_progress_terminal": ("ma_only", "progress_thesis", "repair_exit"),
+              "ma_any_loss_terminal": ("ma_only", "source", "any_loss"),
+              "no_signal_progress_any_loss": ("no_signal", "progress_thesis", "any_loss"),
+          }
+          for name, values in expected.items():
+              cfg = json.loads((root / f"{name}.json").read_text())["strategy"]
+              assert cfg["slope_min_separation_activation_multiple"] == 2.0
+              assert cfg["slope_stop_mode"] == "signal_slow_atr"
+              assert (
+                  cfg["slope_exit_mode"],
+                  cfg["slope_repair_management"],
+                  cfg["slope_terminal_mode"],
+              ) == values
+          assert hasattr(Candidate35Strategy, "_decision_key")
+          print("Terminal causal-episode configuration verified")
+          PY
+      - name: Run terminal episode mechanisms on independent account
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-slope-terminal-v48
+          root=artifacts/candidate-51/slope-terminal-v48/${{ matrix.interval }}
+          mkdir -p "$root" "$work/status"
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config "$work/$variant.json" \
+              --data-start "${{ matrix.data_start }}" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-slope-terminal-v48/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+            echo $? > "$work/status/${{ matrix.interval }}-$variant.txt"
+          done < "$work/variants.txt"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-terminal-v48-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-terminal-v48/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/slope-terminal-v48/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/slope-terminal-v48/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/slope-terminal-v48/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-slope-terminal-v48/status/*.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-slope-terminal-v48-*
+          path: downloaded
+      - name: Build terminal episode anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/slope-terminal-v48
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/slope-terminal-v48/*)
+                relative="${file#*artifacts/candidate-51/slope-terminal-v48/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          python research/candidate-51/slope_terminal_prepare.py \
+            --output .work/candidate-51-slope-terminal-v48
+          cp .work/candidate-51-slope-terminal-v48/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/slope_dope_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          test -s "$root/ANATOMY.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-terminal-v48-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/slope-terminal-v48/ANATOMY.*
+      - name: Commit compact mechanism evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/slope-terminal-v48
+          destination=research/candidate-51/evidence/slope-terminal-v48
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record terminal Slope episode anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
