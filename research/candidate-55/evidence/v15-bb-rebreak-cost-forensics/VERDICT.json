@@ -1,0 +1,71 @@
+{
+  "candidate": "candidate-55",
+  "family": "V15_BB_SHORT_PULLBACK_REBREAK_COST_AFTER_GEOMETRY",
+  "hypothesis": "After a V15 lower-band interaction, a counter-trend pullback followed by re-break of the pullback low should create a same-auction short with invalidation above the pullback high.",
+  "prediction_before_outcome": {
+    "preserve": "one pullback/re-break episode per symbol, with cross-asset arbitration before outcome",
+    "remove": "direct lower-band chases, setups without a counter-trend pullback, setups without re-break, and trigger/stop ambiguity",
+    "expected_effect": "at least half a selected episode per day, positive cost-after one-R and two-R diagnostic expectancy, and median favorable excursion above costs",
+    "falsification": "round-trip costs consume the structural R, or fixed one-R and two-R payoffs remain negative despite attractive gross excursion"
+  },
+  "fixed_geometry": {
+    "pullback_window_5m_bars": 3,
+    "rebreak_window_5m_bars": 3,
+    "entry": "first later minute trading below the first bullish pullback candle low",
+    "invalidation": "above the same pullback candle high",
+    "outcome_minutes": 120,
+    "round_trip_cost_floor_fraction": 0.002,
+    "parameter_search": false,
+    "account_backtest_run": false
+  },
+  "implementation_correction": {
+    "first_gross_r_run": "INVALID_AS_ACCOUNT_WARRANT",
+    "reason": "The initial R analysis did not convert the 20-bps cost floor into setup-specific R. Because pullback risk was often only 16-33 bps, fees and slippage consumed roughly 0.6-1.2 median R and sometimes more.",
+    "signal_and_geometry_changed": false
+  },
+  "aggregate": {
+    "windows": 3,
+    "supported_windows": 0,
+    "source_episodes": 740,
+    "actionable_episodes": 274,
+    "selected_actionable_episodes": 247,
+    "account_implementation_warranted": false
+  },
+  "windows": [
+    {
+      "period": "2024-03-04/2024-03-10",
+      "selected_episodes": 92,
+      "median_risk_bps": 33.4191409480845,
+      "median_cost_r": 0.5986523809523947,
+      "median_net_max_favorable_r_120m": 0.7159743589743426,
+      "cost_after_1r_bracket_mean_r": -0.603998258185104,
+      "cost_after_2r_bracket_mean_r": -0.46805939045148365
+    },
+    {
+      "period": "2025-07-07/2025-07-13",
+      "selected_episodes": 81,
+      "median_risk_bps": 16.311431269560998,
+      "median_cost_r": 1.2261339712917954,
+      "median_net_max_favorable_r_120m": -0.20585365853663096,
+      "cost_after_1r_bracket_mean_r": -1.7574858851339976,
+      "cost_after_2r_bracket_mean_r": -1.9541796022189726
+    },
+    {
+      "period": "2026-01-05/2026-01-11",
+      "selected_episodes": 74,
+      "median_risk_bps": 19.648914318684003,
+      "median_cost_r": 1.017869586031377,
+      "median_net_max_favorable_r_120m": 0.0213666958042026,
+      "cost_after_1r_bracket_mean_r": -1.7444092137162421,
+      "cost_after_2r_bracket_mean_r": -1.7898391715062913
+    }
+  ],
+  "causal_interpretation": {
+    "valid_clue": "Pullback/re-break improved gross entry geometry relative to direct lower-band chasing and created frequent favorable excursion.",
+    "fatal_constraint": "The structural stop is usually too narrow relative to realistic turnover cost, so favorable raw movement does not translate into cost-after R.",
+    "why_not_widen_stop": "Widening the stop merely to improve cost/R would sever invalidation from the pullback auction and would be a numerical rescue, not the tested causal setup.",
+    "why_not_tune_windows": "All three fixed windows had negative cost-after one-R and two-R diagnostics; changing wait windows would search for a backtest peak without fixing the economic geometry."
+  },
+  "verdict": "FALSIFIED_DO_NOT_IMPLEMENT_OR_TUNE",
+  "reason": "The setup has adequate frequency and raw excursion but negative cost-after geometry in every fresh window. No Nautilus account, parameter sweep, or long validation is justified."
+}
