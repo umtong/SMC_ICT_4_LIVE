@@ -1,0 +1,43 @@
+name: candidate-55-ichi-source-materialize
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-ichi-source-materialize.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-ichi-source-materialize
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize inherited Ichi implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-55/ichi-source
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+          source = Path("research/candidate-51")
+          target = Path("artifacts/candidate-55/ichi-source")
+          for name in ("router_ichi.py", "strategy_ichi.py", "ichi_v9_runner.py"):
+              payload = gzip.decompress((source / f"{name}.gz").read_bytes())
+              (target / name).write_bytes(payload)
+          PY
+          python -m compileall -q artifacts/candidate-55/ichi-source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-55-ichi-source-${{ github.sha }}
+          path: artifacts/candidate-55/ichi-source
+          retention-days: 30
