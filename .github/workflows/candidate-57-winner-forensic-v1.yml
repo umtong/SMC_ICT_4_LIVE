@@ -1,0 +1,146 @@
+name: candidate-57-winner-forensic-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-winner-forensic-v1.yml"
+      - "research/candidate-57/winner_episode_forensic_v1.py.gz.b64"
+      - "research/candidate-57/forensic_sources/winner_strategy_external_v17.py"
+      - "research/candidate-51/router_external_v17.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-winner-forensic-v1
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize exact source and forensic runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_external_v17.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/winner_strategy_external_v17.py research/candidate-51/strategy.py
+          python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          encoded = Path("research/candidate-57/winner_episode_forensic_v1.py.gz.b64")
+          target = Path("research/candidate-57/.run_winner_forensic_v1.py")
+          raw = gzip.decompress(base64.b64decode("".join(encoded.read_text(encoding="ascii").split())))
+          expected = "2ea23521dacb45744d8d8f24b8a6e30af3e7efcc31131ece23eef2b07e9b713a"
+          actual = hashlib.sha256(raw).hexdigest()
+          if actual != expected:
+              raise RuntimeError(f"forensic payload hash mismatch: {actual} != {expected}")
+          compile(raw.decode("utf-8"), str(target), "exec")
+          target.write_bytes(raw)
+          print(f"materialized {target} sha256={actual}")
+          PY
+
+      - name: Install locked project environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          PYTHONPATH=research/candidate-51 uv run python -m compileall -q \
+            research/candidate-51 \
+            research/candidate-57/.run_winner_forensic_v1.py
+
+      - name: Replay and decompose every causal episode
+        id: forensic
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-winner-forensic-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            C57_START=2025-03-03 C57_END=2025-03-09 \
+            uv run python research/candidate-57/.run_winner_forensic_v1.py \
+            2>&1 | tee .work/candidate-57-winner-forensic-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Preserve compact source-control evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="artifacts/candidate-57-winner-forensic-v1/source-control"
+          dst="research/candidate-57/evidence/winner-forensic-v1/source-control"
+          mkdir -p "$dst"
+          for name in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json scenario_events.jsonl positions.csv orders.csv; do
+            if [[ -f "$src/$name" ]]; then
+              cp "$src/$name" "$dst/$name"
+            fi
+          done
+
+      - name: Commit forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f research/candidate-57/.run_winner_forensic_v1.py
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git pull --rebase origin research/candidate-57
+          if [[ -d research/candidate-57/evidence/winner-forensic-v1 ]]; then
+            git add -f research/candidate-57/evidence/winner-forensic-v1
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist Winner15m causal-episode forensic evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload forensic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-winner-forensic-v1-evidence
+          path: |
+            research/candidate-57/evidence/winner-forensic-v1
+            .work/candidate-57-winner-forensic-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce forensic process integrity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.forensic.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "forensic process status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "forensic process failed with status $status; evidence/log retained"
+            exit "$status"
+          fi
