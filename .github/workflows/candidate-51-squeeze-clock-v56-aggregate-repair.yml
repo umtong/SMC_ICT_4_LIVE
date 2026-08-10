@@ -1,0 +1,106 @@
+name: candidate-51-squeeze-clock-v56-aggregate-repair
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-squeeze-clock-v56-aggregate-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: candidate-51-squeeze-clock-v56-aggregate-repair
+  cancel-in-progress: true
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Wait for all immutable source jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=31412120225
+          for attempt in $(seq 1 60); do
+            count="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" \
+              | python -c 'import json,sys; print(json.load(sys.stdin)["total_count"])')"
+            if [ "$count" -ge 52 ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31412120225
+          pattern: candidate-51-squeeze-clock-v56-*
+          path: downloaded
+      - name: Aggregate paired clock evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 52
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/squeeze-clock-v56
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/squeeze_clock_anatomy.py aggregate \
+            --results-root downloaded --output "$output"
+          test -s "$output/ANATOMY.json"
+          test -s "$output/ANATOMY.md"
+          test -s "$output/SUMMARY.csv"
+          test -s "$output/EVENTS.csv"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-squeeze-clock-v56-anatomy-repair
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/squeeze-clock-v56/ANATOMY.json
+            artifacts/candidate-51/squeeze-clock-v56/ANATOMY.md
+            artifacts/candidate-51/squeeze-clock-v56/SUMMARY.csv
+            artifacts/candidate-51/squeeze-clock-v56/EVENTS.csv
+      - name: Commit compact causal clock evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/squeeze-clock-v56
+          destination=research/candidate-51/evidence/squeeze-clock-v56
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/SUMMARY.csv" "$destination/SUMMARY.csv"
+          cp "$source/EVENTS.csv" "$destination/EVENTS.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: record squeeze causal clock anatomy"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
