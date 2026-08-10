@@ -49,10 +49,7 @@ jobs:
           cp research/candidate-57/jump_state_arbitration_router.py research/candidate-51/router.py
           cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient_base.py
           cp research/candidate-57/jump_delayed_post_state_strategy.py research/candidate-51/strategy_jump_transient.py
-          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit_base.py
-          sed 's/import strategy_jump_transient as _base/import strategy_jump_transient_base as _base/' \
-            research/candidate-57/jump_episode_forensic_strategy.py \
-            > research/candidate-51/strategy_jump_audit.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit.py
           sed 's/from strategy_jump_audit_base import (/from strategy_jump_audit import (/' \
             research/candidate-57/jump_state_arbitration_forensic_strategy.py \
             > research/candidate-51/strategy.py
@@ -77,12 +74,15 @@ jobs:
           uv run smc4 doctor
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
           import inspect
+          from strategy import Candidate35Config as FinalConfig, Candidate35Strategy as FinalStrategy
           from strategy_jump_transient import Candidate35Config, Candidate35Strategy
 
           fields = set(Candidate35Config.__struct_fields__)
           assert "jump_post_state_mode" in fields
           assert "jump_min_confirmation_elapsed_minutes" in fields
           assert "jump_oi_max_decline_fraction" in fields
+          assert issubclass(FinalStrategy, Candidate35Strategy)
+          assert set(FinalConfig.__struct_fields__).issuperset(fields)
           source = inspect.getsource(Candidate35Strategy._try_pending_confirmation)
           assert "elapsed < minimum_elapsed" in source
           assert "two_bar_price_oi_stable" in source
@@ -119,8 +119,7 @@ jobs:
             research/candidate-51/router_jump_base.py \
             research/candidate-51/strategy_jump_transient.py \
             research/candidate-51/strategy_jump_transient_base.py \
-            research/candidate-51/strategy_jump_audit.py \
-            research/candidate-51/strategy_jump_audit_base.py
+            research/candidate-51/strategy_jump_audit.py
           git config user.name "candidate-57-research-bot"
           git config user.email "candidate-57-research-bot@users.noreply.github.com"
           out=research/candidate-57/evidence/jump-delayed-post-state-fresh-v1
