@@ -1,0 +1,150 @@
+name: candidate-51-derivatives-impulse-v57-repair
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-derivatives-impulse-v57-repair.yml"
+      - "research/candidate-51/derivatives_impulse_v57_repair.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: candidate-51-derivatives-impulse-v57-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        period:
+          - {label: dev_riskoff_2022_01, start: 2022-01-10, end: 2022-01-23, split: development}
+          - {label: dev_cascade_2022_06, start: 2022-06-06, end: 2022-06-19, split: development}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-05
+            research/candidate-51
+            README.md
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install verified research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile research/candidate-51/derivatives_impulse_v57_repair.py
+      - name: Recompute only the two exchange-gap shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/derivatives-impulse-v57-repair/${{ matrix.period.label }}"
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/derivatives_impulse_v57_repair.py run \
+            --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" --split "${{ matrix.period.split }}" \
+            --warmup-days 4 --forward-days 1 \
+            --cache ".cache/candidate-51-derivatives-impulse-v57-repair/${{ matrix.period.label }}" \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-derivatives-impulse-v57-repair-${{ matrix.period.label }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/derivatives-impulse-v57-repair/${{ matrix.period.label }}/result.json
+
+  aggregate:
+    needs: repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-51
+            README.md
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Download eight valid frozen shards
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31414353095
+          pattern: candidate-51-derivatives-impulse-v57-*
+          path: downloaded/original
+      - name: Download two gap-aware repair shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-derivatives-impulse-v57-repair-*
+          path: downloaded/repair
+      - name: Aggregate the predeclared chronological state test
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 10
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/derivatives-impulse-v57
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/derivatives_impulse_state.py aggregate \
+            --results-root downloaded --output "$output"
+          test -s "$output/ANATOMY.json"
+          test -s "$output/ANATOMY.md"
+          test -s "$output/SUMMARY.csv"
+          test -s "$output/EVENTS.csv"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-derivatives-impulse-v57-anatomy-repaired
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/derivatives-impulse-v57/ANATOMY.json
+            artifacts/candidate-51/derivatives-impulse-v57/ANATOMY.md
+            artifacts/candidate-51/derivatives-impulse-v57/SUMMARY.csv
+            artifacts/candidate-51/derivatives-impulse-v57/EVENTS.csv
+      - name: Commit compact derivatives-state evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/derivatives-impulse-v57
+          destination=research/candidate-51/evidence/derivatives-impulse-v57
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/SUMMARY.csv" "$destination/SUMMARY.csv"
+          cp "$source/EVENTS.csv" "$destination/EVENTS.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          git commit -m "candidate51: record gap-aware derivatives impulse anatomy"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51 --depth=1
+            if git rebase FETCH_HEAD && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
