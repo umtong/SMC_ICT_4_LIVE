@@ -3,7 +3,9 @@
 The public short condition compares close with a prior rolling *minimum* low,
 which is almost continuously true.  This wrapper exposes a symmetric rolling
 maximum-high invalidation or an MA-cross-only interpretation.  Entries, long
-exits, ROI, trailing, stops, sizing and account mechanics are inherited.
+exits, ROI values, trailing, stops, sizing and account mechanics are inherited.
+The already-identified v1 ROI-order defect is repaired here as part of the v2
+mechanical baseline so this experiment actually reaches the source exit.
 """
 from __future__ import annotations
 
@@ -26,9 +28,33 @@ class Candidate35Strategy(_BaseStrategy):
         if mode not in {"symmetric_high", "ma_only"}:
             raise ValueError(f"unsupported slope_short_exit_mode={mode!r}")
         super().__init__(config)
+        # V2 mechanical baseline: `_roi_profit_ratio` expects ascending elapsed
+        # minutes. Without this reset the terminal zero-ROI row is selected at
+        # entry and the short-exit experiment is never reached.
+        self._roi_schedule = tuple(
+            sorted(
+                (
+                    (0, float(config.slope_roi_0)),
+                    (
+                        int(config.slope_roi_t1_minutes),
+                        float(config.slope_roi_t1),
+                    ),
+                    (
+                        int(config.slope_roi_t2_minutes),
+                        float(config.slope_roi_t2),
+                    ),
+                    (
+                        int(config.slope_roi_t3_minutes),
+                        float(config.slope_roi_t3),
+                    ),
+                )
+            )
+        )
         self.diagnostics.update(
             {
                 "candidate57_slope_short_exit_repair_v3": 1,
+                "candidate57_slope_roi_schedule_fix_v2": 1,
+                "slope_roi_schedule_order": "ascending_elapsed_minutes",
                 "slope_short_exit_mode": mode,
                 "slope_short_literal_minimum_low_used": 0,
                 "slope_long_source_exit_changed": 0,
