@@ -1,0 +1,174 @@
+name: candidate-57-jump-state-arbitration-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-state-arbitration-fresh-v1.yml"
+      - "research/candidate-57/JUMP_STATE_ARBITRATION_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/download_binance_metrics_sidecar.py"
+      - "research/candidate-57/jump_state_arbitration_router.py"
+      - "research/candidate-57/jump_state_arbitration_forensic_strategy.py"
+      - "research/candidate-57/jump_state_arbitration_fresh_campaign.py.b64.part*"
+      - "research/candidate-57/jump_episode_forensic_strategy.py"
+      - "research/candidate-57/jump_episode_forensic_analyze.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-state-arbitration-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact jump source and frozen factorial wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/JUMP_STATE_ARBITRATION_FRESH_V1_FREEZE.md
+          cat research/candidate-57/jump_state_arbitration_fresh_campaign.py.b64.part* | base64 -d > research/candidate-57/jump_state_arbitration_fresh_campaign.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
+          cp research/candidate-57/jump_state_arbitration_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit_base.py
+          cp research/candidate-57/jump_state_arbitration_forensic_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_audit_base.py \
+            research/candidate-57/download_binance_metrics_sidecar.py \
+            research/candidate-57/jump_state_arbitration_fresh_campaign.py
+
+      - name: Install locked environment and prove frozen composition contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          import os
+          import router
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert "jump_audit_enabled" in fields, fields
+          assert hasattr(Candidate35Strategy, "_audit_boundary")
+
+          for mode in ("source_without_taker_filter", "peer_taker_alignment_3of4"):
+              os.environ["C57_JUMP_TAKER_FILTER_MODE"] = mode
+              assert router.filter_mode() == mode
+          try:
+              os.environ["C57_JUMP_TAKER_FILTER_MODE"] = "unfrozen_variant"
+              router.filter_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen taker filter variant accepted")
+
+          for mode in ("source_max_z", "least_qualifying_z"):
+              os.environ["C57_JUMP_ARBITRATION_MODE"] = mode
+              assert router.arbitration_mode() == mode
+          try:
+              os.environ["C57_JUMP_ARBITRATION_MODE"] = "outcome_best"
+              router.arbitration_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen arbitration variant accepted")
+
+          route_source = inspect.getsource(router.route_universe)
+          assert "aligned_peers" in route_source and "< 3" in route_source
+          assert "least_qualifying_z" in route_source and "-absolute_z" in route_source
+          asof_source = inspect.getsource(router._asof)
+          assert "bisect_right" in asof_source and "_MAX_AGE_NS" in asof_source
+          print("strict as-of 3-of-4 state and frozen least-z composition verified")
+          PY
+
+      - name: Run all four causal cells
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-state-arbitration-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/jump_state_arbitration_fresh_campaign.py \
+            2>&1 | tee .work/candidate-57-jump-state-arbitration-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact factorial evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-57/jump_state_arbitration_fresh_campaign.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_audit_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-state-arbitration-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh jump state-arbitration evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full factorial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-state-arbitration-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/jump-state-arbitration-fresh-v1
+            .work/candidate-57-jump-state-arbitration-fresh-v1-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "factorial campaign or end-flat validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
