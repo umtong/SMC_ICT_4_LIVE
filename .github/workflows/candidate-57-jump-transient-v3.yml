@@ -1,0 +1,96 @@
+name: candidate-57-jump-transient-v3
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-transient-v3.yml"
+      - "research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part*"
+      - "research/candidate-57/JUMP_TRANSIENT_V3_FREEZE.md"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: candidate-57-jump-transient-v3
+  cancel-in-progress: true
+jobs:
+  evaluate:
+    name: evaluate-${{ matrix.variant.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        variant:
+          - {name: impulse_control, mode: none, arm: 999.0, escape: 999.0}
+          - {name: arm0p4_escape1p0, mode: transient_be, arm: 0.4, escape: 1.0}
+          - {name: arm0p5_escape1p0, mode: transient_be, arm: 0.5, escape: 1.0}
+          - {name: arm0p4_escape1p25, mode: transient_be, arm: 0.4, escape: 1.25}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-57, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize policy in reused Nautilus shell
+        run: |
+          cat research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part* | base64 -d > /tmp/c57.tgz
+          tar -xzf /tmp/c57.tgz -C research/candidate-57
+          cp research/candidate-57/router_jump_transient.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_jump_transient.py research/candidate-51/strategy.py
+      - name: Install locked environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-57
+      - name: Run frozen development variant
+        run: |
+          uv run python research/candidate-57/run_jump_transient_variant.py \
+            --variant '${{ matrix.variant.name }}' \
+            --mode '${{ matrix.variant.mode }}' \
+            --arm '${{ matrix.variant.arm }}' \
+            --escape '${{ matrix.variant.escape }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-57-jump-transient-v3-${{ matrix.variant.name }}
+          path: artifacts/candidate-57/candidate57-jump-transient-v3-${{ matrix.variant.name }}/**
+          if-no-files-found: warn
+          retention-days: 30
+  synthesize:
+    needs: evaluate
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-57, fetch-depth: 0}
+      - uses: actions/download-artifact@v4
+        with: {pattern: candidate-57-jump-transient-v3-*, path: downloaded}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Decompose exact episode effects
+        run: |
+          cat research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part* | base64 -d > /tmp/c57.tgz
+          tar -xzf /tmp/c57.tgz -C research/candidate-57
+          python research/candidate-57/analyze_jump_transient_results.py --root downloaded --out research/candidate-57/evidence/jump-transient-v3
+      - name: Persist compact evidence
+        run: |
+          git config user.name candidate-57-research-bot
+          git config user.email candidate-57-research-bot@users.noreply.github.com
+          git add research/candidate-57/evidence/jump-transient-v3
+          git diff --cached --quiet && exit 0
+          git commit -m "candidate57: decompose transient jump failure state"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            git push origin HEAD:research/candidate-57 && exit 0
+            sleep 2
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-57-jump-transient-v3-synthesis
+          path: research/candidate-57/evidence/jump-transient-v3/**
+          if-no-files-found: error
