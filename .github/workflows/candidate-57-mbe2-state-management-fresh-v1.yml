@@ -11,6 +11,8 @@ on:
       - "research/candidate-57/forensic_sources/mbe2_router.py"
       - "research/candidate-57/forensic_sources/mbe2_strategy.py"
       - "research/candidate-57/forensic_sources/mbe2_campaign.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
   workflow_dispatch:
 
 permissions:
@@ -39,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f research/candidate-57/MBE2_STATE_MANAGEMENT_FRESH_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
           cp research/candidate-57/forensic_sources/mbe2_router.py \
             research/candidate-51/router.py
           cp research/candidate-57/forensic_sources/mbe2_strategy.py \
@@ -46,6 +49,8 @@ jobs:
           cp research/candidate-57/mbe2_state_management_strategy.py \
             research/candidate-51/strategy.py
           python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
             research/candidate-51/router.py \
             research/candidate-51/strategy_mbe2_base.py \
             research/candidate-51/strategy.py \
@@ -93,7 +98,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
           rm -f research/candidate-51/strategy_mbe2_base.py
           git config user.name "candidate-57-research-bot"
           git config user.email "candidate-57-research-bot@users.noreply.github.com"
