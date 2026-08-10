@@ -99,7 +99,7 @@ def bb_clean_synchronized_expansion(
         return False
     downside_impulse_atr = -ret_15m / atr_ratio
     return (
-        downside_impulse_atr >= BB_MIN_IMPULSE_ATR
+        downside_impulse_atr + 1e-12 >= BB_MIN_IMPULSE_ATR
         and int(negative_breadth_60m) >= BB_MIN_NEGATIVE_BREADTH_60M
     )
 
