@@ -1,0 +1,73 @@
+name: candidate-57-jump-side-anatomy-multiperiod-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-side-anatomy-multiperiod-v1.yml"
+      - "research/candidate-57/jump_side_anatomy_multiperiod.py"
+      - "research/candidate-57/evidence/jump-all-candidate-forensic-v1/episode_rows.json"
+      - "research/candidate-57/evidence/jump-taker-alignment-fresh-v1/source_without_taker_filter/episode_rows.json"
+      - "research/candidate-57/evidence/jump-state-arbitration-fresh-v1/source_max_z__no_taker/episode_rows.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build multi-period directional anatomy
+        id: anatomy
+        shell: bash
+        run: |
+          set +e
+          python -m compileall -q research/candidate-57/jump_side_anatomy_multiperiod.py
+          python research/candidate-57/jump_side_anatomy_multiperiod.py
+          status=$?
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact side evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-side-anatomy-multiperiod-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist multi-period jump side anatomy"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Enforce complete anatomy
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.anatomy.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            exit "${status:-1}"
+          fi
