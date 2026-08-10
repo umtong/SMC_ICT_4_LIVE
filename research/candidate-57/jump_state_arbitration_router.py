@@ -1,16 +1,16 @@
-"""Frozen peer-taker state × cross-symbol arbitration for the 4h jump specialist.
+"""Peer-taker market state × cross-symbol arbitration for the 4h jump specialist.
 
 The public/source jump classifier, structural stop and management are unchanged.
-This wrapper composes two independently frozen components which solved different
-problems on the prior development interval:
+The wrapper exposes the two frozen factorial controls and one state-conditional
+composition derived after that factor map became development data:
 
-* market-event state: require 3 of 4 Binance futures taker ratios to align with
-  the proposed reversal, using a strict causal as-of join;
-* one-slot arbitration: choose either the source maximum absolute z-score or
-  the least absolute z-score among already-qualified simultaneous candidates.
+* ``source_max_z``: source maximum absolute z-score;
+* ``least_qualifying_z``: least absolute already-qualified z-score;
+* ``taker_conditional``: source max-z when at least 3 of 4 peer taker ratios
+  already align with the proposed reversal, otherwise least-z.
 
-The four factorial cells are selected only through environment variables.  No
-outcome-dependent threshold or symbol exception is present here.
+The optional peer-taker filter remains independent of arbitration.  Every state
+join is strict as-of and no outcome, symbol exception or future path is used.
 """
 from __future__ import annotations
 
@@ -57,7 +57,11 @@ def arbitration_mode() -> str:
     mode = os.environ.get(
         "C57_JUMP_ARBITRATION_MODE", "source_max_z"
     ).strip().lower()
-    if mode not in {"source_max_z", "least_qualifying_z"}:
+    if mode not in {
+        "source_max_z",
+        "least_qualifying_z",
+        "taker_conditional",
+    }:
         raise ValueError(f"unsupported C57_JUMP_ARBITRATION_MODE={mode!r}")
     return mode
 
@@ -149,13 +153,33 @@ def _alignment(side: int, ts_event: int) -> dict[str, Any]:
     }
 
 
+def _effective_arbitration(
+    requested_mode: str,
+    source_score: float,
+    absolute_z: float,
+    available_peers: int,
+    aligned_peers: int,
+) -> tuple[str, float] | None:
+    if requested_mode == "source_max_z":
+        return "source_max_z", float(source_score)
+    if requested_mode == "least_qualifying_z":
+        return "least_qualifying_z", -float(absolute_z)
+    if requested_mode != "taker_conditional":
+        raise ValueError(requested_mode)
+    if available_peers < 4:
+        return None
+    if aligned_peers >= 3:
+        return "source_max_z", float(source_score)
+    return "least_qualifying_z", -float(absolute_z)
+
+
 def route_universe(
     bars_by_symbol: Mapping[str, Sequence[BarObservation]],
     features_by_symbol: Mapping[str, FeatureObservation],
     config: RouteConfig = RouteConfig(),
 ) -> tuple[RouteDecision | None, dict[str, RouteDecision]]:
     taker_mode = filter_mode()
-    selection_mode = arbitration_mode()
+    requested_selection_mode = arbitration_mode()
     source_config = replace(config, jump_selection_mode="source")
     _, raw = _base_route_universe(
         bars_by_symbol=bars_by_symbol,
@@ -191,10 +215,12 @@ def route_universe(
         state = _alignment(int(decision.side), int(decision.episode_ts))
         diagnostics = dict(decision.diagnostics or {})
         absolute_z = abs(float(diagnostics.get("causal_zscore", 0.0)))
-        effective_score = (
-            float(decision.score)
-            if selection_mode == "source_max_z"
-            else -absolute_z
+        effective = _effective_arbitration(
+            requested_mode=requested_selection_mode,
+            source_score=float(decision.score),
+            absolute_z=absolute_z,
+            available_peers=int(state["available_peers"]),
+            aligned_peers=int(state["aligned_peers"]),
         )
         diagnostics.update(
             {
@@ -203,12 +229,29 @@ def route_universe(
                 "jump_taker_aligned_peers": state["aligned_peers"],
                 "jump_taker_required_aligned_peers": 3,
                 "jump_taker_peer_snapshots_json": state["peer_snapshots_json"],
-                "jump_effective_arbitration_mode": selection_mode,
-                "jump_effective_arbitration_score": effective_score,
+                "jump_requested_arbitration_mode": requested_selection_mode,
                 "jump_source_score": float(decision.score),
                 "jump_absolute_z": absolute_z,
                 "jump_boundary_candidate_count": len(actionable_raw),
                 "jump_boundary_candidate_set_json": snapshot_json,
+            }
+        )
+        if effective is None:
+            decisions[symbol] = _unresolved(
+                symbol,
+                "JUMP_TAKER_METRICS_UNRESOLVED",
+                int(decision.episode_ts),
+                diagnostics,
+            )
+            continue
+        effective_mode, effective_score = effective
+        diagnostics.update(
+            {
+                "jump_effective_arbitration_mode": effective_mode,
+                "jump_effective_arbitration_score": effective_score,
+                "jump_taker_conditional_aligned_regime": int(
+                    int(state["aligned_peers"]) >= 3
+                ),
             }
         )
 
