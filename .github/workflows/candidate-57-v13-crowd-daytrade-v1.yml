@@ -1,0 +1,193 @@
+name: candidate-57-v13-crowd-daytrade-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-v13-crowd-daytrade-v1.yml"
+      - "research/candidate-57/crowd_gate.py"
+      - "research/candidate-57/strategy_zaratustra_v13_crowd.py"
+      - "research/candidate-57/run_v13_crowd_ladder.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-v13-crowd-daytrade-v1
+  cancel-in-progress: true
+
+jobs:
+  ladder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - name: Materialize validated Candidate 55 source adapters without duplicating them
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-55
+          git show FETCH_HEAD:research/candidate-55/router_zaratustra.py \
+            > research/candidate-51/router_zaratustra.py
+          git show FETCH_HEAD:research/candidate-55/router_zaratustra_v13.py \
+            > research/candidate-51/router.py
+          git show FETCH_HEAD:research/candidate-55/strategy_zaratustra.py \
+            > research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-57/crowd_gate.py \
+            research/candidate-51/crowd_gate.py
+          cp research/candidate-57/strategy_zaratustra_v13_crowd.py \
+            research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_zaratustra.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_zaratustra.py \
+            research/candidate-51/crowd_gate.py \
+            research/candidate-57/run_v13_crowd_ladder.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked environment and prove source plus crowd-state contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from crowd_gate import (
+              CrowdGateConfig,
+              CrowdObservation,
+              assess_gate,
+          )
+          from router import _decode_mode, source_entry_flags
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          assert _decode_mode("source_short") == ("source", "short")
+          flags = source_entry_flags(
+              previous_close=100.0,
+              current_close=99.0,
+              previous_lower=95.0,
+              current_lower=95.0,
+              previous_upper=105.0,
+              current_upper=105.0,
+              dx=35.0,
+              adx=30.0,
+              pdi=15.0,
+              mdi=25.0,
+          )
+          assert flags["short_di"] and not flags["long_di"], flags
+
+          ready = CrowdObservation(
+              row_observed_time_ns=1,
+              metrics_observed_time_ns=1,
+              metrics_age_seconds=0.0,
+              crowd_ratio=1.21,
+              taker_ratio=0.99,
+              ready=True,
+              reason="READY",
+          )
+          passed = assess_gate(
+              ready,
+              used_di_component=True,
+              used_bb_component=False,
+              config=CrowdGateConfig(),
+          )
+          assert passed.passed
+          assert passed.confirmation_mode == "TAKER_SELL_DOMINANCE"
+          failed = assess_gate(
+              ready,
+              used_di_component=True,
+              used_bb_component=False,
+              config=CrowdGateConfig(taker_max_ratio=0.90),
+          )
+          assert not failed.passed
+          assert failed.reason == "BREAKDOWN_UNCONFIRMED"
+
+          fields = Candidate35Config.__struct_fields__
+          for name in (
+              "zaratustra_crowd_min_ratio",
+              "zaratustra_taker_max_ratio",
+              "zaratustra_crowd_row_max_age_seconds",
+              "zaratustra_crowd_metrics_max_age_seconds",
+          ):
+              assert name in fields, name
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("V13 source and Candidate 57 crowded-long state contracts verified")
+          PY
+
+      - name: Run two frozen short windows and conditionally the 30-day interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-v13-crowd-daytrade-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/run_v13_crowd_ladder.py \
+            2>&1 | tee .work/candidate-57-v13-crowd-daytrade-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_zaratustra.py \
+            research/candidate-51/strategy_zaratustra.py \
+            research/candidate-51/crowd_gate.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/v13-crowd-daytrade-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist V13 crowded-long breakdown evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete compact ladder evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-v13-crowd-daytrade-v1-evidence
+          path: |
+            research/candidate-57/evidence/v13-crowd-daytrade-v1
+            .work/candidate-57-v13-crowd-daytrade-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account-process validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "campaign process/account validity failed with status $status"
+            exit "$status"
+          fi
