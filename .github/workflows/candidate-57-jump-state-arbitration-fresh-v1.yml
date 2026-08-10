@@ -14,6 +14,8 @@ on:
       - "research/candidate-57/jump_episode_forensic_analyze.py"
       - "research/candidate-57/forensic_sources/jump_transient_v3/**"
       - "research/candidate-51/run.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
   workflow_dispatch:
 
 permissions:
@@ -43,12 +45,15 @@ jobs:
           set -euo pipefail
           test -f research/candidate-57/JUMP_STATE_ARBITRATION_FRESH_V1_FREEZE.md
           cat research/candidate-57/jump_state_arbitration_fresh_campaign.py.b64.part* | base64 -d > research/candidate-57/jump_state_arbitration_fresh_campaign.py
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
           cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
           cp research/candidate-57/jump_state_arbitration_router.py research/candidate-51/router.py
           cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient.py
           cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit_base.py
           cp research/candidate-57/jump_state_arbitration_forensic_strategy.py research/candidate-51/strategy.py
           python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
             research/candidate-51/router.py \
             research/candidate-51/router_jump_base.py \
             research/candidate-51/strategy.py \
@@ -124,7 +129,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
           rm -f \
             research/candidate-57/jump_state_arbitration_fresh_campaign.py \
             research/candidate-51/router_jump_base.py \
