@@ -1,0 +1,90 @@
+name: candidate-55-zaratustra-v15-acceptance-forensics
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-acceptance-forensics.yml"
+      - "research/candidate-55/v15_bb_acceptance_forensics.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-acceptance-forensics
+  cancel-in-progress: true
+
+jobs:
+  state-transition-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize audited V15 indicator path
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+      - name: Run three fresh result-blind state-transition windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=research/candidate-51:research/candidate-55
+          cache=.cache/candidate-55-v15-acceptance-forensics
+          uv run python research/candidate-55/v15_bb_acceptance_forensics.py \
+            --start 2024-06-03 --end 2024-06-09 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-acceptance-forensics-2024-06
+          uv run python research/candidate-55/v15_bb_acceptance_forensics.py \
+            --start 2025-11-03 --end 2025-11-09 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-acceptance-forensics-2025-11
+          uv run python research/candidate-55/v15_bb_acceptance_forensics.py \
+            --start 2026-05-04 --end 2026-05-10 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-acceptance-forensics-2026-05
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots = sorted(Path("artifacts/candidate-55").glob("zaratustra-v15-acceptance-forensics-*/SUMMARY.json"))
+          rows = [json.loads(path.read_text()) for path in roots]
+          verdict = {
+              "candidate": "candidate-55",
+              "family": "V15_BB_SHORT_ACCEPTANCE_TRANSITION_FORENSICS",
+              "windows": len(rows),
+              "supported_windows": sum(bool(row["prediction_supported_in_this_window"]) for row in rows),
+              "episodes": sum(int(row["episodes"]) for row in rows),
+              "accepted_episodes": sum(int(row["accepted"].get("episodes", 0)) for row in rows),
+              "accepted_selected_episodes": sum(int(row["accepted_arbitration"].get("episodes", 0)) for row in rows),
+              "implementation_warranted": sum(bool(row["prediction_supported_in_this_window"]) for row in rows) >= 2,
+              "results": rows,
+          }
+          Path("artifacts/candidate-55/zaratustra-v15-acceptance-forensics-verdict.json").write_text(
+              json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False) + "\n"
+          )
+          print(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-acceptance-forensics-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-acceptance-forensics-*/SUMMARY.json
+            artifacts/candidate-55/zaratustra-v15-acceptance-forensics-*/episodes.csv
+            artifacts/candidate-55/zaratustra-v15-acceptance-forensics-verdict.json
+          if-no-files-found: warn
+          retention-days: 30
