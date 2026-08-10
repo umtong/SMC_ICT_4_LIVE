@@ -1,0 +1,201 @@
+name: candidate-51-ichifan-n1-v50
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichifan-n1-v50.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichifan-n1-v50
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: dev_2024_01, start: 2024-01-01, end: 2024-01-07}
+          - {interval: dev_2024_08, start: 2024-08-01, end: 2024-08-07}
+          - {interval: dev_2025_01, start: 2025-01-01, end: 2025-01-07}
+          - {interval: dev_2025_04, start: 2025-04-01, end: 2025-04-07}
+          - {interval: dev_2025_07, start: 2025-07-01, end: 2025-07-07}
+          - {interval: dev_2025_10, start: 2025-10-01, end: 2025-10-07}
+          - {interval: dev_2026_02, start: 2026-02-01, end: 2026-02-07}
+          - {interval: dev_2026_05, start: 2026-05-01, end: 2026-05-07}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize pinned Candidate 47 entry and Candidate 51 N-to-1 management
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin=e01b7532829507320d0baae601b410746d523868
+          git fetch --no-tags origin research/candidate-47
+          mkdir -p research/candidate-47
+          for file in \
+            router.py \
+            ichifan_strategy.py \
+            ichifan_structural_strategy.py \
+            ichifan_structural_config.json \
+            kline_only_inputs.py \
+            run.py; do
+            git show "$pin:research/candidate-47/$file" > "research/candidate-47/$file"
+          done
+          cp research/candidate-51/ichifan_n1_strategy.py \
+            research/candidate-47/ichifan_n1_strategy.py
+          cp research/candidate-51/ichifan_n1_launch.py \
+            research/candidate-47/ichifan_n1_launch.py
+          cp research/candidate-51/event_lifecycle_patch.py \
+            research/candidate-47/event_lifecycle_patch.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q \
+            research/candidate-47 \
+            research/candidate-51/ichifan_n1_prepare.py \
+            research/candidate-51/ichifan_n1_anatomy_audit.py
+          uv run python research/candidate-51/ichifan_n1_prepare.py \
+            --output .work/candidate-51-ichifan-n1-v50
+          PYTHONPATH=research/candidate-47:research/candidate-16:research/candidate-05 \
+            uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          import ichifan_n1_strategy as strategy
+
+          fields = set(strategy.Candidate35Config.__struct_fields__)
+          assert {
+              "ichifan_n1_management_mode",
+              "ichifan_n1_tight_trail_activation_fraction",
+              "ichifan_n1_tight_trail_distance_fraction",
+          } <= fields
+          root = Path(".work/candidate-51-ichifan-n1-v50")
+          expected = {
+              "structural_source_control": "source_control",
+              "tight_trail_source_cross": "tight_trail_source_cross",
+              "tight_trail_underwater_thesis": "tight_trail_underwater_thesis",
+              "tight_trail_no_signal": "tight_trail_no_signal",
+          }
+          for name, mode in expected.items():
+              config = json.loads((root / f"{name}.json").read_text())["strategy"]
+              assert config["ichifan_n1_management_mode"] == mode
+              assert config["ichifan_n1_tight_trail_activation_fraction"] == 0.0105
+              assert config["ichifan_n1_tight_trail_distance_fraction"] == 0.005
+          print("Pinned Candidate 47 entry and frozen Slope trailing synthesis verified")
+          PY
+      - name: Run focused N-to-1 mechanisms on this independent account
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=.work/candidate-51-ichifan-n1-v50
+          root=artifacts/candidate-51/ichifan-n1-v50/${{ matrix.interval }}
+          mkdir -p "$root"
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-47:research/candidate-16:research/candidate-05 \
+              uv run python research/candidate-47/ichifan_n1_launch.py \
+              --config "$work/$variant.json" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-ichifan-n1-v50/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+          done < "$work/variants.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichifan-n1-v50-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichifan-n1-v50/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/ichifan-n1-v50/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/ichifan-n1-v50/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/ichifan-n1-v50/${{ matrix.interval }}/**/equity.csv
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-ichifan-n1-v50-*
+          path: downloaded
+      - name: Build N-to-1 mechanism anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/ichifan-n1-v50
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/ichifan-n1-v50/*)
+                relative="${file#*artifacts/candidate-51/ichifan-n1-v50/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          pin=e01b7532829507320d0baae601b410746d523868
+          git fetch --no-tags origin research/candidate-47
+          mkdir -p research/candidate-47
+          git show "$pin:research/candidate-47/ichifan_structural_config.json" \
+            > research/candidate-47/ichifan_structural_config.json
+          python research/candidate-51/ichifan_n1_prepare.py \
+            --output .work/candidate-51-ichifan-n1-v50
+          cp .work/candidate-51-ichifan-n1-v50/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/ichifan_n1_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          test -s "$root/ANATOMY.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(
+              Path("artifacts/candidate-51/ichifan-n1-v50/ANATOMY.json").read_text()
+          )
+          assert result["all_runs_present"] is True
+          for summary in result["variant_aggregate"].values():
+              assert summary["zero_global_position_violations"] is True
+              assert summary["zero_order_rejections"] is True
+          print(json.dumps(result["variant_aggregate"], indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichifan-n1-v50-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/ichifan-n1-v50/ANATOMY.*
+      - name: Commit compact N-to-1 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichifan-n1-v50
+          destination=research/candidate-51/evidence/ichifan-n1-v50
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record IchiFan Slope N-to-1 anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
