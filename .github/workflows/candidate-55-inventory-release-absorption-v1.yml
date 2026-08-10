@@ -1,0 +1,454 @@
+name: candidate-55-inventory-release-absorption-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-inventory-release-absorption-v1.yml"
+      - "research/candidate-55/strategy_inventory_release_absorption.py"
+      - "research/candidate-51/router_microauction.py"
+      - "research/candidate-51/strategy_microauction.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/event_lifecycle_patch.py"
+      - "research/candidate-51/launch.py"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-inventory-release-absorption-v1
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 1
+
+      - name: Materialize reused Nautilus policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_microauction.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_inventory_release_absorption.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from strategy import Candidate35Config, Candidate35Strategy, _cost_aware_target
+
+          assert Candidate35Config is not None
+          assert Candidate35Strategy is not None
+          for side, entry, stop in ((1, 100.0, 99.0), (-1, 100.0, 101.0)):
+              target, diagnostics = _cost_aware_target(
+                  entry=entry,
+                  stop=stop,
+                  side=side,
+                  fee_bps_each_side=7.5,
+                  slippage_bps_each_side=2.5,
+                  funding_reserve_bps=1.0,
+                  net_target_r=2.0,
+              )
+              movement = abs(target - entry)
+              fee = 7.5 / 10_000.0
+              slip = 2.5 / 10_000.0
+              funding = 1.0 / 10_000.0
+              net_reward = (
+                  movement
+                  - fee * (entry + target)
+                  - 2.0 * slip * entry
+                  - funding * entry
+              )
+              actual_r = net_reward / diagnostics["planned_loss_per_unit_reference"]
+              assert math.isclose(actual_r, 2.0, rel_tol=0.0, abs_tol=1e-10)
+              assert (target > entry) if side > 0 else (target < entry)
+          print("cost-aware target and import contracts pass")
+          PY
+
+      - name: Freeze the single causal policy before evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          strategy = base["strategy"]
+          strategy.update(
+              {
+                  "microauction_mode": "absorption",
+                  "microauction_atr_period": 30,
+                  "microauction_balance_lookback": 10,
+                  "microauction_stop_buffer_atr": 0.15,
+                  "microauction_min_reward_r": 0.0,
+                  "absorption_flow_min": 0.25,
+                  "absorption_flow_15s_min": 0.15,
+                  "absorption_flow_3m_min": 0.05,
+                  "absorption_notional_burst_min": 1.50,
+                  "absorption_trade_burst_min": 1.20,
+                  "absorption_efficiency_max": 0.25,
+                  "absorption_strength_min": 0.15,
+                  "absorption_alignment_max_bps": 0.50,
+                  "absorption_sweep_buffer_atr": 0.05,
+                  "absorption_depth_defense_min": 0.00,
+                  "absorption_same_depth_growth_min": 0.00,
+                  "microauction_exit_on_opposite_state": False,
+                  "inventory_context_lookback_minutes": 60,
+                  "inventory_target_net_r": 2.0,
+                  "feature_max_age_seconds": 65.0,
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 240,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+              }
+          )
+          work = Path(".work/candidate-55-inventory-release-absorption-v1")
+          work.mkdir(parents=True, exist_ok=True)
+          config_path = work / "frozen-config.json"
+          config_path.write_text(json.dumps(base, indent=2, sort_keys=True) + "\n")
+          manifest = {
+              "candidate": "candidate-55-inventory-release-absorption-v1",
+              "research_role": "forced-sell/forced-buy exhaustion reversal specialist",
+              "engine": "NautilusTrader BacktestNode",
+              "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "single_continuous_account_per_interval": True,
+              "global_entry_or_position_limit": 1,
+              "risk_fraction_current_nav": 0.03,
+              "cost_model": {
+                  "fee_bps_each_side": base["all_in_cost_bps_each_side"],
+                  "adverse_slippage_bps_each_side": base[
+                      "adverse_slippage_bps_each_side"
+                  ],
+                  "funding_reserve_bps": base["funding_reserve_bps"],
+              },
+              "causal_policy": {
+                  "interaction": "real aggressor-flow absorption with completed balance sweep and reclaim",
+                  "context": [
+                      "side-relative completed 60m return below equal-weight four-asset market",
+                      "completed 15m aggregate open-interest change below zero",
+                      "completed 5m premium change in intended reversal direction above zero",
+                  ],
+                  "episode_owner": "same symbol, side and completed 60m price-extreme timestamp",
+                  "entry": "next executable market fill after completed minute decision",
+                  "stop": "absorption event extreme plus 0.15 ATR frozen buffer",
+                  "target": "pre-entry objective modeled at +2R after fees, slippage and funding reserve",
+                  "management": "bracket exit or 240 completed minutes",
+              },
+              "falsification_prediction": {
+                  "must_change": (
+                      "the old positive-gross/negative-net midpoint-target group "
+                      "must be replaced by cost-feasible target or structural-stop outcomes"
+                  ),
+                  "failure": (
+                      "context-qualified episodes remain negative after costs, "
+                      "or actual fills invalidate frozen risk/geometry, "
+                      "or opportunity density is structurally negligible"
+                  ),
+              },
+              "intervals": {
+                  "development_implementation_check": ["2026-04-13", "2026-04-19"],
+                  "untouched_pre_registered_week": ["2025-11-03", "2025-11-09"],
+                  "fixed_30d_regime_expansion": ["2025-07-01", "2025-07-30"],
+              },
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Run frozen development and untouched continuous accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-55-inventory-release-absorption-v1/status
+          run_case () {
+            label="$1"
+            start="$2"
+            end="$3"
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config .work/candidate-55-inventory-release-absorption-v1/frozen-config.json \
+              --start "$start" --end "$end" \
+              --cache .cache/candidate-55-inventory-release-absorption-v1 \
+              --output "artifacts/candidate-55/inventory-release-absorption-v1-${label}" \
+              --workspace ".work/candidate-55-inventory-release-absorption-v1-${label}"
+            echo "$?" > ".work/candidate-55-inventory-release-absorption-v1/status/${label}.txt"
+          }
+          run_case development-2026-04-13_2026-04-19 2026-04-13 2026-04-19
+          run_case untouched-2025-11-03_2025-11-09 2025-11-03 2025-11-09
+          run_case continuous-2025-07-01_2025-07-30 2025-07-01 2025-07-30
+          exit 0
+
+      - name: Write result-blind anatomy and final verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-55")
+          cases = {
+              "development": (
+                  "inventory-release-absorption-v1-development-2026-04-13_2026-04-19",
+                  7,
+                  False,
+              ),
+              "untouched_week": (
+                  "inventory-release-absorption-v1-untouched-2025-11-03_2025-11-09",
+                  7,
+                  True,
+              ),
+              "continuous_30d": (
+                  "inventory-release-absorption-v1-continuous-2025-07-01_2025-07-30",
+                  30,
+                  True,
+              ),
+          }
+
+          def number(value):
+              if isinstance(value, (int, float)):
+                  return float(value)
+              if value is None:
+                  return None
+              match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", str(value).replace(",", ""))
+              return float(match.group(0)) if match else None
+
+          rows = {}
+          for label, (name, days, untouched) in cases.items():
+              case_root = root / name
+              mp = case_root / "metrics.json"
+              dp = case_root / "strategy_diagnostics.json"
+              cp = case_root / "closed_scenarios.json"
+              status_path = (
+                  Path(".work/candidate-55-inventory-release-absorption-v1/status")
+                  / f"{name.split('v1-', 1)[1]}.txt"
+              )
+              exit_code = (
+                  int(status_path.read_text().strip())
+                  if status_path.is_file() and status_path.read_text().strip()
+                  else None
+              )
+              if not mp.is_file() or not dp.is_file():
+                  rows[label] = {
+                      "produced": False,
+                      "exit_code": exit_code,
+                      "untouched": untouched,
+                      "classification": "IMPLEMENTATION_OR_DATA_BLOCKED",
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              closed = json.loads(cp.read_text()) if cp.is_file() else []
+              episode_keys = [
+                  str(item.get("inventory_episode_key"))
+                  for item in closed
+                  if item.get("inventory_episode_key")
+              ]
+              unique_keys = sorted(set(episode_keys))
+              geometry_valid = sum(
+                  item.get("actual_fill_geometry_valid") is True for item in closed
+              )
+              risk_valid = sum(
+                  item.get("actual_fill_risk_valid") is True for item in closed
+              )
+              risk_budget_ratios = []
+              for item in closed:
+                  budget = number(item.get("risk_budget"))
+                  planned = number(item.get("actual_planned_account_loss"))
+                  if budget and planned is not None:
+                      risk_budget_ratios.append(planned / budget)
+              trades = int(metrics.get("trades") or 0)
+              expectancy = float(metrics.get("expectancy_usdt") or 0.0)
+              pf_raw = metrics.get("profit_factor")
+              pf = float(pf_raw) if pf_raw is not None else None
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and len(unique_keys) == len(episode_keys)
+                  and geometry_valid == len(closed)
+                  and risk_valid == len(closed)
+              )
+              if trades == 0:
+                  classification = "NO_INDEPENDENT_OPPORTUNITY"
+              elif clean and expectancy > 0.0 and (pf is None or pf > 1.0):
+                  classification = "COST_AFTER_POSITIVE"
+              elif clean:
+                  classification = "COST_AFTER_LOGIC_FAILURE"
+              else:
+                  classification = "EXECUTION_OR_INDEPENDENCE_FAILURE"
+              rows[label] = {
+                  "produced": True,
+                  "exit_code": exit_code,
+                  "untouched": untouched,
+                  "calendar_days": days,
+                  "classification": classification,
+                  "clean": clean,
+                  "metrics": {
+                      key: metrics.get(key)
+                      for key in (
+                          "starting_nav",
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "min_equity",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "gross_profit",
+                          "gross_loss",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "active_days",
+                          "largest_winner_share",
+                          "position_counts_by_symbol",
+                          "daily_returns",
+                          "rolling_windows",
+                          "gate_checks",
+                          "gate_pass",
+                      )
+                  },
+                  "opportunity_and_state": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "base_absorption_states",
+                          "inventory_context_edges",
+                          "inventory_episode_rejections",
+                          "inventory_context_not_ready",
+                          "inventory_context_rejection_counts",
+                          "inventory_selected_episode_keys",
+                          "inventory_edge_records",
+                          "selected_symbols",
+                          "unresolved_reason_counts",
+                      )
+                  },
+                  "execution": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "entry_submissions",
+                          "fill_invalidations",
+                          "fill_beyond_bracket_invalidations",
+                          "fill_risk_budget_invalidations",
+                          "order_rejections",
+                          "entry_expirations",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "max_simultaneous_entry_intents",
+                      )
+                  },
+                  "closed_scenarios": len(closed),
+                  "unique_episode_keys": len(unique_keys),
+                  "actual_fill_geometry_valid": geometry_valid,
+                  "actual_fill_risk_valid": risk_valid,
+                  "max_actual_planned_loss_over_budget": (
+                      max(risk_budget_ratios) if risk_budget_ratios else None
+                  ),
+                  "trades_per_calendar_day": trades / days,
+              }
+
+          continuous = rows.get("continuous_30d", {})
+          metrics = continuous.get("metrics", {})
+          project_pass = (
+              continuous.get("produced") is True
+              and continuous.get("clean") is True
+              and float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+              and int(metrics.get("trades") or 0) >= 30
+              and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+              and float(metrics.get("max_drawdown") or 1.0) <= 0.20
+          )
+          untouched_positive = [
+              label
+              for label in ("untouched_week", "continuous_30d")
+              if rows.get(label, {}).get("classification") == "COST_AFTER_POSITIVE"
+          ]
+          if project_pass:
+              final_classification = "PROJECT_MINIMUM_PASS"
+          elif untouched_positive:
+              final_classification = "POSITIVE_COMPONENT_BUT_PROJECT_TARGET_MISSED"
+          elif any(
+              rows.get(label, {}).get("classification")
+              == "EXECUTION_OR_INDEPENDENCE_FAILURE"
+              for label in rows
+          ):
+              final_classification = "IMPLEMENTATION_OR_EXECUTION_FAILURE"
+          elif all(
+              rows.get(label, {}).get("classification")
+              == "NO_INDEPENDENT_OPPORTUNITY"
+              for label in ("untouched_week", "continuous_30d")
+          ):
+              final_classification = "STRUCTURAL_OPPORTUNITY_FAILURE"
+          else:
+              final_classification = "COST_AFTER_ALPHA_REJECTED"
+
+          verdict = {
+              "candidate": "candidate-55-inventory-release-absorption-v1",
+              "policy_changed_after_development": False,
+              "policy_changed_between_untouched_intervals": False,
+              "rows": rows,
+              "untouched_positive_intervals": untouched_positive,
+              "project_minimum_pass": project_pass,
+              "final_classification": final_classification,
+              "interpretation_contract": {
+                  "do_not_call_success_if": [
+                      "only development is positive",
+                      "gross price movement is positive but realized PnL is negative",
+                      "episode identifiers duplicate",
+                      "actual fill geometry or risk exceeds frozen contract",
+                      "thirty-day trades are below calendar days",
+                      "thirty-day geometric daily growth is below one percent",
+                  ],
+                  "next_research_if_rejected": (
+                      "inspect every context-qualified loss and no-trade state; "
+                      "separate wrong context, premature absorption transition, "
+                      "structural stop geometry, target reachability and opportunity density"
+                  ),
+              },
+          }
+          output = root / "inventory-release-absorption-v1-VERDICT.json"
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(verdict, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-inventory-release-absorption-v1-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/inventory-release-absorption-v1-*/**
+            artifacts/candidate-55/inventory-release-absorption-v1-VERDICT.json
+            .work/candidate-55-inventory-release-absorption-v1/**
+          if-no-files-found: warn
+          retention-days: 90
