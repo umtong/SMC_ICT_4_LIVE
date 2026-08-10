@@ -1,0 +1,74 @@
+name: candidate-55-actual-funding-transition-holdout
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-actual-funding-transition-holdout.yml"
+      - "research/candidate-55/actual_funding_reversal_transition_holdout.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-actual-funding-transition-holdout
+  cancel-in-progress: true
+
+jobs:
+  untouched-transition-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove holdout contract is frozen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51:research/candidate-55 uv run python - <<'PY'
+          import actual_funding_reversal_transition_holdout as policy
+          assert policy.HOLDOUT_START.isoformat() == "2026-07-07"
+          assert policy.HOLDOUT_END.isoformat() == "2026-07-30"
+          assert policy.DEVELOPMENT_WINDOWS[-1][1] == "2026-07-06"
+          assert policy.SOURCE_COMMIT == "027552726e08a41612cb4faeabb1abb052c06887"
+          assert policy.SYMBOLS == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          assert policy.FUNDING_LOOKBACK_EVENTS == 5
+          assert policy.RETURN_LOOKBACK_MINUTES == 120
+          assert policy.RECENT_RETURN_LOOKBACK_MINUTES == 60
+          assert policy.DECISION_INTERVAL_MINUTES == 240
+          assert policy.HOLD_MINUTES == 720
+          assert policy.MIN_ABS_FUNDING_BPS == 1.0
+          assert policy.MIN_IDIOSYNCRATIC_RETURN_BPS == 2.5
+          assert policy.PROJECT_ROUND_TRIP_COST_BPS == 20.0
+          print("untouched transition, structural invalidation and falsifier are frozen")
+          PY
+      - name: Run the one untouched July transition holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=research/candidate-51:research/candidate-55
+          uv run python research/candidate-55/actual_funding_reversal_transition_holdout.py \
+            --start 2026-07-07 --end 2026-07-30 \
+            --cache .cache/candidate-55-actual-funding-transition \
+            --output artifacts/candidate-55/actual-funding-transition-holdout-2026-07
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-actual-funding-transition-holdout-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/actual-funding-transition-holdout-2026-07/VERDICT.json
+            artifacts/candidate-55/actual-funding-transition-holdout-2026-07/decision_states.csv
+            artifacts/candidate-55/actual-funding-transition-holdout-2026-07/source_baseline_trades.csv
+            artifacts/candidate-55/actual-funding-transition-holdout-2026-07/confirmed_transition_trades.csv
+          if-no-files-found: warn
+          retention-days: 30
