@@ -1,0 +1,75 @@
+name: candidate-55-zaratustra-v15-derivative
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-derivative.yml"
+      - "research/candidate-55/strategy_zaratustra_v15_derivative.py"
+      - "research/candidate-55/run_zaratustra_v15_derivative.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-derivative
+  cancel-in-progress: true
+
+jobs:
+  derivative-state-account:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize V15 derivative-state policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_derivative.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove source geometry is frozen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from strategy import Candidate35Config
+          source = Candidate35Config(v15_derivative_mode="source_bb_short")
+          routed = Candidate35Config(v15_derivative_mode="derivative_sell_short")
+          for field in (
+              "zaratustra_source_stoploss",
+              "zaratustra_trailing_positive",
+              "zaratustra_trailing_offset",
+              "risk_fraction",
+          ):
+              assert getattr(source, field) == getattr(routed, field)
+          print("source entry-management-risk geometry frozen")
+          PY
+      - name: Run source versus derivative-led sell policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-55 uv run python research/candidate-55/run_zaratustra_v15_derivative.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-derivative-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-derivative-*
+            artifacts/candidate-55/zaratustra-v15-derivative-final-result.json
+          if-no-files-found: warn
+          retention-days: 30
