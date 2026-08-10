@@ -1,0 +1,61 @@
+name: candidate-51-fix-edtma-v33
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-fix-edtma-v33.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - name: Patch source ROI and exit lifecycle semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('research/candidate-51/strategy_edtma.py')
+          text = path.read_text()
+
+          old = '''        held = max(0, self.minute_index - self.position_open_minute)\n        roi = self._roi_threshold(held)\n        if roi > 0.0 and favourable_return >= roi:\n            self.diagnostics["edtma_roi_exits"] += 1\n            self._submit_exit(ts_event, "PUBLIC_ROI_EXIT", threshold_fraction=roi)\n            return\n'''
+          new = '''        held = max(0, self.minute_index - self.position_open_minute)\n        roi = self._roi_threshold(held)\n        current_return = side * (float(bar.close) - entry) / entry\n        roi_reached = (\n            held >= 1039 and current_return >= 0.0\n        ) or (\n            held < 1039 and roi > 0.0 and favourable_return >= roi\n        )\n        if roi_reached:\n            self.diagnostics["edtma_roi_exits"] += 1\n            self._submit_exit(\n                ts_event,\n                "PUBLIC_ROI_EXIT",\n                threshold_fraction=roi,\n                held_minutes=held,\n                current_return_fraction=current_return,\n                favourable_return_fraction=favourable_return,\n            )\n            return\n'''
+          if old not in text and new not in text:
+              raise RuntimeError('EDTMA ROI block not found')
+          text = text.replace(old, new)
+
+          text = text.replace(
+              '''                if len(candles) < period:\n                    return False, {}\n                atr = float(_ta._atr(candles, period)[-1])\n                level = max(float(item.high) for item in candles[-period:]) - atr * multiple\n''',
+              '''                if len(candles) < period + 1:\n                    return False, {}\n                atr = float(_ta._atr(candles, period)[-1])\n                if not math.isfinite(atr) or atr <= 0.0:\n                    return False, {}\n                level = max(float(item.high) for item in candles[-period:]) - atr * multiple\n''',
+          )
+          text = text.replace(
+              '''            if len(candles) < period:\n                return False, {}\n            atr = float(_ta._atr(candles, period)[-1])\n            level = min(float(item.low) for item in candles[-period:]) + atr * multiple\n''',
+              '''            if len(candles) < period + 1:\n                return False, {}\n            atr = float(_ta._atr(candles, period)[-1])\n            if not math.isfinite(atr) or atr <= 0.0:\n                return False, {}\n            level = min(float(item.low) for item in candles[-period:]) + atr * multiple\n''',
+          )
+
+          old = '''        super()._manage_open_position(ts_event)\n        if scenario.get("edtma_exit_driver") is None:\n            new_events = self.events[-2:]\n            if any(item.get("event_type") == "FORCED_DAYTRADE_EXIT" for item in new_events):\n                scenario["edtma_exit_driver"] = "FORCED_DAYTRADE_EXIT"\n'''
+          new = '''        before_events = len(self.events)\n        super()._manage_open_position(ts_event)\n        if scenario.get("edtma_exit_driver") is None:\n            new_events = self.events[before_events:]\n            if any(item.get("event_type") == "FORCED_DAYTRADE_EXIT" for item in new_events):\n                scenario["edtma_exit_driver"] = "FORCED_DAYTRADE_EXIT"\n                self._exit_pending = True\n'''
+          if old not in text and new not in text:
+              raise RuntimeError('EDTMA forced-exit block not found')
+          text = text.replace(old, new)
+          path.write_text(text)
+          PY
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/strategy_edtma.py
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: fix EDTMA lifecycle implementation"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
