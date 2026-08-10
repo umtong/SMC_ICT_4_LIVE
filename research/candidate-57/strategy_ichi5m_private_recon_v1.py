@@ -2,7 +2,7 @@
 
 Execution, matching, continuous NAV, one global slot, fees, adverse slippage,
 funding reserve and current-NAV 3% planned-loss sizing are inherited from the
-project's public-strategy shell.  This module adds only the reconstructed source
+project's public-strategy shell. This module adds only the reconstructed source
 state, source invalidation and declared tight-trailing option.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ from dataclasses import replace
 import math
 
 from router import ICHI5_STATE, _aggregate_complete, _arrays
+from strategy_base import SYMBOLS
 from strategy_picasso import (
     Candidate35Config as _PicassoConfig,
     Candidate35Strategy as _PicassoStrategy,
@@ -80,6 +81,7 @@ class Candidate35Strategy(_PicassoStrategy):
                 "ichi5_source_exit_mode": str(config.ichi5_source_exit_mode),
                 "ichi5_chikou_used": 0,
                 "ichi5_source_signal_exits": 0,
+                "ichi5_final_entry_blackouts": 0,
                 "ichi5_entry_changed_after_freeze": 0,
                 "ichi5_risk_changed_after_freeze": 0,
                 "ichi5_management_changed_after_freeze": 0,
@@ -161,8 +163,33 @@ class Candidate35Strategy(_PicassoStrategy):
             self.diagnostics["ichi5_source_signal_exits"] += after - before
 
     def _on_complete_universe_minute(self, ts_event: int) -> None:
+        # The reused shell accepts signals through the inclusive evaluation-end
+        # bar. Block only a flat account's final two completed minutes so a new
+        # entry cannot be left open after the last matching cycle. Existing
+        # positions and pending entries still pass to the shell for liquidation-
+        # aware reconciliation and forced evaluation-end closure.
+        open_symbols = [
+            symbol
+            for symbol in SYMBOLS
+            if not self.portfolio.is_flat(self.instrument_ids[symbol])
+        ]
+        final_cutoff = int(self.config.evaluation_end_ns) - 120_000_000_000
+        if (
+            not open_symbols
+            and not self.entry_pending
+            and ts_event >= final_cutoff
+        ):
+            self.minute_index += 1
+            self.diagnostics["complete_universe_minutes"] += 1
+            self._record_equity(ts_event)
+            self.diagnostics["ichi5_final_entry_blackouts"] += 1
+            return
+
         super()._on_complete_universe_minute(ts_event)
-        if self.current_scenario is not None and self.current_scenario.get("state") == ICHI5_STATE:
+        if (
+            self.current_scenario is not None
+            and self.current_scenario.get("state") == ICHI5_STATE
+        ):
             self.current_scenario.update(
                 {
                     "candidate": "candidate-57-private-ichi5m-recon-v1",
