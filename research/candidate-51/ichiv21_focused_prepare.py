@@ -88,7 +88,7 @@ def main() -> None:
             "reported_roi_win_rate": 0.943,
             "reported_exit_signal_exits": 234,
             "reported_exit_signal_win_rate": 0.145,
-            "identity_with_public_code_asserted": false,
+            "identity_with_public_code_asserted": False,
         },
         "intervals": list(PERIODS),
         "periods": PERIODS,
@@ -102,9 +102,6 @@ def main() -> None:
             "claimed dense winner set, and is the EMA-cross exit or source stop the removable loss engine?"
         ),
     }
-    # JSON has no lowercase boolean name in Python; set after construction so the
-    # source-clue uncertainty is explicit without treating a claim as evidence.
-    manifest["search_clue"]["identity_with_public_code_asserted"] = False
     (args.output / "MANIFEST.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
