@@ -1,0 +1,488 @@
+name: candidate-55-v13-sponsored-short-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-v13-sponsored-short-v1.yml"
+      - "research/candidate-55/strategy_v13_sponsored_short.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v13.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-v13-sponsored-short-v1
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 1
+
+      - name: Materialize reused V13 and Nautilus execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra_v13.py research/candidate-51/strategy_zaratustra_v13.py
+          cp research/candidate-55/strategy_v13_sponsored_short.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and compile contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from strategy import Candidate35Config, Candidate35Strategy
+          assert Candidate35Config is not None
+          assert Candidate35Strategy is not None
+          print("V13 sponsored short imports pass")
+          PY
+
+      - name: Freeze causal policy and comparison ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              base["strategy"].pop(key, None)
+          base["strategy"].update(
+              {
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 480,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+                  "zaratustra_variant": "source_short",
+                  "zaratustra_startup_30m_candles": 10,
+                  "zaratustra_rsi_period": 14,
+                  "zaratustra_di_period": 14,
+                  "zaratustra_bb_period": 20,
+                  "zaratustra_source_leverage": 10.0,
+                  "zaratustra_source_stoploss": 0.296,
+                  "zaratustra_trailing_positive": 0.010,
+                  "zaratustra_trailing_offset": 0.100,
+                  "zaratustra_emergency_target_fraction": 0.50,
+                  "v13_episode_lookback_minutes": 60,
+              }
+          )
+          work = Path(".work/candidate-55-v13-sponsored-short-v1")
+          work.mkdir(parents=True, exist_ok=True)
+          configs = {}
+          for mode in ("baseline_daytrade", "sponsored_daytrade"):
+              config = copy.deepcopy(base)
+              config["strategy"]["v13_sponsorship_mode"] = mode
+              path = work / f"{mode}.json"
+              path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+              configs[mode] = hashlib.sha256(path.read_bytes()).hexdigest()
+          manifest = {
+              "candidate": "candidate-55-v13-sponsored-short-v1",
+              "engine": "NautilusTrader BacktestNode",
+              "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "one_global_entry_or_position": True,
+              "current_nav_planned_loss_fraction": 0.03,
+              "research_prediction": {
+                  "problem": (
+                      "V13 source-short wins are frequent, but rare full-stop losses "
+                      "occur when a falling-price signal is liquidation/exhaustion "
+                      "rather than fresh downside sponsorship"
+                  ),
+                  "repair": [
+                      "completed 15m OI change above zero",
+                      "completed 5m premium change below zero",
+                      "completed 3m aggressor flow below zero",
+                      "one attempt per completed 60m swing-high episode",
+                      "thesis stale after one 8h funding cycle",
+                  ],
+                  "falsification": (
+                      "fresh periods remain negative after costs, valid full-stop "
+                      "losses are not reduced, or opportunity density collapses"
+                  ),
+              },
+              "economic_boundaries_not_fitted": {
+                  "oi_change_15m": 0.0,
+                  "premium_change_5m": 0.0,
+                  "flow_3m": 0.0,
+              },
+              "intervals": {
+                  "development_attribution": ["2026-05-01", "2026-05-30"],
+                  "fresh_week_not_found_in_repo_search": ["2024-02-05", "2024-02-11"],
+                  "fresh_30d_not_found_in_repo_search": ["2025-12-01", "2025-12-30"],
+              },
+              "policy_changed_after_any_interval": False,
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "config_sha256": configs,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Run baseline attribution and frozen sponsored policy
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-55-v13-sponsored-short-v1/status
+          run_case () {
+            mode="$1"
+            label="$2"
+            start="$3"
+            end="$4"
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-55-v13-sponsored-short-v1/${mode}.json" \
+              --start "$start" --end "$end" \
+              --cache .cache/candidate-55-v13-sponsored-short-v1 \
+              --output "artifacts/candidate-55/v13-sponsored-short-v1-${mode}-${label}" \
+              --workspace ".work/candidate-55-v13-sponsored-short-v1-${mode}-${label}"
+            echo "$?" > ".work/candidate-55-v13-sponsored-short-v1/status/${mode}-${label}.txt"
+          }
+          run_case baseline_daytrade development-2026-05 2026-05-01 2026-05-30
+          run_case sponsored_daytrade development-2026-05 2026-05-01 2026-05-30
+          run_case baseline_daytrade fresh-week-2024-02 2024-02-05 2024-02-11
+          run_case sponsored_daytrade fresh-week-2024-02 2024-02-05 2024-02-11
+          run_case sponsored_daytrade fresh-30d-2025-12 2025-12-01 2025-12-30
+          exit 0
+
+      - name: Write trade anatomy and verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-55")
+          cases = {
+              "baseline_development": (
+                  "baseline_daytrade",
+                  "development-2026-05",
+                  30,
+                  False,
+              ),
+              "sponsored_development": (
+                  "sponsored_daytrade",
+                  "development-2026-05",
+                  30,
+                  False,
+              ),
+              "baseline_fresh_week": (
+                  "baseline_daytrade",
+                  "fresh-week-2024-02",
+                  7,
+                  True,
+              ),
+              "sponsored_fresh_week": (
+                  "sponsored_daytrade",
+                  "fresh-week-2024-02",
+                  7,
+                  True,
+              ),
+              "sponsored_fresh_30d": (
+                  "sponsored_daytrade",
+                  "fresh-30d-2025-12",
+                  30,
+                  True,
+              ),
+          }
+
+          def numeric(value):
+              if isinstance(value, (int, float)):
+                  return float(value)
+              if value is None:
+                  return None
+              match = re.search(
+                  r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)",
+                  str(value).replace(",", ""),
+              )
+              return float(match.group(0)) if match else None
+
+          rows = {}
+          for name, (mode, label, days, fresh) in cases.items():
+              prefix = f"v13-sponsored-short-v1-{mode}-{label}"
+              case_root = root / prefix
+              mp = case_root / "metrics.json"
+              dp = case_root / "strategy_diagnostics.json"
+              cp = case_root / "closed_scenarios.json"
+              status_path = (
+                  Path(".work/candidate-55-v13-sponsored-short-v1/status")
+                  / f"{mode}-{label}.txt"
+              )
+              exit_code = (
+                  int(status_path.read_text().strip())
+                  if status_path.is_file() and status_path.read_text().strip()
+                  else None
+              )
+              if not mp.is_file() or not dp.is_file():
+                  rows[name] = {
+                      "produced": False,
+                      "mode": mode,
+                      "fresh": fresh,
+                      "exit_code": exit_code,
+                      "classification": "IMPLEMENTATION_OR_DATA_BLOCKED",
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              closed = json.loads(cp.read_text()) if cp.is_file() else []
+              pnls = [numeric(item.get("realized_pnl")) for item in closed]
+              pnls = [value for value in pnls if value is not None]
+              full_losses = [
+                  item
+                  for item in closed
+                  if (numeric(item.get("realized_pnl")) or 0.0)
+                  <= -0.80 * (numeric(item.get("risk_budget")) or float("inf"))
+              ]
+              stale_exits = [
+                  item
+                  for item in closed
+                  if (
+                      int(item.get("closed_ts_event") or 0)
+                      - int(item.get("episode_ts") or 0)
+                  )
+                  >= 479 * 60 * 1_000_000_000
+              ]
+              episode_keys = [
+                  str(item.get("swing_episode_key"))
+                  for item in closed
+                  if item.get("swing_episode_key")
+              ]
+              unique_keys = sorted(set(episode_keys))
+              geometry_valid = sum(
+                  item.get("actual_fill_geometry_valid") is True
+                  for item in closed
+              )
+              risk_valid = sum(
+                  item.get("actual_fill_risk_valid") is True
+                  for item in closed
+              )
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and len(unique_keys) == len(episode_keys)
+                  and geometry_valid == len(closed)
+                  and risk_valid == len(closed)
+              )
+              trades = int(metrics.get("trades") or 0)
+              expectancy = float(metrics.get("expectancy_usdt") or 0.0)
+              pf_value = metrics.get("profit_factor")
+              pf = float(pf_value) if pf_value is not None else None
+              if trades == 0:
+                  classification = "NO_INDEPENDENT_OPPORTUNITY"
+              elif clean and expectancy > 0.0 and (pf is None or pf > 1.0):
+                  classification = "COST_AFTER_POSITIVE"
+              elif clean:
+                  classification = "COST_AFTER_LOGIC_FAILURE"
+              else:
+                  classification = "EXECUTION_OR_INDEPENDENCE_FAILURE"
+              rows[name] = {
+                  "produced": True,
+                  "mode": mode,
+                  "fresh": fresh,
+                  "exit_code": exit_code,
+                  "calendar_days": days,
+                  "classification": classification,
+                  "clean": clean,
+                  "metrics": {
+                      key: metrics.get(key)
+                      for key in (
+                          "starting_nav",
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "min_equity",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "gross_profit",
+                          "gross_loss",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "active_days",
+                          "largest_winner_share",
+                          "position_counts_by_symbol",
+                          "daily_returns",
+                          "rolling_windows",
+                          "gate_checks",
+                          "gate_pass",
+                      )
+                  },
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "raw_v13_short_candidates",
+                          "sponsored_short_candidates",
+                          "sponsored_short_selected",
+                          "causal_episode_rejections",
+                          "sponsorship_feature_stale",
+                          "oi_build_rejections",
+                          "premium_down_rejections",
+                          "persistent_sell_flow_rejections",
+                          "selected_swing_episode_keys",
+                          "selected_symbols",
+                          "entry_submissions",
+                          "zaratustra_trailing_activations",
+                          "zaratustra_trailing_exits",
+                          "time_exits",
+                          "fill_invalidations",
+                          "fill_risk_budget_invalidations",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                      )
+                  },
+                  "closed_scenarios": len(closed),
+                  "unique_episode_keys": len(unique_keys),
+                  "full_planned_loss_outcomes": len(full_losses),
+                  "stale_or_480m_exits": len(stale_exits),
+                  "actual_fill_geometry_valid": geometry_valid,
+                  "actual_fill_risk_valid": risk_valid,
+                  "pnl_sign_counts": dict(
+                      Counter(
+                          "WIN" if value > 0.0 else "LOSS" if value < 0.0 else "FLAT"
+                          for value in pnls
+                      )
+                  ),
+                  "trades_per_calendar_day": trades / days,
+              }
+
+          dev_base = rows.get("baseline_development", {})
+          dev_sponsored = rows.get("sponsored_development", {})
+          week_base = rows.get("baseline_fresh_week", {})
+          week_sponsored = rows.get("sponsored_fresh_week", {})
+          month = rows.get("sponsored_fresh_30d", {})
+          month_metrics = month.get("metrics", {})
+          project_pass = (
+              month.get("produced") is True
+              and month.get("clean") is True
+              and float(month_metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+              and int(month_metrics.get("trades") or 0) >= 30
+              and float(month_metrics.get("expectancy_usdt") or 0.0) > 0.0
+              and float(month_metrics.get("max_drawdown") or 1.0) <= 0.20
+          )
+          fresh_positive = [
+              name
+              for name in ("sponsored_fresh_week", "sponsored_fresh_30d")
+              if rows.get(name, {}).get("classification") == "COST_AFTER_POSITIVE"
+          ]
+          if project_pass:
+              final_classification = "PROJECT_MINIMUM_PASS"
+          elif len(fresh_positive) == 2:
+              final_classification = "ROBUST_POSITIVE_COMPONENT_BUT_PROJECT_TARGET_MISSED"
+          elif fresh_positive:
+              final_classification = "REGIME_CONDITIONAL_POSITIVE_COMPONENT"
+          elif any(
+              rows.get(name, {}).get("classification")
+              == "EXECUTION_OR_INDEPENDENCE_FAILURE"
+              for name in rows
+          ):
+              final_classification = "IMPLEMENTATION_OR_EXECUTION_FAILURE"
+          elif all(
+              rows.get(name, {}).get("classification")
+              == "NO_INDEPENDENT_OPPORTUNITY"
+              for name in ("sponsored_fresh_week", "sponsored_fresh_30d")
+          ):
+              final_classification = "STRUCTURAL_OPPORTUNITY_FAILURE"
+          else:
+              final_classification = "COST_AFTER_ALPHA_REJECTED"
+
+          verdict = {
+              "candidate": "candidate-55-v13-sponsored-short-v1",
+              "policy_changed_after_development": False,
+              "policy_changed_between_fresh_intervals": False,
+              "rows": rows,
+              "fresh_positive_intervals": fresh_positive,
+              "project_minimum_pass": project_pass,
+              "final_classification": final_classification,
+              "causal_attribution": {
+                  "development_full_loss_change": (
+                      int(dev_sponsored.get("full_planned_loss_outcomes") or 0)
+                      - int(dev_base.get("full_planned_loss_outcomes") or 0)
+                  ),
+                  "development_expectancy_change": (
+                      float(dev_sponsored.get("metrics", {}).get("expectancy_usdt") or 0.0)
+                      - float(dev_base.get("metrics", {}).get("expectancy_usdt") or 0.0)
+                  ),
+                  "fresh_week_full_loss_change": (
+                      int(week_sponsored.get("full_planned_loss_outcomes") or 0)
+                      - int(week_base.get("full_planned_loss_outcomes") or 0)
+                  ),
+                  "fresh_week_expectancy_change": (
+                      float(week_sponsored.get("metrics", {}).get("expectancy_usdt") or 0.0)
+                      - float(week_base.get("metrics", {}).get("expectancy_usdt") or 0.0)
+                  ),
+              },
+              "interpretation_contract": {
+                  "success_requires": [
+                      "positive cost-after expectancy in both fresh intervals",
+                      "clean actual-fill geometry and risk",
+                      "unique causal episode ownership",
+                      "thirty-day target and frequency evaluated on one continuous account",
+                  ],
+                  "do_not_rescue_by": [
+                      "changing zero boundaries",
+                      "deleting a losing symbol",
+                      "widening source stop",
+                      "extending the 480-minute stale thesis",
+                      "selecting a different period after seeing outcomes",
+                  ],
+              },
+          }
+          output = root / "v13-sponsored-short-v1-VERDICT.json"
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(verdict, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-v13-sponsored-short-v1-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/v13-sponsored-short-v1-*/**
+            artifacts/candidate-55/v13-sponsored-short-v1-VERDICT.json
+            .work/candidate-55-v13-sponsored-short-v1/**
+          if-no-files-found: warn
+          retention-days: 90
