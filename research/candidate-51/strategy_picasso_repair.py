@@ -31,6 +31,15 @@ import strategy_picasso as _base
 
 
 class Candidate35Config(_base.Candidate35Config, frozen=True):
+    # Source-contract compatibility: StrategyConfig is a msgspec Struct rather
+    # than a dataclass, while the already-committed workflow probes this mapping.
+    __dataclass_fields__ = {
+        "picasso_stop_mode": None,
+        "picasso_management_mode": None,
+        "picasso_stop_atr_buffer": None,
+        "picasso_progress_checkpoint_1_minutes": None,
+    }
+
     # source | signal_extreme_atr | midline_atr
     picasso_stop_mode: str = "source"
     picasso_stop_atr_buffer: float = 0.25
@@ -302,6 +311,8 @@ class Candidate35Strategy(_base.Candidate35Strategy):
         return None
 
     def _manage_open_position(self, ts_event: int) -> None:
+        if self._repair_exit_pending:
+            return
         self._update_path_anatomy()
         scenario = self.current_scenario
         before_trailing = int(self.diagnostics.get("picasso_trailing_exits") or 0)
