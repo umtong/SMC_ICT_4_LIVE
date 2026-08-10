@@ -1,0 +1,105 @@
+name: candidate-55-zaratustra-v15-regime
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-regime.yml"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/v15_regime_state.py"
+      - "research/candidate-55/v15_regime_episode_forensics.py"
+      - "research/candidate-55/strategy_zaratustra_v15_regime.py"
+      - "research/candidate-55/run_zaratustra_v15_repair.py"
+      - "research/candidate-55/run_zaratustra_v15_regime.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-regime
+  cancel-in-progress: true
+
+jobs:
+  causal-regime-experiment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize fixed V15 regime policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/v15_regime_state.py research/candidate-51/v15_regime_state.py
+          cp research/candidate-55/strategy_zaratustra_v15_regime.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove fixed state contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import BarObservation
+          from v15_regime_state import (
+              RegimeThresholds,
+              TRENDING_DOWN_CLEAN,
+              TRENDING_UP_CLEAN,
+              map_label,
+              regime_series,
+          )
+
+          th = RegimeThresholds()
+          assert map_label(return_eff=-0.2, range_eff=0.2, efficiency=0.8, adx=35.0, thresholds=th) == TRENDING_DOWN_CLEAN
+          assert map_label(return_eff=0.2, range_eff=0.2, efficiency=0.8, adx=35.0, thresholds=th) == TRENDING_UP_CLEAN
+          bars = []
+          close = 200.0
+          for index in range(100):
+              nxt = close - 0.5
+              bars.append(
+                  BarObservation(
+                      (index + 1) * 30 * 60 * 1_000_000_000,
+                      close,
+                      close + 0.05,
+                      nxt - 0.05,
+                      nxt,
+                      1000.0 + index,
+                  )
+              )
+              close = nxt
+          snapshots = regime_series(bars, period=21)
+          assert snapshots[-1].ready
+          assert snapshots[-1].label == TRENDING_DOWN_CLEAN
+          assert snapshots[-1].observed_time_ns == bars[-1].ts_event
+          print("fixed composite state is causal and classifies clean directional travel")
+          PY
+      - name: Run result-blind forensics and one structural account A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-55 uv run python research/candidate-55/run_zaratustra_v15_regime.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-regime-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-regime-*
+            artifacts/candidate-55/zaratustra-v15-regime-final-result.json
+          if-no-files-found: warn
+          retention-days: 30
