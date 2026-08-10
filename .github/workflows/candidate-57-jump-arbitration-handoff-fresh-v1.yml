@@ -1,0 +1,158 @@
+name: candidate-57-jump-arbitration-handoff-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-arbitration-handoff-fresh-v1.yml"
+      - "research/candidate-57/JUMP_ARBITRATION_HANDOFF_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/jump_arbitration_router.py"
+      - "research/candidate-57/jump_boundary_handoff_strategy.py"
+      - "research/candidate-57/jump_arbitration_handoff_fresh_campaign.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-arbitration-handoff-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  factorial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble frozen 2x2 policy over reused Nautilus shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/JUMP_ARBITRATION_HANDOFF_FRESH_V1_FREEZE.md
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
+          cp research/candidate-57/jump_arbitration_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_base.py
+          cp research/candidate-57/jump_boundary_handoff_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_base.py \
+            research/candidate-57/jump_arbitration_handoff_fresh_campaign.py
+
+      - name: Install locked environment and prove factor contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          import os
+          import router
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert "jump_boundary_handoff_enabled" in fields, fields
+          assert "jump_boundary_handoff_expiry_minutes" in fields, fields
+          assert hasattr(Candidate35Strategy, "_maybe_freeze_boundary_handoff")
+          assert hasattr(Candidate35Strategy, "_maybe_submit_boundary_handoff")
+
+          os.environ["C57_JUMP_ARBITRATION_MODE"] = "source_max_z"
+          assert router.arbitration_mode() == "source_max_z"
+          os.environ["C57_JUMP_ARBITRATION_MODE"] = "least_qualifying_z"
+          assert router.arbitration_mode() == "least_qualifying_z"
+          try:
+              os.environ["C57_JUMP_ARBITRATION_MODE"] = "unfrozen_third_policy"
+              router.arbitration_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen third jump arbitration accepted")
+
+          router_source = inspect.getsource(router.route_universe)
+          assert "jump_effective_arbitration_score" in router_source
+          assert "score=effective_score" in router_source
+          strategy_source = inspect.getsource(
+              Candidate35Strategy._maybe_submit_boundary_handoff
+          )
+          assert "portfolio.is_flat" in strategy_source
+          assert "entry_pending" in strategy_source
+          print("two arbitration modes and flat-only deferred handoff verified")
+          PY
+
+      - name: Run four frozen cells sequentially
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-arbitration-handoff-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/jump_arbitration_handoff_fresh_campaign.py \
+            2>&1 | tee .work/candidate-57-jump-arbitration-handoff-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/router_jump_base.py research/candidate-51/strategy_jump_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-arbitration-handoff-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist jump arbitration and handoff causal evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete compact experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-arbitration-handoff-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/jump-arbitration-handoff-fresh-v1
+            .work/candidate-57-jump-arbitration-handoff-fresh-v1-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "campaign or end-flat validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
