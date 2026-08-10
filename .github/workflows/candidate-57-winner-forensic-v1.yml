@@ -1,4 +1,4 @@
-name: candidate-57-winner-forensic-v1
+name: candidate-57-winner-forensic-v2
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-57-winner-forensic-v1
+  group: candidate-57-winner-forensic-v2
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Materialize exact source and forensic runner
+      - name: Materialize exact source and patched forensic runner
         shell: bash
         run: |
           set -euo pipefail
@@ -41,18 +41,29 @@ jobs:
           import base64
           import gzip
           import hashlib
+          import re
           from pathlib import Path
 
           encoded = Path("research/candidate-57/winner_episode_forensic_v1.py.gz.b64")
-          target = Path("research/candidate-57/.run_winner_forensic_v1.py")
+          target = Path("research/candidate-57/.run_winner_forensic_v2.py")
           raw = gzip.decompress(base64.b64decode("".join(encoded.read_text(encoding="ascii").split())))
           expected = "2ea23521dacb45744d8d8f24b8a6e30af3e7efcc31131ece23eef2b07e9b713a"
           actual = hashlib.sha256(raw).hexdigest()
           if actual != expected:
               raise RuntimeError(f"forensic payload hash mismatch: {actual} != {expected}")
-          compile(raw.decode("utf-8"), str(target), "exec")
-          target.write_bytes(raw)
-          print(f"materialized {target} sha256={actual}")
+          text = raw.decode("utf-8")
+          # The first run proved the Nautilus replay but exposed a forensic-only
+          # null-handling defect for source episodes with no actual trade.
+          text, count = re.subn(
+              r'([A-Za-z_][A-Za-z0-9_]*)\.get\("actual", \{\}\)',
+              r'(\1.get("actual") or {})',
+              text,
+          )
+          if count < 1:
+              raise RuntimeError("expected actual-null forensic patch site not found")
+          compile(text, str(target), "exec")
+          target.write_text(text, encoding="utf-8")
+          print(f"materialized {target} source_sha256={actual} null_patch_sites={count}")
           PY
 
       - name: Install locked project environment
@@ -64,19 +75,19 @@ jobs:
           uv sync --locked
           PYTHONPATH=research/candidate-51 uv run python -m compileall -q \
             research/candidate-51 \
-            research/candidate-57/.run_winner_forensic_v1.py
+            research/candidate-57/.run_winner_forensic_v2.py
 
       - name: Replay and decompose every causal episode
         id: forensic
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-winner-forensic-v1-console
+          mkdir -p .work/candidate-57-winner-forensic-v2-console
           set -o pipefail
           PYTHONPATH=research/candidate-51 \
             C57_START=2025-03-03 C57_END=2025-03-09 \
-            uv run python research/candidate-57/.run_winner_forensic_v1.py \
-            2>&1 | tee .work/candidate-57-winner-forensic-v1-console/console.log
+            uv run python research/candidate-57/.run_winner_forensic_v2.py \
+            2>&1 | tee .work/candidate-57-winner-forensic-v2-console/console.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -100,7 +111,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f research/candidate-57/.run_winner_forensic_v1.py
+          rm -f research/candidate-57/.run_winner_forensic_v2.py
           git restore research/candidate-51/router.py research/candidate-51/strategy.py
           git config user.name "candidate-57-research-bot"
           git config user.email "candidate-57-research-bot@users.noreply.github.com"
@@ -108,7 +119,7 @@ jobs:
           if [[ -d research/candidate-57/evidence/winner-forensic-v1 ]]; then
             git add -f research/candidate-57/evidence/winner-forensic-v1
             if ! git diff --cached --quiet; then
-              git commit --no-gpg-sign -m "candidate57: persist Winner15m causal-episode forensic evidence"
+              git commit --no-gpg-sign -m "candidate57: persist complete Winner15m causal-episode forensic evidence"
               for attempt in 1 2 3 4 5; do
                 git fetch origin research/candidate-57
                 git rebase origin/research/candidate-57
@@ -124,10 +135,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-57-winner-forensic-v1-evidence
+          name: candidate-57-winner-forensic-v2-evidence
           path: |
             research/candidate-57/evidence/winner-forensic-v1
-            .work/candidate-57-winner-forensic-v1-console/console.log
+            .work/candidate-57-winner-forensic-v2-console/console.log
           if-no-files-found: warn
           retention-days: 14
 
