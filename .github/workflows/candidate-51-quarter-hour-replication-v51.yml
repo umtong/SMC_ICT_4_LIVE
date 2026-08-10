@@ -1,0 +1,181 @@
+name: candidate-51-quarter-hour-replication-v51
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-quarter-hour-replication-v51.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-quarter-hour-replication-v51
+  cancel-in-progress: true
+
+jobs:
+  replication:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {label: rep_2024_11, start: 2024-11-10, end: 2024-11-23, regime: era_2024}
+          - {label: rep_2024_12, start: 2024-12-01, end: 2024-12-14, regime: era_2024}
+          - {label: rep_2025_01, start: 2025-01-05, end: 2025-01-18, regime: era_2025_h1}
+          - {label: rep_2025_03, start: 2025-03-01, end: 2025-03-14, regime: era_2025_h1}
+          - {label: rep_2025_04, start: 2025-04-01, end: 2025-04-14, regime: era_2025_h1}
+          - {label: rep_2025_05, start: 2025-05-01, end: 2025-05-14, regime: era_2025_h1}
+          - {label: rep_2025_07, start: 2025-07-01, end: 2025-07-14, regime: era_2025_h2}
+          - {label: rep_2025_08, start: 2025-08-01, end: 2025-08-14, regime: era_2025_h2}
+          - {label: rep_2025_09, start: 2025-09-01, end: 2025-09-14, regime: era_2025_h2}
+          - {label: rep_2025_10b, start: 2025-10-15, end: 2025-10-28, regime: era_2025_postshock}
+          - {label: rep_2025_11, start: 2025-11-01, end: 2025-11-14, regime: era_2025_postshock}
+          - {label: rep_2025_12, start: 2025-12-01, end: 2025-12-14, regime: era_2025_postshock}
+          - {label: rep_2026_01, start: 2026-01-01, end: 2026-01-14, regime: era_2026}
+          - {label: rep_2026_03, start: 2026-03-01, end: 2026-03-14, regime: era_2026}
+          - {label: rep_2026_04, start: 2026-04-01, end: 2026-04-14, regime: era_2026}
+          - {label: rep_2026_07, start: 2026-07-01, end: 2026-07-14, regime: era_2026}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize and verify frozen replication source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-51/quarter_hour_replication.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/quarter_hour_replication.py
+          echo "ec7003e9f042128c84ea95588eb52c31532dc50a5cc2eef5500724eb2758e91f  research/candidate-51/quarter_hour_replication.py" \
+            | sha256sum --check
+          python -m py_compile \
+            research/candidate-51/quarter_hour_anatomy.py \
+            research/candidate-51/quarter_hour_replication.py
+      - name: Install verified research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Run untouched frozen replication window
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/quarter-hour-replication-v51/${{ matrix.period.label }}/${{ matrix.symbol }}"
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/quarter_hour_replication.py run \
+            --symbol "${{ matrix.symbol }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" \
+            --regime "${{ matrix.period.regime }}" \
+            --cache ".cache/candidate-51-quarter-hour-replication-v51/${{ matrix.symbol }}" \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-quarter-hour-replication-v51-${{ matrix.period.label }}-${{ matrix.symbol }}
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 9
+          path: artifacts/candidate-51/quarter-hour-replication-v51/${{ matrix.period.label }}/${{ matrix.symbol }}/result.json
+
+  aggregate:
+    if: always()
+    needs: replication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-quarter-hour-replication-v51-*
+          path: downloaded
+      - name: Aggregate frozen global-slot evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 64
+          cat research/candidate-51/quarter_hour_replication.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/quarter_hour_replication.py
+          echo "ec7003e9f042128c84ea95588eb52c31532dc50a5cc2eef5500724eb2758e91f  research/candidate-51/quarter_hour_replication.py" \
+            | sha256sum --check
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/quarter-hour-replication-v51
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/quarter_hour_replication.py aggregate \
+            --results-root downloaded \
+            --expected-runs 64 \
+            --output "$output"
+          test -s "$output/REPLICATION.json"
+          test -s "$output/REPLICATION.md"
+          test -s "$output/SUMMARY.csv"
+          test -s "$output/SELECTED_EVENTS.csv"
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/quarter-hour-replication-v51")
+          files = {}
+          for name in ("REPLICATION.json", "REPLICATION.md", "SUMMARY.csv", "SELECTED_EVENTS.csv"):
+              payload = (root / name).read_bytes()
+              files[name] = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+          manifest = {
+              "schema_version": 1,
+              "candidate": "candidate-51-quarter-hour-replication-v51",
+              "source_sha256": "ec7003e9f042128c84ea95588eb52c31532dc50a5cc2eef5500724eb2758e91f",
+              "discovery_evidence": "quarter-hour-v49",
+              "source_runs": 64,
+              "calendar_days": 224,
+              "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "purpose": "frozen untouched causal replication before NautilusTrader promotion",
+              "files": files,
+          }
+          (root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-quarter-hour-replication-v51-evidence
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/quarter-hour-replication-v51/REPLICATION.json
+            artifacts/candidate-51/quarter-hour-replication-v51/REPLICATION.md
+            artifacts/candidate-51/quarter-hour-replication-v51/SUMMARY.csv
+            artifacts/candidate-51/quarter-hour-replication-v51/SELECTED_EVENTS.csv
+            artifacts/candidate-51/quarter-hour-replication-v51/MANIFEST.json
+      - name: Commit source and compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/quarter-hour-replication-v51
+          destination=research/candidate-51/evidence/quarter-hour-replication-v51
+          mkdir -p "$destination"
+          cp "$source/REPLICATION.json" "$destination/REPLICATION.json"
+          cp "$source/REPLICATION.md" "$destination/REPLICATION.md"
+          cp "$source/SUMMARY.csv" "$destination/SUMMARY.csv"
+          cp "$source/SELECTED_EVENTS.csv" "$destination/SELECTED_EVENTS.csv"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git rm research/candidate-51/quarter_hour_replication.py.gz.b64.part*
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add research/candidate-51/quarter_hour_replication.py "$destination"
+          git commit -m "candidate51: record frozen quarter-hour replication"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
