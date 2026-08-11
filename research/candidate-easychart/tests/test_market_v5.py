@@ -87,7 +87,9 @@ class TestDirectionalChangePivotDetector(unittest.TestCase):
         # ordering is unknown, so the new 105 high must not be confirmed now.
         same_bar = detector.on_candle(bar(5, 100.5, 105.0, 99.8, 100.0), 5)
         self.assertIsNone(same_bar)
-        later = detector.on_candle(bar(6, 100.0, 102.5, 100.0, 101.0), 6)
+        # The next fully observed bar closes far enough below the prior 105
+        # extreme to confirm it using the pre-bar ATR threshold.
+        later = detector.on_candle(bar(6, 100.0, 102.5, 99.5, 100.0), 6)
         self.assertIsNotNone(later)
         assert later is not None
         self.assertEqual(later.side, "HIGH")
