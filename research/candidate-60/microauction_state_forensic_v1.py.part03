@@ -1,0 +1,90 @@
+        result.update(
+            _return_path(
+                frame,
+                event_index,
+                proposed_side,
+                float(decision.objective_reference),
+                float(decision.stop_reference),
+            )
+        )
+    elif proposed_side in (-1, 1):
+        # Near-state controls do not always have geometry.  Their directional
+        # return is still measured, while objective/stop fields remain missing.
+        result.update(
+            _return_path(
+                frame,
+                event_index,
+                proposed_side,
+                math.nan,
+                math.nan,
+            )
+        )
+    else:
+        result.update(_return_path(frame, event_index, 0, math.nan, math.nan))
+    return result
+
+
+def _describe(values: Iterable[float]) -> dict[str, Any]:
+    data = np.asarray([float(v) for v in values if _finite(v)], dtype=float)
+    if data.size == 0:
+        return {"n": 0}
+    absolute_sum = float(np.abs(data).sum())
+    largest_share = float(np.abs(data).max() / absolute_sum) if absolute_sum > 0.0 else 0.0
+    ordered = np.sort(data)
+    trim_best = ordered[:-1] if ordered.size > 1 else np.asarray([], dtype=float)
+    trim_worst = ordered[1:] if ordered.size > 1 else np.asarray([], dtype=float)
+    return {
+        "n": int(data.size),
+        "mean": float(data.mean()),
+        "median": float(np.median(data)),
+        "minimum": float(data.min()),
+        "maximum": float(data.max()),
+        "positive_rate": float((data > 0.0).mean()),
+        "largest_absolute_share": largest_share,
+        "trim_best_mean": float(trim_best.mean()) if trim_best.size else None,
+        "trim_worst_mean": float(trim_worst.mean()) if trim_worst.size else None,
+    }
+
+
+def _summarize_group(frame: pd.DataFrame) -> dict[str, Any]:
+    result: dict[str, Any] = {"events": int(len(frame))}
+    if frame.empty:
+        return result
+    result["symbols"] = int(frame["symbol"].nunique())
+    result["by_symbol"] = {
+        str(symbol): {
+            "n": int(len(group)),
+            "primary_net_mean": float(group[f"net_{PRIMARY_HORIZON}m_bps"].mean()),
+            "primary_net_median": float(group[f"net_{PRIMARY_HORIZON}m_bps"].median()),
+        }
+        for symbol, group in frame.groupby("symbol", sort=True)
+    }
+    for horizon in HORIZONS:
+        result[f"gross_{horizon}m_bps"] = _describe(frame[f"gross_{horizon}m_bps"])
+        result[f"net_{horizon}m_bps"] = _describe(frame[f"net_{horizon}m_bps"])
+        result[f"opposite_net_{horizon}m_bps"] = _describe(
+            frame[f"opposite_net_{horizon}m_bps"]
+        )
+        result[f"mfe_{horizon}m_bps"] = _describe(frame[f"mfe_{horizon}m_bps"])
+        result[f"mae_{horizon}m_bps"] = _describe(frame[f"mae_{horizon}m_bps"])
+        result[f"objective_hit_rate_{horizon}m"] = float(
+            frame[f"objective_hit_{horizon}m"].astype(bool).mean()
+        )
+        result[f"stop_hit_rate_{horizon}m"] = float(
+            frame[f"stop_hit_{horizon}m"].astype(bool).mean()
+        )
+    geometry = frame[frame["actual_geometry_valid"].astype(bool)]
+    result["actual_geometry_valid_share"] = float(len(geometry) / len(frame))
+    result["objective_exceeds_cost_share"] = float(
+        frame["objective_exceeds_round_trip_cost"].astype(bool).mean()
+    )
+    result["objective_gross_bps"] = _describe(frame["objective_gross_bps"])
+    result["objective_net_bps"] = _describe(frame["objective_net_bps"])
+    result["planned_loss_cost_inclusive_bps"] = _describe(
+        frame["planned_loss_cost_inclusive_bps"]
+    )
+    result["cost_aware_reward_r"] = _describe(frame["cost_aware_reward_r"])
+    return result
+
+
+def _collapse_global_episodes(events: pd.DataFrame) -> pd.DataFrame:
