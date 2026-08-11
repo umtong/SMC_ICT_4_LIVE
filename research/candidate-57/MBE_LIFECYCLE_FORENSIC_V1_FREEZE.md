@@ -6,9 +6,11 @@ BTC/ETH/SOL/XRP arbitration, stop, ROI ladder, costs, fills and current-NAV 3%
 risk sizing remain unchanged.
 
 The problem to explain is stable across prior evidence: many small ROI wins are
-offset by a few large bracket/structural losses. Collision count alone is not
-a stable state variable: exactly-two was strong in April 2026 and weak in March
-2024, while three-plus showed the opposite sign.
+offset by a smaller set of negative bracket, horizon and other non-ROI exits.
+The loss population is therefore **all negative completed MBE trades**, not
+only the rare near-full-stop tail. Collision count alone is not a stable state
+variable: exactly-two was strong in April 2026 and weak in March 2024, while
+three-plus showed the opposite sign.
 
 ## Fixed observation clock
 
@@ -39,9 +41,9 @@ interpretation.
 
 ## Predeclared causal predictions
 
-If the large losses are failures of the mean-reversion lifecycle rather than
-unavoidable stop noise, then before the final stop-like outcome they should
-show a repeated combination of:
+If the negative non-ROI trades are failures of the mean-reversion lifecycle
+rather than unavoidable noise, then before their final outcome they should show
+a repeated combination of:
 
 1. no meaningful favorable excursion after costs;
 2. increasingly adverse R;
@@ -50,11 +52,13 @@ show a repeated combination of:
 
 ROI winners should instead show early favorable excursion and source-state
 resolution. Separation must appear at source-defined ages in both consumed
-months, not only in one month or one topology count.
+months, not only in one month, one topology count or one extreme stop.
 
 A future invalidation policy is authorized only when one simple categorical
-state transition explains a majority of stop-like losses in both months while
-preserving at least 80% of ROI winners observable at the same horizon. No
-threshold sweep, best-horizon selection, symbol exception or outcome-derived
-score is allowed. If the groups do not separate causally, MBE lifecycle repair
-is rejected and the project moves to a different family.
+state transition explains a majority of **all negative non-ROI trades** in
+both months while preserving at least 80% of ROI winners at the same horizon.
+Each month must contain at least five negative trades for the comparison. The
+rare near-full-stop subset remains a reported severity diagnostic but is not
+the denominator. No threshold sweep, best-price filter, symbol exception or
+outcome-derived score is allowed. If the groups do not separate causally, MBE
+lifecycle repair is rejected and the project moves to a different family.
