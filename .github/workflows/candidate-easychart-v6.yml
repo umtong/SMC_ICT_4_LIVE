@@ -1,0 +1,141 @@
+name: candidate-easychart-v6-directional-liquidity-screen
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v6.py"
+      - "research/candidate-easychart/screen_v6.py"
+      - "research/candidate-easychart/compare_v6.py"
+      - "research/candidate-easychart/tests/test_market_v6.py"
+      - ".github/workflows/candidate-easychart-v6.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v6-directional-liquidity-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v6-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and directional-liquidity contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run directional-liquidity scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 180 "$ROOT/screen.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/screen.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart v6 failed::$message"; fi; exit "$status"' EXIT
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 60
+            --cache "$CACHE"
+            --cost-profile role
+            --min-body-ratio 2.0
+            --min-previous-body-atr 0.10
+          )
+
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 15 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-fakeout \
+            --output "$ROOT/dc1-range15-trap"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 15 --context-dc-atr 2.0 --micro-dc-atr 1.0 \
+            --disable-fakeout \
+            --output "$ROOT/dc2-range15-trap"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 30 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-fakeout \
+            --output "$ROOT/dc1-range30-trap"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 5 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-fakeout \
+            --output "$ROOT/dc1-range5-trap"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 15 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-trap \
+            --output "$ROOT/dc1-range15-fakeout"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 15 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --output "$ROOT/dc1-range15-both"
+          python research/candidate-easychart/screen_v6.py "${common[@]}" \
+            --context-minutes 15 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-fakeout --require-fvg \
+            --output "$ROOT/dc1-range15-trap-fvg"
+          python research/candidate-easychart/screen_v6.py \
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 60 \
+            --cache "$CACHE" --cost-profile taker \
+            --min-body-ratio 2.0 --min-previous-body-atr 0.10 \
+            --context-minutes 15 --context-dc-atr 1.0 --micro-dc-atr 1.0 \
+            --disable-fakeout \
+            --output "$ROOT/dc1-range15-trap-taker"
+
+          variants=(
+            dc1-range15-trap
+            dc2-range15-trap
+            dc1-range30-trap
+            dc1-range5-trap
+            dc1-range15-fakeout
+            dc1-range15-both
+            dc1-range15-trap-fvg
+            dc1-range15-trap-taker
+          )
+          python research/candidate-easychart/compare_v6.py \
+            --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          variants=(
+            dc1-range15-trap
+            dc2-range15-trap
+            dc1-range30-trap
+            dc1-range5-trap
+            dc1-range15-fakeout
+            dc1-range15-both
+            dc1-range15-trap-fvg
+            dc1-range15-trap-taker
+          )
+          for variant in "${variants[@]}"; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/setups.csv"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v6-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v6-development/**
+          if-no-files-found: warn
+          retention-days: 90
