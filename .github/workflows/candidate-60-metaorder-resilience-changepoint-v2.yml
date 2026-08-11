@@ -1,0 +1,224 @@
+name: candidate-60-metaorder-resilience-changepoint-v2
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-metaorder-resilience-changepoint-v2.yml"
+      - "research/candidate-60/METAORDER_RESILIENCE_CHANGEPOINT_V2_FREEZE.md"
+      - "research/candidate-60/metaorder_resilience_changepoint_v2.py.gz.b64.part*"
+      - "research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-metaorder-resilience-changepoint-v2
+  cancel-in-progress: true
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SOURCE_COMMIT: f7787095f98b27f31fa3766bda13a94ae350269d
+      VENDOR: .work/candidate-60-metaorder-resilience-changepoint-v2/vendor
+      C60_RESEARCH_ROOT: .work/candidate-60-metaorder-resilience-changepoint-v2/vendor/research
+      C60_V1_SOURCE: ${{ github.workspace }}/research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py
+      SCRIPT: .work/candidate-60-metaorder-resilience-changepoint-v2/metaorder_resilience_changepoint_v2.py
+      OUT: research/candidate-60/evidence/metaorder-resilience-changepoint-v2
+      CACHE: .cache/candidate-60-metaorder-resilience-changepoint-v2
+      CONSOLE: .work/candidate-60-metaorder-resilience-changepoint-v2-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize immutable feature source and frozen V2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_COMMIT"
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p "$VENDOR" "$(dirname "$SCRIPT")"
+          git archive "$SOURCE_COMMIT" \
+            research/candidate-05 \
+            research/candidate-16 \
+            research/candidate-51 \
+            | tar -x -C "$VENDOR"
+          cat research/candidate-60/metaorder_resilience_changepoint_v2.py.gz.b64.part* \
+            | base64 -d | gzip -d > "$SCRIPT"
+          test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = \
+            "b6e53f2f9f82e8ae972dbd81582c2050e5669762fc88a397e06fc8900730359b"
+          test "$(sha256sum "$C60_V1_SOURCE" | awk '{print $1}')" = \
+            "7dc2c1da597c518bc427ec2869d03623f363cbf212cf90eb319aca127885b71a"
+
+      - name: Verify environment and frozen causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$SCRIPT" \
+            "$C60_V1_SOURCE" \
+            "$C60_RESEARCH_ROOT/candidate-51/run.py" \
+            "$C60_RESEARCH_ROOT/candidate-05/features.py"
+          C60_RESEARCH_ROOT="$C60_RESEARCH_ROOT" \
+          C60_V1_SOURCE="$C60_V1_SOURCE" \
+          python - <<'PY'
+          import importlib.util
+          import os
+          import sys
+          from pathlib import Path
+          script = Path(os.environ["SCRIPT"])
+          spec = importlib.util.spec_from_file_location("c60_metaorder_resilience_v2", script)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module._self_test()
+          assert module.MIN_RUN_AGE == 7
+          assert module.MIN_CUMULATIVE_IMPACT_BPS == 20.0
+          assert module.CUSUM_ALLOWANCE_Z == 0.10
+          assert module.CUSUM_THRESHOLD_Z == 2.50
+          assert module.MIN_MONITOR_OBSERVATIONS == 3
+          assert module.MIN_BARS_SINCE_EXTREME == 2
+          assert module.MIN_RECLAIM_FRACTION == 0.10
+          assert module.RESILIENCE_WINDOW == 3
+          assert module.MAX_CONFIRMATION_MINUTES == 30
+          assert module.STOP_BUFFER_ATR == 0.15
+          assert module.ROUND_TRIP_COST_BPS == 20.0
+          assert module.MIN_COST_AWARE_RR == 1.0
+          assert module.MAX_HOLD_MINUTES == 120
+          assert module.GLOBAL_EPISODE_MINUTES == 3
+          assert module.RISK_FRACTION == 0.03
+          freeze = Path("research/candidate-60/METAORDER_RESILIENCE_CHANGEPOINT_V2_FREEZE.md").read_text()
+          for text in (
+              "2026-04-13",
+              "2026-04-19",
+              "2026-08-03",
+              "2026-08-09",
+              "one-sided standardized CUSUM",
+              "volume-weighted typical-price centroid",
+              "0.15 × ATR(30)",
+              "UNRESOLVED / NO TRADE",
+          ):
+              assert text in freeze
+          print("exact V1 reuse, change-point, resilience and untouched reservation verified")
+          PY
+
+      - name: Run consumed-development stopping-time diagnostic
+        id: study
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUT" "$CONSOLE"
+          set -o pipefail
+          C60_RESEARCH_ROOT="$C60_RESEARCH_ROOT" \
+          C60_V1_SOURCE="$C60_V1_SOURCE" \
+            python "$SCRIPT" \
+              --start 2026-04-13 \
+              --end 2026-04-19 \
+              --cache "$CACHE" \
+              --output "$OUT" \
+              2>&1 | tee "$CONSOLE/console.log"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify attribution evidence without a performance gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "metaorder resilience V2 study failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root = Path("research/candidate-60/evidence/metaorder-resilience-changepoint-v2")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-metaorder-resilience-changepoint-v2"
+          assert summary["interval"] == {"start": "2026-04-13", "end": "2026-04-19"}
+          assert summary["source_reuse"]["parent_detector_reimplemented"] is False
+          assert summary["source_reuse"]["parent_detector_called_directly"] is True
+          assert summary["interpretation_contract"]["reserved_fresh_consumed"] is False
+          assert summary["interpretation_contract"]["all_v1_provisionals_are_attributed"] is True
+          policy = summary["frozen_policy"]
+          assert policy["minimum_run_age"] == 7
+          assert policy["minimum_cumulative_impact_bps"] == 20.0
+          assert policy["round_trip_cost_bps"] == 20.0
+          assert policy["risk_fraction"] == 0.03
+          for name in (
+              "provisional_states.csv",
+              "confirmed_candidates.csv",
+              "geometry_eligible.csv",
+              "global_episodes_3m.csv",
+              "one_slot_events.csv",
+          ):
+              assert (root / name).is_file()
+          provisionals = pd.read_csv(root / "provisional_states.csv")
+          assert len(provisionals) == 7
+          assert provisionals["status"].ne("MONITORING").all()
+          source_count = sum(
+              int(value.get("exhaustion_candidates", 0))
+              for value in summary["v1_funnels"].values()
+          )
+          assert source_count == len(provisionals)
+          confirmed = pd.read_csv(root / "confirmed_candidates.csv")
+          if not confirmed.empty:
+              assert (confirmed["confirmation_index"] > confirmed["provisional_index"]).all()
+              assert (confirmed["entry_index"] == confirmed["confirmation_index"] + 1).all()
+              assert confirmed["opposite_flow"].astype(bool).all()
+              assert confirmed["book_resilient"].astype(bool).all()
+              assert (confirmed["retrace_fraction"] >= 0.10).all()
+              assert (confirmed["bars_since_extreme"] >= 2).all()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact development evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist metaorder resilience V2 evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete development artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-metaorder-resilience-changepoint-v2
+          path: |
+            research/candidate-60/evidence/metaorder-resilience-changepoint-v2
+            .work/candidate-60-metaorder-resilience-changepoint-v2-console/console.log
+          if-no-files-found: warn
+          retention-days: 90
