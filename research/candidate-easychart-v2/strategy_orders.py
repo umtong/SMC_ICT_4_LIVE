@@ -59,14 +59,13 @@ class EasyChartOrderMixin:
             entry_trigger_price=entry_price,
             sl_trigger_price=instrument.make_price(plan.stop),
             tp_price=instrument.make_price(plan.target),
-            # A retest is naturally a limit-if-touched event. This is also the
-            # official Nautilus pattern for an emulated bracket: the entry is
-            # released only after the boundary is touched, while stop and target
-            # remain native contingent children managed by the framework.
+            # A retest is a venue-native limit-if-touched event. Local emulation
+            # needs quotes or trades, while this research intentionally supplies
+            # only 1m bars; therefore the BacktestExchange owns the trigger path.
             entry_order_type=OrderType.LIMIT_IF_TOUCHED,
             entry_post_only=False,
             tp_post_only=False,
-            emulation_trigger=TriggerType.DEFAULT,
+            emulation_trigger=TriggerType.NO_TRIGGER,
         )
         self.active_plan = plan
         self.active_instrument_id = instrument_id
