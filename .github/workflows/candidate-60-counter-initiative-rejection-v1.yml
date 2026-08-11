@@ -1,0 +1,167 @@
+name: candidate-60-counter-initiative-rejection-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-counter-initiative-rejection-v1.yml"
+      - "research/candidate-60/COUNTER_INITIATIVE_REJECTION_V1_FREEZE.md"
+      - "research/candidate-60/counter_initiative_rejection_diagnostic_v1.b64.part*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-counter-initiative-rejection-v1
+  cancel-in-progress: true
+
+jobs:
+  failed-counter-initiative-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reassemble and verify frozen diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/COUNTER_INITIATIVE_REJECTION_V1_FREEZE.md
+          cat research/candidate-60/counter_initiative_rejection_diagnostic_v1.b64.part* \
+            > .work-counter-rejection.b64
+          test "$(wc -c < .work-counter-rejection.b64)" = "10152"
+          test "$(sha256sum .work-counter-rejection.b64 | awk '{print $1}')" = \
+            "a4c3ab9d78c6703b97abac9b0fb525803f12aedd9102989b2aec2cfd2a41a935"
+          base64 -d .work-counter-rejection.b64 \
+            > .work-counter-rejection.py.gz
+          test "$(sha256sum .work-counter-rejection.py.gz | awk '{print $1}')" = \
+            "6f3d0e8bc6708a8db6a6df7803fa007b0b58111823005841e9f6656e665b8de1"
+          gzip -dc .work-counter-rejection.py.gz \
+            > research/candidate-60/counter_initiative_rejection_diagnostic.py
+          test "$(sha256sum research/candidate-60/counter_initiative_rejection_diagnostic.py | awk '{print $1}')" = \
+            "93414c7a5d5ffadbfa6e692ec965063ad5b4d682405048a2c72c4241a3c807a3"
+          python -m py_compile \
+            research/candidate-60/counter_initiative_rejection_diagnostic.py
+
+      - name: Install locked environment and prove causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python - <<'PY'
+          import importlib.util
+          import inspect
+          from pathlib import Path
+          import sys
+
+          path = Path("research/candidate-60/counter_initiative_rejection_diagnostic.py")
+          spec = importlib.util.spec_from_file_location("c60_counter_rejection", path)
+          assert spec is not None and spec.loader is not None
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          blocks = inspect.getsource(module.block_frame)
+          assert '.abs().shift(1).rolling' in blocks
+
+          proposed = inspect.getsource(module.build_proposed_events)
+          assert 'counter_ts = parent_ts + pd.Timedelta(minutes=PARENT_MINUTES)' in proposed
+          assert 'reject_ts = counter_ts + pd.Timedelta(minutes=COUNTER_MINUTES)' in proposed
+          assert 'entry_ts = reject_ts + pd.Timedelta(minutes=REJECTION_MINUTES)' in proposed
+          assert 'common_return = float(np.median(parent_returns))' in proposed
+          assert 'common_flow = float(np.median(parent_flows))' in proposed
+          assert 'int(leader_counter["price_direction"]) != common_direction' in proposed
+          assert 'int(counter["price_direction"]) != -common_direction' in proposed
+          assert 'float(counter["return_ratio"]) <= 1.0' in proposed
+          assert 'float(counter["flow_ratio"]) <= 1.0' in proposed
+          assert 'int(np.sign(reject_return)) != common_direction' in proposed
+          assert 'int(np.sign(reject_flow)) != common_direction' in proposed
+          assert 'counter_mid = 0.5 * (float(counter["open"]) + float(counter["close"]))' in proposed
+          assert '"direction": common_direction' in proposed
+
+          control = inspect.getsource(module.build_peer_control_events)
+          assert 'direction = -initial_direction' in control
+          assert 'midpoint_reclaimed' in control
+
+          assert module.PRIMARY_HORIZON == 15
+          assert module.ROUND_TRIP_COST_BPS == 20.0
+          main_source = inspect.getsource(module.main)
+          assert main_source.index('development, proposed_events, control_events = run_stage(DEVELOPMENT)') < main_source.index('if decision["eligible"]:') < main_source.index('run_stage(POLICY_FRESH)')
+          print("prior-only factor, persistent leader, strong counter-burst, separate rejection, midpoint reclaim, next-open, peer-only control and untouched-data contracts verified")
+          PY
+
+      - name: Run development and conditional policy-fresh diagnostic
+        id: diagnostic
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-counter-initiative-rejection-v1-console
+          set -o pipefail
+          uv run python \
+            research/candidate-60/counter_initiative_rejection_diagnostic.py \
+            2>&1 | tee \
+            .work/candidate-60-counter-initiative-rejection-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact mechanism evidence and remove rejected upload path
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .work-counter-rejection.b64 \
+            .work-counter-rejection.py.gz \
+            research/candidate-60/counter_initiative_rejection_diagnostic.py
+          git rm -f --ignore-unmatch \
+            research/candidate-60/counter_initiative_rejection_diagnostic_v1.py.gz.b64
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/counter-initiative-rejection-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+          fi
+          if ! git diff --cached --quiet; then
+            git commit --no-gpg-sign -m \
+              "candidate60: persist failed counter-initiative evidence"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-60
+              git rebase origin/research/candidate-60
+              if git push origin HEAD:research/candidate-60; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-counter-initiative-rejection-v1
+          path: |
+            research/candidate-60/evidence/counter-initiative-rejection-v1
+            .work/candidate-60-counter-initiative-rejection-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce diagnostic validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.diagnostic.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "counter-initiative rejection diagnostic failed; status=$status"
+            exit "${status:-1}"
+          fi
