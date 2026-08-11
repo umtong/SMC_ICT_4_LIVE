@@ -6,7 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-60-microauction-state-forensic-v1.yml"
       - "research/candidate-60/MICROAUCTION_STATE_FORENSIC_V1_FREEZE.md"
-      - "research/candidate-60/microauction_state_forensic_v1.py.gz.b64"
+      - "research/candidate-60/microauction_state_forensic_v1.py.part*"
   workflow_dispatch:
 
 permissions:
@@ -48,8 +48,8 @@ jobs:
           git fetch --no-tags origin "$SOURCE_COMMIT"
           test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
           mkdir -p "$(dirname "$SCRIPT")" "$VENDOR"
-          base64 -d research/candidate-60/microauction_state_forensic_v1.py.gz.b64 \
-            | gzip -d > "$SCRIPT"
+          cat research/candidate-60/microauction_state_forensic_v1.py.part* > "$SCRIPT"
+          test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = "35fa17288f54d5412fad888240e986bf45cd933214927a7b3a0577fd81dc420b"
           git archive "$SOURCE_COMMIT" \
             research/candidate-05 \
             research/candidate-16 \
