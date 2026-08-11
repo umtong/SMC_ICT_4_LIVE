@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import unittest
-from domain import Candle, CostAssumptions, Side, TradePlan, detect_easychart_order_block, size_for_fixed_risk
+from domain import Candle, CostAssumptions, LiquidityPool, Side, TradePlan, detect_easychart_order_block, select_structural_target, size_for_fixed_risk
 
 class TestDomain(unittest.TestCase):
     def candle(self,o,h,l,c,t): return Candle(t,t+1,o,h,l,c)
@@ -20,6 +20,16 @@ class TestDomain(unittest.TestCase):
         self.assertLessEqual(planned,3000); self.assertGreater(q,0); self.assertGreater(per,2)
     def test_rr_below_one_rejected(self):
         with self.assertRaises(ValueError): TradePlan("p","c","BTCUSDT","x",Side.LONG,1,100,98,101,0.5,"s","t",99,100,98,2)
+    def test_first_structural_objective_below_one_r_rejects_trade(self):
+        pools = [
+            LiquidityPool("near", "HIGH", 101.5, 0, 1, 5),
+            LiquidityPool("far", "HIGH", 110.0, 0, 1, 15),
+        ]
+        target = select_structural_target(
+            side=Side.LONG, entry=100.0, stop=98.0, pools=pools, min_gross_rr=1.0,
+        )
+        self.assertIsNone(target)
+
     def test_risk_fraction_cannot_be_softened_or_increased(self):
         plan=TradePlan("p","c","BTCUSDT","x",Side.LONG,1,100,98,104,2,"s","t",99,100,98,2)
         with self.assertRaises(ValueError): size_for_fixed_risk(nav=100000,risk_fraction=.02,plan=plan,costs=CostAssumptions(),size_increment="0.001")
