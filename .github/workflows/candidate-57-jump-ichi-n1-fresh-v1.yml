@@ -1,0 +1,201 @@
+name: candidate-57-jump-ichi-n1-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-ichi-n1-fresh-v1.yml"
+      - "research/candidate-57/JUMP_ICHI_N1_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/router_jump_least_z_v1.py"
+      - "research/candidate-57/router_jump_ichi_n1_v1.py"
+      - "research/candidate-57/strategy_jump_ichi_n1_v1.py"
+      - "research/candidate-57/jump_ichi_n1_fresh_v1.py"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_fast_v2.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py"
+      - "research/candidate-57/trade_ledger_forensics_v2.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/strategy_picasso.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-ichi-n1-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble frozen Jump/Ichi N-to-1 policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/JUMP_ICHI_N1_FRESH_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_impl.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
+          cp research/candidate-57/router_jump_least_z_v1.py research/candidate-51/router_jump_impl.py
+          cp research/candidate-57/router_jump_ichi_n1_v1.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_v2_base.py
+          cp research/candidate-57/strategy_ichi_v2_fast_v2.py research/candidate-51/strategy_ichi_fast_base.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_source_reference.py
+          cp research/candidate-57/strategy_jump_ichi_n1_v1.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/router_jump_impl.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_fast_base.py \
+            research/candidate-51/strategy_jump_source_reference.py \
+            research/candidate-57/trade_ledger_forensics_v2.py \
+            research/candidate-57/jump_ichi_n1_fresh_v1.py
+
+      - name: Install locked environment and prove frozen source roles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python - <<'PY'
+          import inspect
+          import jump_ichi_n1_fresh_v1 as campaign
+          import router
+          import router_jump_impl
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_ichi_fast_base import Candidate35Strategy as IchiFast
+          from strategy_jump_source_reference import Candidate35Strategy as JumpSource
+
+          assert issubclass(Candidate35Strategy, IchiFast)
+          fields = set(Candidate35Config.__struct_fields__)
+          required = {
+              "integration_mode", "signal_start_ns", "signal_end_ns",
+              "jump_timeframe_minutes", "jump_threshold_sigma",
+              "jump_volatility_window", "jump_stop_mode",
+              "jump_protection_mode", "jump_protection_activation_r",
+              "jump_protection_escape_r", "ichi_side_mode",
+              "ichi_family_max_hold_minutes",
+          }
+          assert required.issubset(fields), required - fields
+          assert campaign.SIGNAL_START.isoformat() == "2024-02-01"
+          assert campaign.SIGNAL_END.isoformat() == "2024-02-29"
+          assert campaign.SIGNAL_DAYS == 29
+
+          arbitration = inspect.getsource(router_jump_impl.route_universe)
+          assert 'jump_selection_mode="source"' in arbitration
+          assert 'score=-absolute_z' in arbitration
+          assert "taker" not in arbitration.lower()
+          assert "outcome" not in arbitration.lower()
+
+          routing = inspect.getsource(Candidate35Strategy._on_complete_universe_minute)
+          assert 'family = "jump"' in routing
+          assert 'elif ichi_actionable:' in routing
+          assert 'self.diagnostics["jump_priority_boundaries"]' in routing
+          dispatch = inspect.getsource(Candidate35Strategy._manage_open_position)
+          assert "_JumpStrategy._manage_open_position" in dispatch
+          management = inspect.getsource(JumpSource._manage_open_position)
+          for token in (
+              "JUMP_TRANSIENT_BE_ARMED",
+              "JUMP_TRANSIENT_ESCAPE_CONFIRMED",
+              "JUMP_PROTECTION_EXIT",
+              "SOURCE_HORIZON",
+          ):
+              assert token in management, token
+          assert router.ICHI_STATE != router.JUMP_REVERSION_STATE
+          assert router.ichi_route_universe is not router.jump_route_universe
+          print("frozen Jump/Ichi source roles, least-z arbitration and one-slot policy verified")
+          PY
+
+      - name: Run all three accounts on the untouched February window
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-ichi-n1-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/jump_ichi_n1_fresh_v1.py \
+            2>&1 | tee .work/candidate-57-jump-ichi-n1-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/router_jump_impl.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_fast_base.py \
+            research/candidate-51/strategy_jump_source_reference.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-ichi-n1-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh Jump Ichi N-to-1 evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-ichi-n1-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/jump-ichi-n1-fresh-v1
+            artifacts/candidate-57-jump-ichi-n1-fresh-v1
+            .work/candidate-57-jump-ichi-n1-fresh-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "Jump/Ichi N-to-1 campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
