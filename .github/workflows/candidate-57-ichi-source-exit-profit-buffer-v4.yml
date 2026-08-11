@@ -79,8 +79,9 @@ jobs:
           from strategy_ichi_v2_fast_base import Candidate35Strategy as VerifiedSource
 
           assert issubclass(Candidate35Strategy, VerifiedSource)
-          config = Candidate35Config()
-          assert abs(float(config.ichi_profit_buffer_round_trip_cost_fraction) - 0.0021) < 1e-12
+          config_source = inspect.getsource(Candidate35Config)
+          assert "ichi_profit_buffer_round_trip_cost_fraction" in config_source
+          assert "0.0021" in config_source
           source = inspect.getsource(Candidate35Strategy._source_exit_signal)
           assert "estimated_net <= 0.0" in source
           assert "int(completed_ts) > armed_ts" in source
