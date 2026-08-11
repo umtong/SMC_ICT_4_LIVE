@@ -1,0 +1,188 @@
+name: candidate-57-mbe-collision-topology-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-mbe-collision-topology-fresh-v1.yml"
+      - "research/candidate-57/MBE_COLLISION_TOPOLOGY_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/router_mbe_collision_topology_v1.py"
+      - "research/candidate-57/router_ichi_mbe_topology_v1.py"
+      - "research/candidate-57/strategy_mbe_topology_fast_v1.py"
+      - "research/candidate-57/mbe_collision_topology_fresh_v1.py"
+      - "research/candidate-57/evidence/ichi-mbe-n1-fresh-v1/cases/mbe_only.json"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_mbe_n1_v1.py"
+      - "research/candidate-57/forensic_sources/mbe2_router.py"
+      - "research/candidate-57/trade_ledger_forensics_v2.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/strategy_picasso.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-mbe-collision-topology-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  topology:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble unchanged MBE source and topology partition
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/MBE_COLLISION_TOPOLOGY_FRESH_V1_FREEZE.md
+          test -f research/candidate-57/evidence/ichi-mbe-n1-fresh-v1/cases/mbe_only.json
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_impl.py
+          cp research/candidate-57/forensic_sources/mbe2_router.py research/candidate-51/router_mbe_base.py
+          cp research/candidate-57/router_mbe_collision_topology_v1.py research/candidate-51/router_mbe_topology_impl.py
+          cp research/candidate-57/router_ichi_mbe_topology_v1.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_impl.py
+          cp research/candidate-57/strategy_ichi_mbe_n1_v1.py research/candidate-51/strategy_ichi_mbe_base.py
+          cp research/candidate-57/strategy_mbe_topology_fast_v1.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_base.py \
+            research/candidate-51/router_mbe_topology_impl.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/strategy_ichi_impl.py \
+            research/candidate-51/strategy_ichi_mbe_base.py \
+            research/candidate-57/trade_ledger_forensics_v2.py \
+            research/candidate-57/mbe_collision_topology_fresh_v1.py
+
+      - name: Install locked environment and prove frozen topology contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python - <<'PY'
+          import inspect
+          import os
+          import mbe_collision_topology_fresh_v1 as campaign
+          import router
+          import router_mbe_topology_impl as topology
+          from strategy import Candidate35Strategy
+          from strategy_ichi_mbe_base import Candidate35Strategy as SourcePolicy
+
+          assert issubclass(Candidate35Strategy, SourcePolicy)
+          for mode in ("ge2_control", "exact2", "ge3plus"):
+              os.environ["C57_MBE_TOPOLOGY_MODE"] = mode
+              assert topology.topology_mode() == mode
+              assert router.mbe_topology_mode() == mode
+          try:
+              os.environ["C57_MBE_TOPOLOGY_MODE"] = "outcome_best"
+              topology.topology_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen topology mode accepted")
+          os.environ["C57_MBE_TOPOLOGY_MODE"] = "ge2_control"
+
+          source = inspect.getsource(topology.route_universe)
+          assert "raw_count == 2" in inspect.getsource(topology._keep)
+          assert "raw_count >= 3" in inspect.getsource(topology._keep)
+          assert "base.route_universe" in source
+          assert "mbe_outcome_filter_used" in source
+          assert "pnl" not in source.lower()
+          wrapper = inspect.getsource(Candidate35Strategy.__init__)
+          assert "maxlen=1_000" in wrapper
+          assert campaign.PARITY_START.isoformat() == "2026-04-01"
+          assert campaign.PARITY_END.isoformat() == "2026-04-30"
+          assert campaign.FRESH_START.isoformat() == "2024-03-01"
+          assert campaign.FRESH_END.isoformat() == "2024-03-31"
+          print("frozen MBE topology partition and parity-first contract verified")
+          PY
+
+      - name: Prove April parity, then run untouched March topology cells
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe-collision-topology-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/mbe_collision_topology_fresh_v1.py \
+            2>&1 | tee .work/candidate-57-mbe-collision-topology-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_base.py \
+            research/candidate-51/router_mbe_topology_impl.py \
+            research/candidate-51/strategy_ichi_impl.py \
+            research/candidate-51/strategy_ichi_mbe_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/mbe-collision-topology-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh MBE topology evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete topology evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-mbe-collision-topology-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/mbe-collision-topology-fresh-v1
+            artifacts/candidate-57-mbe-collision-topology-fresh-v1
+            .work/candidate-57-mbe-collision-topology-fresh-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "MBE topology campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
