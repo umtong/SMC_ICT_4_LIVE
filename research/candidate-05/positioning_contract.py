@@ -4,6 +4,13 @@ Official five-minute metrics archives are checksum-verified and delayed by one
 full metrics interval before they become observable to the strategy.  This
 module only enriches the observational feature file; it does not match orders,
 compute PnL, or maintain account state.
+
+Adjacent official daily archives occasionally overlap at a boundary.  Exact
+repeats are harmless.  When the same timestamp carries different values,
+selecting by file order, averaging, or preferring a later archive could import
+an ex-post revision.  Such timestamps are therefore quarantined completely;
+the as-of join may use only an earlier unambiguous observation within its
+existing ten-minute maximum age.  Every quarantine is written to an audit file.
 """
 from __future__ import annotations
 
@@ -77,22 +84,66 @@ def _read_metrics(path: Path) -> pd.DataFrame:
     raw["metrics_observed_time"] = _as_utc_nanoseconds(
         raw["create_time"] + pd.Timedelta(minutes=5),
     )
-    return raw[["metrics_observed_time", *_METRICS_COLUMNS]].copy()
+    raw["_metrics_archive"] = path.name
+    return raw[
+        ["metrics_observed_time", *_METRICS_COLUMNS, "_metrics_archive"]
+    ].copy()
+
+
+def _combined_metrics_conflicts(metrics: pd.DataFrame) -> list[dict[str, Any]]:
+    """Describe official archive-boundary disagreements without choosing a row."""
+    frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
+    duplicated = frame["metrics_observed_time"].duplicated(keep=False)
+    records: list[dict[str, Any]] = []
+    if not duplicated.any():
+        return records
+    for timestamp, group in frame.loc[duplicated].groupby(
+        "metrics_observed_time",
+        sort=False,
+    ):
+        conflicts = [
+            column
+            for column in _METRICS_COLUMNS
+            if group[column].nunique(dropna=False) > 1
+        ]
+        if not conflicts:
+            continue
+        rows: list[dict[str, Any]] = []
+        for _, row in group.iterrows():
+            rows.append(
+                {
+                    "archive": str(row.get("_metrics_archive", "unknown")),
+                    "values": {
+                        column: float(row[column])
+                        for column in _METRICS_COLUMNS
+                    },
+                }
+            )
+        records.append(
+            {
+                "metrics_observed_time": pd.Timestamp(timestamp).isoformat(),
+                "conflicting_columns": conflicts,
+                "rows": rows,
+                "resolution": "discard-all-conflicting-rows",
+            }
+        )
+    return records
 
 
 def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Collapse identical daily-boundary observations and reject conflicts.
+    """Collapse exact repeats and quarantine conflicting boundary observations.
 
-    Binance daily metrics archives can repeat the same five-minute observation
-    at an adjacent file boundary.  An exact duplicate carries no new information
-    and is normalized to one row.  Conflicting values at the same timestamp are
-    an evidence-integrity failure and are never selected by file order.
+    Exact duplicates carry no new information and collapse to one row.
+    Conflicting values are all removed.  This deliberately sacrifices one
+    observation instead of selecting an archive revision that might not have
+    been knowable at the observation timestamp.
     """
     frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
     duplicated = frame["metrics_observed_time"].duplicated(keep=False)
     if not duplicated.any():
         return frame.reset_index(drop=True)
 
+    conflicting_timestamps: list[pd.Timestamp] = []
     for timestamp, group in frame.loc[duplicated].groupby(
         "metrics_observed_time",
         sort=False,
@@ -103,10 +154,11 @@ def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
             if group[column].nunique(dropna=False) > 1
         ]
         if conflicts:
-            raise RuntimeError(
-                "conflicting combined metrics observation at "
-                f"{timestamp}: {conflicts}",
-            )
+            conflicting_timestamps.append(pd.Timestamp(timestamp))
+    if conflicting_timestamps:
+        frame = frame.loc[
+            ~frame["metrics_observed_time"].isin(conflicting_timestamps)
+        ].copy()
     return frame.drop_duplicates("metrics_observed_time", keep="last").reset_index(
         drop=True,
     )
@@ -122,7 +174,10 @@ def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
     frame["oi_change_5m"] = frame["sum_open_interest"].pct_change(1, fill_method=None)
     frame["oi_change_15m"] = frame["sum_open_interest"].pct_change(3, fill_method=None)
     frame["oi_change_30m"] = frame["sum_open_interest"].pct_change(6, fill_method=None)
-    frame["oi_value_change_15m"] = frame["sum_open_interest_value"].pct_change(3, fill_method=None)
+    frame["oi_value_change_15m"] = frame["sum_open_interest_value"].pct_change(
+        3,
+        fill_method=None,
+    )
     frame["top_position_ratio_change_15m"] = frame[
         "sum_toptrader_long_short_ratio"
     ].pct_change(3, fill_method=None)
@@ -161,7 +216,9 @@ def load_range(
         evidence.append(item)
         day += timedelta(days=1)
 
-    metrics = _positioning_features(pd.concat(metric_frames, ignore_index=True))
+    combined_metrics = pd.concat(metric_frames, ignore_index=True)
+    conflict_records = _combined_metrics_conflicts(combined_metrics)
+    metrics = _positioning_features(combined_metrics)
     features = pd.read_csv(feature_path, compression="infer")
     features["feature_observed_time"] = _as_utc_nanoseconds(
         pd.to_datetime(
@@ -193,8 +250,20 @@ def load_range(
         & joined["metrics_age_seconds"].ge(0.0)
         & joined["metrics_age_seconds"].le(600.0)
     )
-    joined = joined.drop(columns=["feature_observed_time", "metrics_observed_time"])
+    joined = joined.drop(
+        columns=[
+            "feature_observed_time",
+            "metrics_observed_time",
+            "_metrics_archive",
+        ],
+        errors="ignore",
+    )
     joined.to_csv(feature_path, index=False, compression="gzip")
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "positioning_conflicts.json").write_text(
+        json.dumps(conflict_records, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     (output / "raw_evidence.json").write_text(
         json.dumps([asdict(item) for item in evidence], indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
