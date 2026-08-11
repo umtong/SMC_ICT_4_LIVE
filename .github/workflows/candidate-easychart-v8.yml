@@ -1,0 +1,134 @@
+name: candidate-easychart-v8-repeated-wick-pool-screen
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v8.py"
+      - "research/candidate-easychart/screen_v8.py"
+      - "research/candidate-easychart/compare_v8.py"
+      - "research/candidate-easychart/tests/test_market_v8.py"
+      - ".github/workflows/candidate-easychart-v8.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v8-repeated-wick-pool-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v8-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and repeated-pool contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run declared repeated-wick pool families
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 30
+            --cache "$CACHE"
+            --gap-bars 5
+            --confirmation-bars 10
+            --mitigation-closes 2
+            --dc-atr-period 14
+            --dc-atr-multiple 1.0
+            --cost-profile role
+          )
+
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 5 --contact-count 2 \
+            --output "$ROOT/pool5-contact2-both"
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 5 --contact-count 2 --disable-fakeout \
+            --output "$ROOT/pool5-contact2-trap"
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 5 --contact-count 2 --disable-trap \
+            --output "$ROOT/pool5-contact2-fakeout"
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 15 --contact-count 2 \
+            --output "$ROOT/pool15-contact2-both"
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 15 --contact-count 2 --disable-fakeout \
+            --output "$ROOT/pool15-contact2-trap"
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 15 --contact-count 2 --disable-trap \
+            --output "$ROOT/pool15-contact2-fakeout"
+
+          # The PDFs say repeated 2-3 bounces teach the crowd.  Three contacts
+          # is therefore a source-level structural alternative, not a grid.
+          python research/candidate-easychart/screen_v8.py "${common[@]}" \
+            --pool-minutes 5 --contact-count 3 \
+            --output "$ROOT/pool5-contact3-both"
+
+          # Execution sensitivity only; no alpha rule change.
+          python research/candidate-easychart/screen_v8.py \
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 30 \
+            --cache "$CACHE" --gap-bars 5 --confirmation-bars 10 \
+            --mitigation-closes 2 --dc-atr-period 14 --dc-atr-multiple 1.0 \
+            --cost-profile taker --pool-minutes 5 --contact-count 2 \
+            --output "$ROOT/pool5-contact2-both-taker"
+
+          variants=(
+            pool5-contact2-both
+            pool5-contact2-trap
+            pool5-contact2-fakeout
+            pool15-contact2-both
+            pool15-contact2-trap
+            pool15-contact2-fakeout
+            pool5-contact3-both
+            pool5-contact2-both-taker
+          )
+          python research/candidate-easychart/compare_v8.py \
+            --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in \
+            pool5-contact2-both pool5-contact2-trap pool5-contact2-fakeout \
+            pool15-contact2-both pool15-contact2-trap pool15-contact2-fakeout \
+            pool5-contact3-both pool5-contact2-both-taker; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/setups.csv"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v8-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v8-development/**
+          if-no-files-found: warn
+          retention-days: 90
