@@ -10,6 +10,7 @@ on:
       - "research/candidate-55/strategy_inventory_release_second_touch_v4.py"
       - "research/candidate-55/strategy_inventory_release_second_touch.py"
       - "research/candidate-55/strategy_inventory_release_absorption.py"
+      - "research/candidate-05/positioning_contract.py"
   workflow_dispatch:
 
 permissions:
@@ -84,7 +85,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install, doctor, compile and verify arbitration contract
+      - name: Install, doctor, compile and verify complete runtime contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -92,18 +93,22 @@ jobs:
           uv lock --check
           uv sync --locked
           uv run smc4 doctor
-          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          uv run python -m compileall -q research/candidate-05 research/candidate-51 research/candidate-55
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
           from types import SimpleNamespace
+          import sys
+          import pandas as pd
+
           from strategy import (
               Candidate35Config,
               Candidate35Strategy,
-              _patch_response_sort_record,
+              _RESPONSE_CONTRACT_KEYS,
+              _patch_response_record_contract,
           )
 
           assert Candidate35Config is not None and Candidate35Strategy is not None
-          record = {}
-          result = _patch_response_sort_record(
+          record = {"target": 105.0}
+          result = _patch_response_record_contract(
               record=record,
               decision_diagnostics={"modeled_net_target_r": 2.0},
               side=1,
@@ -111,15 +116,43 @@ jobs:
                   flow_15s=0.25,
                   depth_imbalance_1=0.10,
               ),
+              reference=99.0,
               fallback_target_net_r=2.0,
           )
           assert result is record
+          assert all(key in record for key in _RESPONSE_CONTRACT_KEYS)
           assert record == {
+              "target": 105.0,
               "target_net_r": 2.0,
               "directional_flow_15s": 0.25,
               "directional_depth": 0.10,
+              "reference": 99.0,
           }
-          print("adaptive-response v2 arbitration contract pass")
+
+          sys.path.insert(0, "research/candidate-05")
+          import positioning_contract as positioning
+
+          columns = list(positioning._METRICS_COLUMNS)
+          t0 = pd.Timestamp("2026-06-11T23:55:00Z")
+          t1 = pd.Timestamp("2026-06-12T00:00:00Z")
+          exact = {column: 1.0 for column in columns}
+          first = {column: 2.0 for column in columns}
+          second = dict(first)
+          second[columns[0]] = 3.0
+          frame = pd.DataFrame(
+              [
+                  {"metrics_observed_time": t0, **exact, "_metrics_archive": "a.zip"},
+                  {"metrics_observed_time": t0, **exact, "_metrics_archive": "b.zip"},
+                  {"metrics_observed_time": t1, **first, "_metrics_archive": "a.zip"},
+                  {"metrics_observed_time": t1, **second, "_metrics_archive": "b.zip"},
+              ]
+          )
+          cleaned = positioning._deduplicate_combined_metrics(frame)
+          assert cleaned["metrics_observed_time"].tolist() == [t0]
+          conflicts = positioning._combined_metrics_conflicts(frame)
+          assert len(conflicts) == 1
+          assert conflicts[0]["resolution"] == "discard-all-conflicting-rows"
+          print("adaptive-response v2 complete contracts pass")
           PY
 
       - name: Freeze result-blind policy, evidence role and prediction
@@ -186,6 +219,7 @@ jobs:
           config_path = work / "frozen-config.json"
           config_path.write_text(json.dumps(base, indent=2, sort_keys=True) + "\n")
           role = os.environ["EVIDENCE_ROLE"]
+          positioning_path = Path("research/candidate-05/positioning_contract.py")
           manifest = {
               "candidate": "candidate-55-inventory-release-adaptive-response-v2",
               "label": os.environ["LABEL"],
@@ -194,8 +228,14 @@ jobs:
               "evidence_role": role,
               "fresh_period_selected_before_result": role.startswith("fresh-"),
               "repair_scope": (
-                  "response record arbitration contract only; no market-state, "
-                  "geometry, target, risk, cost or management change"
+                  "complete inherited response consumer contract plus conservative "
+                  "quarantine of conflicting official metrics boundary rows; no "
+                  "market-state, geometry, target, risk, cost or management change"
+              ),
+              "metrics_conflict_policy": (
+                  "exact duplicates collapse; conflicting duplicate timestamps are "
+                  "all discarded; prior unambiguous observation may remain usable "
+                  "only within the existing 600-second maximum age"
               ),
               "state_transition": {
                   "age_minutes": 1,
@@ -224,6 +264,9 @@ jobs:
               ).hexdigest(),
               "router_sha256": hashlib.sha256(
                   Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "positioning_contract_sha256": hashlib.sha256(
+                  positioning_path.read_bytes()
               ).hexdigest(),
               "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
           }
@@ -274,6 +317,12 @@ jobs:
           diagnostics_path = root / "strategy_diagnostics.json"
           closed_path = root / "closed_scenarios.json"
           exit_path = Path(".work/candidate-55-inventory-release-adaptive-response-v2/exit-code.txt")
+          conflict_files = sorted(root.glob("source/*/positioning_conflicts.json"))
+          conflicts = []
+          for path in conflict_files:
+              symbol = path.parent.name
+              for item in json.loads(path.read_text()):
+                  conflicts.append({"symbol": symbol, **item})
           summary = {
               "candidate": "candidate-55-inventory-release-adaptive-response-v2",
               "label": label,
@@ -282,25 +331,17 @@ jobs:
               "fresh_period_selected_before_result": role.startswith("fresh-"),
               "exit_code": int(exit_path.read_text()) if exit_path.is_file() else None,
               "produced": metrics_path.is_file() and diagnostics_path.is_file(),
+              "quarantined_positioning_conflicts": len(conflicts),
+              "positioning_conflicts": conflicts,
           }
           if summary["produced"]:
               metrics = json.loads(metrics_path.read_text())
               diagnostics = json.loads(diagnostics_path.read_text())
               closed = json.loads(closed_path.read_text()) if closed_path.is_file() else []
-              net_pnls = [
-                  float(item.get("net_pnl", item.get("pnl", 0.0)) or 0.0)
-                  for item in closed
-              ]
-              winners = [value for value in net_pnls if value > 0.0]
-              losers = [value for value in net_pnls if value < 0.0]
               summary.update(
                   metrics=metrics,
                   trades_per_calendar_day=float(metrics.get("trades") or 0) / days,
                   closed_scenarios=len(closed),
-                  winning_scenarios=len(winners),
-                  losing_scenarios=len(losers),
-                  gross_closed_profit=sum(winners),
-                  gross_closed_loss=sum(losers),
                   unique_episode_keys=len(
                       {
                           str(item.get("inventory_episode_key"))
@@ -326,6 +367,7 @@ jobs:
                           "adaptive_response_geometry_rejections",
                           "adaptive_response_responses",
                           "adaptive_response_arbitration_contract_repairs",
+                          "adaptive_response_selected_provenance_repairs",
                           "second_touch_entries",
                           "second_touch_competing_responses",
                           "inventory_context_rejection_counts",
@@ -343,6 +385,7 @@ jobs:
                           "max_simultaneous_entry_intents",
                       )
                   },
+                  closed_scenario_records=closed,
               )
           (root / "ADAPTIVE_RESPONSE_SUMMARY.json").write_text(
               json.dumps(summary, indent=2, sort_keys=True) + "\n"
