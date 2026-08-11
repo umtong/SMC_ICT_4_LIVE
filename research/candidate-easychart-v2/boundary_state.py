@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from collections import deque
 
-from domain import AcceptanceCandidate, Boundary, Candle, EngineConfig, Family, Side, TradePlan
+from domain import AcceptanceCandidate, Boundary, Candle, EngineConfig, Family, RejectionCandidate, Side, TradePlan
 
 
 class BoundaryState:
     """Event-driven boundary rejection/acceptance engine.
 
     Meaningful highs/lows are defined causally by multi-scale, ATR-normalized
-    topographic prominence.  A boundary is observable only after the right side
+    topographic prominence. A boundary is observable only after the right side
     of its pivot window has closed.
     """
 
@@ -22,6 +22,7 @@ class BoundaryState:
         self.bars: list[Candle] = []
         self.true_ranges: deque[float] = deque(maxlen=max(config.atr_period, 2))
         self.boundaries: list[Boundary] = []
+        self.rejections: list[RejectionCandidate] = []
         self.acceptance: list[AcceptanceCandidate] = []
         self.used_events: set[str] = set()
         self.sequence = 0
@@ -95,8 +96,6 @@ class BoundaryState:
         boundary_id = self._boundary_id(side, center, span, level)
         if any(boundary.boundary_id == boundary_id for boundary in self.boundaries):
             return
-        # The same price may appear at several scales.  Keep the strongest
-        # causal representation rather than manufacturing several opportunities.
         tolerance = self.config.tick_size * 2.0
         for boundary in self.boundaries:
             if boundary.consumed or boundary.side != side:
@@ -210,4 +209,3 @@ class BoundaryState:
             source_span=source.span,
             source_prominence_atr=source.prominence_atr,
         )
-
