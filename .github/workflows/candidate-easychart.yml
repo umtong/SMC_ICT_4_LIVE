@@ -1,0 +1,81 @@
+name: candidate-easychart-development-screen
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/**"
+      - ".github/workflows/candidate-easychart.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-development-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  source-faithful-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and fixed contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+          python -m json.tool research/candidate-easychart/config.json >/dev/null
+          python -m json.tool research/candidate-easychart/SOURCE_CONTRACT.json >/dev/null
+
+      - name: Run finite causal ablations on one development window
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 7
+            --cache "$CACHE"
+          )
+          python research/candidate-easychart/screen.py "${common[@]}" --output "$ROOT/baseline"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-break --output "$ROOT/sweep-only"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --output "$ROOT/break-only"
+          python research/candidate-easychart/screen.py "${common[@]}" --min-body-ratio 2.0 --output "$ROOT/body-ratio-2"
+          python research/candidate-easychart/screen.py "${common[@]}" --allow-touch-only --output "$ROOT/touch-only"
+          python research/candidate-easychart/compare_screens.py --root "$ROOT"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json"
+          for variant in baseline sweep-only break-only body-ratio-2 touch-only; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/plans.csv"
+            test -s "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-development/**
+          if-no-files-found: warn
+          retention-days: 90
