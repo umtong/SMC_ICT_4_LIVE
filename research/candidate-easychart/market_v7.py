@@ -56,7 +56,7 @@ class ExpiringArmedSetup(ArmedSetup):
     valid_until_ns: int = 0
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        ArmedSetup.__post_init__(self)
         if self.valid_until_ns <= self.observed_time_ns:
             raise ValueError("expiring setup must remain valid after observation")
 
