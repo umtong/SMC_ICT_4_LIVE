@@ -1,0 +1,90 @@
+    )
+    config = router.RouteConfig()
+    exact_rows: list[dict[str, Any]] = []
+    stage_rows: list[dict[str, Any]] = []
+    decision_counts: dict[str, dict[str, int]] = {
+        family: defaultdict(int) for family in FAMILIES
+    }
+
+    for symbol in SYMBOLS:
+        frame = klines[symbol].sort_values("close_time_dt", kind="stable").reset_index(drop=True)
+        features = pd.read_csv(feature_paths[symbol], compression="infer")
+        if len(frame) != len(features):
+            raise RuntimeError(
+                f"feature/kline rows differ for {symbol}: {len(features)} != {len(frame)}"
+            )
+        close_ns = pd.to_datetime(frame["close_time_dt"], utc=True).astype("int64").to_numpy()
+        observed_ns = pd.to_numeric(features["observed_time_ns"], errors="raise").astype("int64").to_numpy()
+        if not np.array_equal(close_ns, observed_ns):
+            raise RuntimeError(f"feature clock differs from kline close clock for {symbol}")
+
+        bars: list[router.BarObservation] = []
+        last_exact_signature: dict[str, tuple[str, int] | None] = {
+            family: None for family in FAMILIES
+        }
+        last_stage_signature: dict[str, tuple[str, int] | None] = {
+            family: None for family in FAMILIES
+        }
+        for index in range(len(frame)):
+            bars.append(_bar(frame.iloc[index]))
+            observation = _feature(features.iloc[index])
+            for family in FAMILIES:
+                decision = _family_decision(family, symbol, bars, observation, config)
+                reason = "ACTIONABLE" if decision.actionable else (
+                    str(decision.reasons[0]) if decision.reasons else "UNRESOLVED"
+                )
+                decision_counts[family][reason] += 1
+                diagnostics = dict(decision.diagnostics or {})
+                proposed_side = int(decision.side) if decision.actionable else int(
+                    diagnostics.get("side", 0) or 0
+                )
+
+                if decision.actionable:
+                    signature = (str(decision.state), int(decision.side))
+                    if signature != last_exact_signature[family]:
+                        exact_rows.append(
+                            _event_row(
+                                family=family,
+                                symbol=symbol,
+                                event_index=index,
+                                decision=decision,
+                                frame=frame,
+                                kind="exact_actionable_rising_edge",
+                            )
+                        )
+                    last_exact_signature[family] = signature
+                else:
+                    last_exact_signature[family] = None
+
+                stage_signature = (
+                    (reason, proposed_side) if proposed_side in (-1, 1) else None
+                )
+                if stage_signature is not None and stage_signature != last_stage_signature[family]:
+                    stage_rows.append(
+                        _event_row(
+                            family=family,
+                            symbol=symbol,
+                            event_index=index,
+                            decision=decision,
+                            frame=frame,
+                            kind="first_failure_stage_rising_edge",
+                        )
+                    )
+                last_stage_signature[family] = stage_signature
+
+    exact = pd.DataFrame(exact_rows)
+    stages = pd.DataFrame(stage_rows)
+    if exact.empty:
+        raise RuntimeError("exact frozen classifiers produced no rising edges")
+    output.mkdir(parents=True, exist_ok=True)
+    exact.to_csv(output / "exact_events.csv", index=False)
+    stages.to_csv(output / "stage_edges.csv.gz", index=False, compression="gzip")
+
+    global_episodes = _collapse_global_episodes(exact)
+    global_episodes.to_csv(output / "global_episodes_3m.csv", index=False)
+
+    exact_summary = {
+        family: _summarize_group(group)
+        for family, group in exact.groupby("family", sort=True)
+    }
+    stage_primary: dict[str, Any] = {}
