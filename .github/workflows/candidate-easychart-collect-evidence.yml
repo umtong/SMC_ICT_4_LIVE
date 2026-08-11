@@ -1,0 +1,57 @@
+name: candidate-easychart-collect-compact-evidence
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/collect_action_evidence.py"
+      - ".github/workflows/candidate-easychart-collect-evidence.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-collect-compact-evidence
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+
+      - name: Collect latest completed workflow evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=research/candidate-easychart/results/collected-actions
+          rm -rf "$output"
+          python research/candidate-easychart/collect_action_evidence.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch research/candidate-easychart \
+            --output "$output" \
+            --timeout-seconds 900 \
+            --poll-seconds 30 \
+            --workflow candidate-easychart-v10-isolated-validation.yml \
+            --workflow candidate-easychart-v11.yml \
+            --workflow candidate-easychart-v12.yml \
+            --workflow candidate-easychart-v13.yml
+
+      - name: Persist evidence on research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/collected-actions
+          git commit -m "candidate-easychart: collect compact workflow evidence" || exit 0
+          git pull --rebase origin research/candidate-easychart
+          git push origin HEAD:research/candidate-easychart
