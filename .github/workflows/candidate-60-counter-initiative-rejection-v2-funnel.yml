@@ -1,0 +1,152 @@
+name: candidate-60-counter-initiative-rejection-v2-funnel
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-counter-initiative-rejection-v2-funnel.yml"
+      - "research/candidate-60/COUNTER_INITIATIVE_REJECTION_V2_FREEZE.md"
+      - "research/candidate-60/counter_initiative_rejection_diagnostic_v1.b64.part*"
+      - "research/candidate-60/counter_initiative_rejection_v2.py.gz.b64"
+      - "research/candidate-60/counter_initiative_rejection_v2_funnel.py.gz.b64.part*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-counter-initiative-rejection-v2-funnel
+  cancel-in-progress: true
+
+jobs:
+  outcome-blind-causal-funnel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reassemble and verify frozen sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/COUNTER_INITIATIVE_REJECTION_V2_FREEZE.md
+
+          cat research/candidate-60/counter_initiative_rejection_diagnostic_v1.b64.part* > .base.b64
+          test "$(sha256sum .base.b64 | awk '{print $1}')" = "a4c3ab9d78c6703b97abac9b0fb525803f12aedd9102989b2aec2cfd2a41a935"
+          base64 -d .base.b64 > .base.py.gz
+          test "$(sha256sum .base.py.gz | awk '{print $1}')" = "6f3d0e8bc6708a8db6a6df7803fa007b0b58111823005841e9f6656e665b8de1"
+          gzip -dc .base.py.gz > research/candidate-60/counter_initiative_rejection_diagnostic.py
+          test "$(sha256sum research/candidate-60/counter_initiative_rejection_diagnostic.py | awk '{print $1}')" = "93414c7a5d5ffadbfa6e692ec965063ad5b4d682405048a2c72c4241a3c807a3"
+
+          cp research/candidate-60/counter_initiative_rejection_v2.py.gz.b64 .v2.b64
+          test "$(sha256sum .v2.b64 | awk '{print $1}')" = "b4872b852861d063165bb2d05dd5813de311362d3ab7d0e331bc09b7702b641f"
+          base64 -d .v2.b64 > .v2.py.gz
+          test "$(sha256sum .v2.py.gz | awk '{print $1}')" = "49873483822decb2a5ada488178774d45a5a48ba615bb8a4c6459a3cd30f660c"
+          gzip -dc .v2.py.gz > research/candidate-60/counter_initiative_rejection_v2.py
+          test "$(sha256sum research/candidate-60/counter_initiative_rejection_v2.py | awk '{print $1}')" = "86373e41b12c9615800c2c7c7fecc9ca8193b350251b3dcd350b0860c4ab27cf"
+
+          cat research/candidate-60/counter_initiative_rejection_v2_funnel.py.gz.b64.part* > .funnel.b64
+          test "$(wc -c < .funnel.b64)" = "4760"
+          test "$(sha256sum .funnel.b64 | awk '{print $1}')" = "4ccb69d04e44906864147ab1cd2ecfab466930dfdf587cea6b9b6e51e6944173"
+          base64 -d .funnel.b64 > .funnel.py.gz
+          test "$(sha256sum .funnel.py.gz | awk '{print $1}')" = "c18932baeb0eb6858400553f5632bd07d60bc993d7d569b25bcc23573bf2d10b"
+          gzip -dc .funnel.py.gz > research/candidate-60/counter_initiative_rejection_v2_funnel.py
+          test "$(sha256sum research/candidate-60/counter_initiative_rejection_v2_funnel.py | awk '{print $1}')" = "32660981ed6078c8a485cf08063bd920c1c2d92b137a1cc00abee775c482d775"
+
+          python -m py_compile \
+            research/candidate-60/counter_initiative_rejection_diagnostic.py \
+            research/candidate-60/counter_initiative_rejection_v2.py \
+            research/candidate-60/counter_initiative_rejection_v2_funnel.py
+
+      - name: Install locked environment and prove diagnostic cannot score alternatives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python - <<'PY'
+          from pathlib import Path
+          text = Path("research/candidate-60/counter_initiative_rejection_v2_funnel.py").read_text(encoding="utf-8")
+          assert '"performance_scored": False' in text
+          assert '"policy_changed": False' in text
+          assert '"fresh_data_consumed": False' in text
+          assert 'v.DEVELOPMENT' in text
+          assert 'v.POLICY_FRESH' not in text
+          assert 'first_full_peer_rejection' in text
+          assert 'v.first_owned_rejection' in text
+          assert 'm.complete_outcomes' not in text
+          assert 'gross_bps' not in text
+          assert 'net_bps' not in text
+          print("outcome-blind V2 causal-funnel contract verified")
+          PY
+
+      - name: Run outcome-blind V2 causal funnel
+        id: funnel
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-counter-initiative-rejection-v2-funnel
+          set -o pipefail
+          uv run python research/candidate-60/counter_initiative_rejection_v2_funnel.py \
+            2>&1 | tee .work/candidate-60-counter-initiative-rejection-v2-funnel/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Persist causal-funnel evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .base.b64 .base.py.gz .v2.b64 .v2.py.gz .funnel.b64 .funnel.py.gz \
+            research/candidate-60/counter_initiative_rejection_diagnostic.py \
+            research/candidate-60/counter_initiative_rejection_v2.py \
+            research/candidate-60/counter_initiative_rejection_v2_funnel.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/counter-initiative-rejection-v2/development
+          if [[ -d "$out" ]]; then
+            git add -f "$out/causal_funnel.json" "$out/CAUSAL_FUNNEL.md"
+          fi
+          if ! git diff --cached --quiet; then
+            git commit --no-gpg-sign -m "candidate60: persist V2 outcome-blind causal funnel"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-60
+              git rebase origin/research/candidate-60
+              if git push origin HEAD:research/candidate-60; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+
+      - name: Upload V2 causal-funnel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-counter-initiative-rejection-v2-funnel
+          path: |
+            research/candidate-60/evidence/counter-initiative-rejection-v2/development/causal_funnel.json
+            research/candidate-60/evidence/counter-initiative-rejection-v2/development/CAUSAL_FUNNEL.md
+            .work/candidate-60-counter-initiative-rejection-v2-funnel/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce diagnostic validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.funnel.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "V2 causal funnel failed; status=$status"
+            exit "${status:-1}"
+          fi
