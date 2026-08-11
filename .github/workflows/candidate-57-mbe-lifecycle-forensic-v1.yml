@@ -1,0 +1,189 @@
+name: candidate-57-mbe-lifecycle-forensic-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-mbe-lifecycle-forensic-v1.yml"
+      - "research/candidate-57/MBE_LIFECYCLE_FORENSIC_V1_FREEZE.md"
+      - "research/candidate-57/strategy_mbe_lifecycle_forensic_v1.py"
+      - "research/candidate-57/mbe_lifecycle_forensic_v1.py"
+      - "research/candidate-57/mbe_collision_topology_fresh_v1.py"
+      - "research/candidate-57/router_mbe_collision_topology_v1.py"
+      - "research/candidate-57/router_ichi_mbe_topology_v1.py"
+      - "research/candidate-57/strategy_mbe_topology_fast_v1.py"
+      - "research/candidate-57/evidence/ichi-mbe-n1-fresh-v1/cases/mbe_only.json"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_mbe_n1_v1.py"
+      - "research/candidate-57/forensic_sources/mbe2_router.py"
+      - "research/candidate-57/trade_ledger_forensics_v2.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/strategy_picasso.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-mbe-lifecycle-forensic-v1
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble unchanged MBE account with diagnostics-only lifecycle observer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/MBE_LIFECYCLE_FORENSIC_V1_FREEZE.md
+          test -f research/candidate-57/evidence/ichi-mbe-n1-fresh-v1/cases/mbe_only.json
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_impl.py
+          cp research/candidate-57/forensic_sources/mbe2_router.py research/candidate-51/router_mbe_base.py
+          cp research/candidate-57/router_mbe_collision_topology_v1.py research/candidate-51/router_mbe_topology_impl.py
+          cp research/candidate-57/router_ichi_mbe_topology_v1.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_impl.py
+          cp research/candidate-57/strategy_ichi_mbe_n1_v1.py research/candidate-51/strategy_ichi_mbe_base.py
+          cp research/candidate-57/strategy_mbe_topology_fast_v1.py research/candidate-51/strategy_mbe_fast_base.py
+          cp research/candidate-57/strategy_mbe_lifecycle_forensic_v1.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_base.py \
+            research/candidate-51/router_mbe_topology_impl.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/strategy_ichi_impl.py \
+            research/candidate-51/strategy_ichi_mbe_base.py \
+            research/candidate-51/strategy_mbe_fast_base.py \
+            research/candidate-57/trade_ledger_forensics_v2.py \
+            research/candidate-57/mbe_collision_topology_fresh_v1.py \
+            research/candidate-57/mbe_lifecycle_forensic_v1.py
+
+      - name: Install locked environment and prove diagnostics-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python - <<'PY'
+          import inspect
+          import mbe_lifecycle_forensic_v1 as campaign
+          from strategy import Candidate35Strategy
+          from strategy_mbe_fast_base import Candidate35Strategy as FrozenAccount
+
+          assert issubclass(Candidate35Strategy, FrozenAccount)
+          assert campaign.HORIZONS == (15, 41, 114, 180, 420)
+          assert campaign.PERIODS["march_2024"][0].isoformat() == "2024-03-01"
+          assert campaign.PERIODS["april_2026"][0].isoformat() == "2026-04-01"
+
+          management = inspect.getsource(Candidate35Strategy._manage_open_position)
+          assert "super()._manage_open_position(ts_event)" in management
+          for forbidden in (
+              "submit_order", "close_all_positions", "cancel_all_orders",
+              "_close_family_position(",
+          ):
+              assert forbidden not in management, forbidden
+          snapshot = inspect.getsource(Candidate35Strategy._snapshot)
+          for token in (
+              "source_profit_ratio", "estimated_after_cost_r",
+              "mfe_source_profit_ratio", "mae_source_profit_ratio",
+              "raw_short_cross_breadth", "rsi_reoverbought_breadth",
+              "tema_rising_breadth", "renewed_short_pressure_breadth",
+          ):
+              assert token in snapshot, token
+          transition = inspect.getsource(campaign.direct_source_recross_failure)
+          assert 'estimated_after_cost_r' in transition
+          assert 'entry_symbol_rsi' in transition and '>= 70.0' in transition
+          assert 'entry_symbol_tema_slope_bps' in transition and '> 0.0' in transition
+          print("frozen source-clock lifecycle observer verified; no policy action added")
+          PY
+
+      - name: Reproduce April account and map March/April lifecycle
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe-lifecycle-forensic-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/mbe_lifecycle_forensic_v1.py \
+            2>&1 | tee .work/candidate-57-mbe-lifecycle-forensic-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_base.py \
+            research/candidate-51/router_mbe_topology_impl.py \
+            research/candidate-51/strategy_ichi_impl.py \
+            research/candidate-51/strategy_ichi_mbe_base.py \
+            research/candidate-51/strategy_mbe_fast_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/mbe-lifecycle-forensic-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist MBE lifecycle forensic evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-mbe-lifecycle-forensic-v1-evidence
+          path: |
+            research/candidate-57/evidence/mbe-lifecycle-forensic-v1
+            artifacts/candidate-57-mbe-lifecycle-forensic-v1
+            .work/candidate-57-mbe-lifecycle-forensic-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "MBE lifecycle forensic failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
