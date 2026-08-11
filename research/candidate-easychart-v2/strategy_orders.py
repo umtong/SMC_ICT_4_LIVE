@@ -1,0 +1,108 @@
+"""Risk sizing, native bracket submission and terminal event handling."""
+from __future__ import annotations
+
+from decimal import Decimal, ROUND_DOWN
+from typing import Any
+
+from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
+from nautilus_trader.model.events import OrderCanceled, OrderDenied, OrderExpired, OrderRejected, PositionClosed
+from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, Venue
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.orders.list import OrderList
+
+from model import Side, TradePlan
+
+
+class EasyChartOrderMixin:
+    def _current_nav(self) -> Decimal:
+        account = self.portfolio.account(Venue("BINANCE"))
+        if account is None:
+            raise RuntimeError("BINANCE account unavailable")
+        money = account.balance_total(Currency.from_str("USDT"))
+        if money is None:
+            raise RuntimeError("USDT balance unavailable")
+        return Decimal(str(money.as_double()))
+
+    def _quantity(self, instrument: Any, plan: TradePlan) -> Any | None:
+        entry = Decimal(str(plan.entry))
+        stop = Decimal(str(plan.stop))
+        per_unit = abs(entry - stop)
+        per_unit += entry * Decimal(str(self.config.estimated_entry_fee_rate))
+        per_unit += stop * Decimal(str(self.config.estimated_stop_fee_rate))
+        per_unit += entry * Decimal(str(self.config.estimated_funding_rate))
+        if per_unit <= 0:
+            return None
+        raw = self._current_nav() * Decimal(str(self.config.risk_fraction)) / per_unit
+        step = Decimal(str(instrument.size_increment))
+        floored = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
+        if floored <= 0 or floored < Decimal(str(instrument.min_quantity)):
+            return None
+        return instrument.make_qty(floored)
+
+    def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> None:
+        instrument = self.instruments[instrument_id]
+        quantity = self._quantity(instrument, plan)
+        if quantity is None:
+            self._record("plan_rejected_quantity", plan_id=plan.plan_id)
+            return
+        order_list: OrderList = self.order_factory.bracket(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY if plan.side is Side.LONG else OrderSide.SELL,
+            quantity=quantity,
+            time_in_force=TimeInForce.GTC,
+            entry_price=instrument.make_price(plan.entry),
+            sl_trigger_price=instrument.make_price(plan.stop),
+            tp_price=instrument.make_price(plan.target),
+            entry_order_type=OrderType.LIMIT,
+        )
+        self.active_plan = plan
+        self.active_instrument_id = instrument_id
+        self.active_entry_id = order_list.first.client_order_id
+        self.entry_cancel_requested = False
+        self.submit_order_list(order_list)
+        self._record("submitted", plan_id=plan.plan_id, instrument_id=str(instrument_id), quantity=str(quantity))
+
+    def _clear_if_entry(self, client_order_id: ClientOrderId) -> None:
+        if self.active_entry_id is None or client_order_id != self.active_entry_id:
+            return
+        plan_id = self.active_plan.plan_id if self.active_plan else None
+        self._record("entry_terminal_without_position", plan_id=plan_id)
+        self.active_plan = None
+        self.active_instrument_id = None
+        self.active_entry_id = None
+        self.entry_cancel_requested = False
+
+    def on_order_canceled(self, event: OrderCanceled) -> None:
+        self._clear_if_entry(event.client_order_id)
+
+    def on_order_expired(self, event: OrderExpired) -> None:
+        self._clear_if_entry(event.client_order_id)
+
+    def on_order_rejected(self, event: OrderRejected) -> None:
+        self._record("order_rejected", client_order_id=str(event.client_order_id), reason=str(event.reason))
+        self._clear_if_entry(event.client_order_id)
+
+    def on_order_denied(self, event: OrderDenied) -> None:
+        self._record("order_denied", client_order_id=str(event.client_order_id), reason=str(event.reason))
+        self._clear_if_entry(event.client_order_id)
+
+    def on_position_closed(self, event: PositionClosed) -> None:
+        plan_id = self.active_plan.plan_id if self.active_plan else None
+        self._record("position_closed", plan_id=plan_id, instrument_id=str(event.instrument_id))
+        self.active_plan = None
+        self.active_instrument_id = None
+        self.active_entry_id = None
+        self.entry_cancel_requested = False
+
+    def on_stop(self) -> None:
+        for instrument_id, signal_type, execution_type in zip(
+            self.config.instrument_ids,
+            self.config.signal_bar_types,
+            self.config.execution_bar_types,
+            strict=True,
+        ):
+            self.cancel_all_orders(instrument_id)
+            if not self.portfolio.is_flat(instrument_id):
+                self.close_all_positions(instrument_id)
+            self.unsubscribe_bars(signal_type)
+            self.unsubscribe_bars(execution_type)
