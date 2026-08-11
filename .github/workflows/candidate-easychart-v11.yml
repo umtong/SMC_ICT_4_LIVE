@@ -1,0 +1,74 @@
+name: candidate-easychart-v11-three-role-confluence
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v11.py"
+      - "research/candidate-easychart/screen_v11.py"
+      - "research/candidate-easychart/compare_v11.py"
+      - "research/candidate-easychart/tests/test_market_v11.py"
+      - ".github/workflows/candidate-easychart-v11.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v11-three-role-confluence
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v11-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+      - name: Run role-separated confluence matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          leader="PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16,LONDON_NY"
+          common=(--start 2024-02-01 --end 2024-02-28 --warmup-days 60 --cache "$CACHE" --families "$leader" --signal-minutes 5 --context-minutes 15 --dc-atr-period 14 --dc-atr-multiple 1.0 --accepted-break-widths 1.0 --cost-profile role --disable-fakeout)
+          python research/candidate-easychart/screen_v11.py "${common[@]}" --output "$ROOT/all-three"
+          python research/candidate-easychart/screen_v11.py "${common[@]}" --disable-trendline --output "$ROOT/fib-session"
+          python research/candidate-easychart/screen_v11.py "${common[@]}" --disable-fib --output "$ROOT/trendline-session"
+          python research/candidate-easychart/screen_v11.py --start 2024-02-01 --end 2024-02-28 --warmup-days 90 --cache "$CACHE" --families "$leader" --signal-minutes 5 --context-minutes 60 --dc-atr-period 14 --dc-atr-multiple 1.0 --accepted-break-widths 1.0 --cost-profile role --disable-fakeout --output "$ROOT/all-three-60m"
+          python research/candidate-easychart/screen_v11.py "${common[@]}" --disable-trap --output "$ROOT/all-three-fakeout"
+          python research/candidate-easychart/screen_v11.py --start 2024-02-01 --end 2024-02-28 --warmup-days 60 --cache "$CACHE" --families "$leader" --signal-minutes 5 --context-minutes 15 --dc-atr-period 14 --dc-atr-multiple 1.0 --accepted-break-widths 1.0 --cost-profile taker --disable-fakeout --output "$ROOT/all-three-taker"
+          variants=(all-three fib-session trendline-session all-three-60m all-three-fakeout all-three-taker)
+          python research/candidate-easychart/compare_v11.py --root "$ROOT" --variants "${variants[@]}"
+      - name: Verify evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in all-three fib-session trendline-session all-three-60m all-three-fakeout all-three-taker; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v11-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v11-development/**
+          if-no-files-found: warn
+          retention-days: 90
