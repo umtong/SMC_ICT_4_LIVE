@@ -1,0 +1,163 @@
+name: candidate-60-forced-rejection-holdout-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-forced-rejection-holdout-v1.yml"
+      - "research/candidate-60/C60_FORCED_REJECTION_V1_FREEZE.md"
+      - "research/candidate-60/forced_rejection_holdout_v1.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-forced-rejection-holdout-v1
+  cancel-in-progress: true
+
+jobs:
+  untouched-mechanism:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SOURCE_COMMIT: d35fe7c3556a387933103e18d491ab56d2f37c18
+      VENDOR: .work/candidate-60-forced-rejection-vendor
+      OUT: research/candidate-60/evidence/forced-rejection-holdout-v1
+      CONSOLE: .work/candidate-60-forced-rejection-holdout-v1-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize immutable Candidate 16 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$SOURCE_COMMIT"
+          mkdir -p "$VENDOR"
+          for name in \
+            v9_liquidation_event_study.py \
+            v9_tardis_liquidation_study.py \
+            v9_tardis_liquidation_study_v2.py \
+            v9_tardis_liquidation_study_v3.py \
+            v10_liquidation_path_diagnostic.py
+          do
+            git show "$SOURCE_COMMIT:research/candidate-16/$name" > "$VENDOR/$name"
+          done
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Verify environment and frozen contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$VENDOR" \
+            research/candidate-60/forced_rejection_holdout_v1.py
+          PYTHONPATH="$VENDOR:research/candidate-60" python - <<'PY'
+          import inspect
+          import forced_rejection_holdout_v1 as study
+          assert study.SOURCE_COMMIT == "d35fe7c3556a387933103e18d491ab56d2f37c18"
+          assert study.MAX_CONFIRM_MINUTE == 3
+          assert study.PRIMARY_HOLD_MINUTES == 15
+          assert study.ROUND_TRIP_COST_RATE == 0.0020
+          source = inspect.getsource(study.select_transitions)
+          for text in (
+              'reversal_close_vs_event_mid',
+              'reversal_spot_return_from_event',
+              'perp_basis_contraction_for_reversal',
+              'oi_change_from_event',
+          ):
+              assert text in source
+          print("frozen forced-rejection transition contract verified")
+          PY
+
+      - name: Run untouched 2024-2025 causal evaluation
+        id: study
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUT" "$CONSOLE"
+          set -o pipefail
+          PYTHONPATH="$VENDOR:research/candidate-60" \
+            python research/candidate-60/forced_rejection_holdout_v1.py \
+              --start-month 2024-01 \
+              --end-month 2025-12 \
+              --cache .cache/candidate-60-forced-rejection-holdout-v1 \
+              --output "$OUT" \
+            2>&1 | tee "$CONSOLE/console.log"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify untouched evidence without outcome gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "untouched mechanism evaluation failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-60/evidence/forced-rejection-holdout-v1")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-forced-rejection-holdout-v1"
+          assert summary["source_commit"] == "d35fe7c3556a387933103e18d491ab56d2f37c18"
+          sample = summary["sample_contract"]
+          assert sample["start_month"] == "2024-01"
+          assert sample["end_month"] == "2025-12"
+          assert sample["calendar_days"] == 24
+          assert sample["symbol_days"] == 96
+          rule = summary["frozen_rule"]
+          assert rule["thresholds_searched_on_untouched_data"] == 0
+          assert rule["rule_changed_after_untouched_results"] is False
+          assert (root / "events.csv").is_file()
+          assert (root / "transitions.csv").is_file()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact untouched evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist forced rejection untouched evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete untouched evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-forced-rejection-holdout-v1
+          path: |
+            research/candidate-60/evidence/forced-rejection-holdout-v1
+            .work/candidate-60-forced-rejection-holdout-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 90
