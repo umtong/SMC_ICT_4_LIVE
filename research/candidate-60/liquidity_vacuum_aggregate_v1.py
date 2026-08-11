@@ -19,6 +19,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
 SYMBOL_PRIORITY = {symbol: index for index, symbol in enumerate(SYMBOLS)}
@@ -147,7 +148,10 @@ def run(root: Path, output: Path, start: date, end: date) -> dict[str, Any]:
             raise RuntimeError(f"missing frozen source output for {symbol}")
         report = json.loads(report_path.read_text(encoding="utf-8"))
         reports[symbol] = report
-        events = pd.read_csv(events_path)
+        try:
+            events = pd.read_csv(events_path)
+        except EmptyDataError:
+            events = pd.DataFrame()
         if events.empty:
             continue
         events["symbol"] = symbol
@@ -205,6 +209,7 @@ def run(root: Path, output: Path, start: date, end: date) -> dict[str, Any]:
             "timestamp_repair_changed_strategy_logic": False,
             "positive_result_is_not_sufficient_for_promotion": True,
             "negative_aggregate_requires_parent_and_geometry_funnel_review": True,
+            "zero_event_files_are_valid_source_evidence": True,
             "required_if_coherent": (
                 "implement unchanged scenario through NautilusTrader and evaluate one "
                 "four-symbol continuous account before any fresh promotion"
