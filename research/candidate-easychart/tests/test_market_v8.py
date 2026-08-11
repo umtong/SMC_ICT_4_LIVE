@@ -7,12 +7,14 @@ import unittest
 from domain_v3 import Candle, Side
 from market_v4 import StructuralPivot
 from market_v8 import (
-    EasyChartLiquidityPoolEngine,
     LiquidityPool,
     PoolDetectorConfig,
     PoolInteractionState,
     PoolTrapConfig,
-    WickLiquidityPoolDetector,
+)
+from market_v8_fixed import (
+    CorrectedEasyChartLiquidityPoolEngine,
+    CorrectedWickLiquidityPoolDetector,
 )
 
 
@@ -56,7 +58,7 @@ def bear_pool(observed=1):
 
 class TestWickLiquidityPoolDetector(unittest.TestCase):
     def test_repeated_separated_wicks_form_causal_bull_pool(self):
-        detector = WickLiquidityPoolDetector(
+        detector = CorrectedWickLiquidityPoolDetector(
             "BTCUSDT",
             PoolDetectorConfig(
                 contact_count=2,
@@ -87,7 +89,7 @@ class TestWickLiquidityPoolDetector(unittest.TestCase):
         self.assertEqual(pool.observed_time_ns, candles[4].ts_close_ns)
 
     def test_two_consecutive_body_closes_through_outer_edge_mitigate(self):
-        detector = WickLiquidityPoolDetector(
+        detector = CorrectedWickLiquidityPoolDetector(
             "BTCUSDT",
             PoolDetectorConfig(contact_count=2, gap_bars=1, confirmation_bars=1),
         )
@@ -116,7 +118,7 @@ class TestLiquidityPoolEpisodes(unittest.TestCase):
             "tick_size": 0.1,
         }
         values.update(overrides)
-        engine = EasyChartLiquidityPoolEngine("BTCUSDT", PoolTrapConfig(**values))
+        engine = CorrectedEasyChartLiquidityPoolEngine("BTCUSDT", PoolTrapConfig(**values))
         engine.detector.active["bull"] = bull_pool()
         engine.detector.break_counts["bull"] = 0
         engine.detector.active["bear"] = bear_pool()
@@ -139,9 +141,11 @@ class TestLiquidityPoolEpisodes(unittest.TestCase):
 
     def test_delayed_outside_close_then_reclaim_uses_deepest_extreme(self):
         engine = self.engine(enable_immediate_fakeout=False)
-        self.assertEqual(engine.on_candle(bar(1, 100.5, 101.0, 98.0, 98.5), 1), [])
-        self.assertEqual(engine.on_candle(bar(2, 98.5, 99.0, 97.0, 98.0), 2), [])
-        setups = engine.on_candle(bar(3, 98.0, 101.0, 97.5, 100.5), 3)
+        # The pool remains valid while closes stay between its outer and inner
+        # boundaries; two closes beyond the outer edge would mitigate it.
+        self.assertEqual(engine.on_candle(bar(1, 100.5, 101.0, 98.0, 99.5), 1), [])
+        self.assertEqual(engine.on_candle(bar(2, 99.5, 100.0, 97.0, 99.2), 2), [])
+        setups = engine.on_candle(bar(3, 99.2, 101.0, 97.5, 100.5), 3)
         long_setups = [setup for setup in setups if setup.side is Side.LONG]
         self.assertEqual(len(long_setups), 1)
         self.assertEqual(long_setups[0].stop, 96.9)
@@ -197,7 +201,9 @@ class TestLiquidityPoolEpisodes(unittest.TestCase):
         engine.detector.active[close_bear.pool_id] = close_bear
         engine.detector.break_counts[close_bear.pool_id] = 0
         engine.states[close_bear.pool_id] = PoolInteractionState(close_bear)
-        setups = engine.on_candle(bar(1, 101.0, 101.5, 97.0, 100.5), 1)
+        # The near objective has not yet been consumed, but its distance is
+        # smaller than the structural stop distance.
+        setups = engine.on_candle(bar(1, 100.2, 100.8, 97.0, 100.5), 1)
         self.assertEqual(setups, [])
         self.assertEqual(engine.diagnostics.get("gross_rr_lt_1"), 1)
 
