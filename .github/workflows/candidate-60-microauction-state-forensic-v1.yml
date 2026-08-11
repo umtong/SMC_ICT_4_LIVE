@@ -1,0 +1,157 @@
+name: candidate-60-microauction-state-forensic-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-microauction-state-forensic-v1.yml"
+      - "research/candidate-60/MICROAUCTION_STATE_FORENSIC_V1_FREEZE.md"
+      - "research/candidate-60/microauction_state_forensic_v1.py.gz.b64"
+      - "research/candidate-51/router_microauction.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/run.py"
+      - "research/candidate-05/features.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-microauction-state-forensic-v1
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SCRIPT: .work/candidate-60-microauction-state-forensic-v1/microauction_state_forensic_v1.py
+      OUT: research/candidate-60/evidence/microauction-state-forensic-v1
+      CACHE: .cache/candidate-60-microauction-state-forensic-v1
+      CONSOLE: .work/candidate-60-microauction-state-forensic-v1-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize frozen forensic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$SCRIPT")"
+          base64 -d research/candidate-60/microauction_state_forensic_v1.py.gz.b64 \
+            | gzip -d > "$SCRIPT"
+          test -s "$SCRIPT"
+
+      - name: Verify environment and exact source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$SCRIPT" \
+            research/candidate-51/router_microauction.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/run.py \
+            research/candidate-05/features.py
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          expected = "4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9"
+          actual = sha256(Path("research/candidate-51/router_microauction.py").read_bytes()).hexdigest()
+          assert actual == expected, (actual, expected)
+          freeze = Path("research/candidate-60/MICROAUCTION_STATE_FORENSIC_V1_FREEZE.md").read_text()
+          assert "2026-04-13" in freeze and "2026-04-19" in freeze
+          assert "20 bp" in freeze
+          print("exact micro-auction source and frozen interpretation contract verified")
+          PY
+
+      - name: Run consumed-development state and geometry forensic
+        id: study
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUT" "$CONSOLE"
+          set -o pipefail
+          python "$SCRIPT" \
+            --start 2026-04-13 \
+            --end 2026-04-19 \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            2>&1 | tee "$CONSOLE/console.log"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify evidence without performance gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "micro-auction forensic failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root = Path("research/candidate-60/evidence/microauction-state-forensic-v1")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-microauction-state-forensic-v1"
+          assert summary["interval"] == {"start": "2026-04-13", "end": "2026-04-19"}
+          assert summary["round_trip_cost_bps"] == 20.0
+          assert summary["interpretation_contract"]["fresh_interval_consumed"] is False
+          assert summary["exact_rising_edges"] > 0
+          exact = pd.read_csv(root / "exact_events.csv")
+          assert exact["family"].isin({"continuation", "absorption"}).all()
+          assert exact["side"].isin({-1, 1}).all()
+          assert (root / "stage_edges.csv.gz").is_file()
+          assert (root / "global_episodes_3m.csv").is_file()
+          for horizon in (1, 5, 15, 30, 60, 120):
+              assert (root / f"one_slot_{horizon}m.csv").is_file()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist microauction state forensic evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete forensic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-microauction-state-forensic-v1
+          path: |
+            research/candidate-60/evidence/microauction-state-forensic-v1
+            .work/candidate-60-microauction-state-forensic-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 90
