@@ -177,6 +177,7 @@ __all__ = [
     "SMA_OFFSET_STATE",
     "UNRESOLVED",
     "ZARA_STATE",
+    "_apply_state_gate",
     "route_symbol",
     "route_universe",
     "state_mode",
