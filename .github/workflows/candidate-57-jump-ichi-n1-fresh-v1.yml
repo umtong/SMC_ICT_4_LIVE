@@ -109,10 +109,15 @@ jobs:
           assert campaign.SIGNAL_DAYS == 29
 
           arbitration = inspect.getsource(router_jump_impl.route_universe)
+          module_source = inspect.getsource(router_jump_impl)
           assert 'jump_selection_mode="source"' in arbitration
           assert 'score=-absolute_z' in arbitration
-          assert "taker" not in arbitration.lower()
-          assert "outcome" not in arbitration.lower()
+          assert '"jump_taker_filter_used": 0' in arbitration
+          assert '"jump_outcome_filter_used": 0' in arbitration
+          assert "C57_JUMP_TAKER" not in module_source
+          assert "metrics_sidecar" not in module_source
+          assert "aligned_peers" not in module_source
+          assert "outcome_best" not in module_source
 
           routing = inspect.getsource(Candidate35Strategy._on_complete_universe_minute)
           assert 'family = "jump"' in routing
