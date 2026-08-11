@@ -1,0 +1,63 @@
+name: candidate-57-l1-data-availability-probe-v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths: [.github/workflows/candidate-57-l1-data-availability-probe-v2.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+      - name: Probe in parallel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/c57-l1-data-probe-v2
+          python - <<'PY' | tee artifacts/c57-l1-data-probe-v2/console.log
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import json, urllib.request
+          from pathlib import Path
+
+          urls=[]
+          for dtype in ("bookTicker","bookDepth"):
+              urls += [
+                (f"binance_daily_{dtype}",f"https://data.binance.vision/data/futures/um/daily/{dtype}/SOLUSDT/SOLUSDT-{dtype}-2024-04-08.zip.CHECKSUM"),
+                (f"binance_monthly_{dtype}",f"https://data.binance.vision/data/futures/um/monthly/{dtype}/SOLUSDT/SOLUSDT-{dtype}-2024-04.zip.CHECKSUM"),
+              ]
+          for ym in ("2024/04/01","2024/07/01","2024/10/01","2025/01/01","2025/04/01","2025/07/01"):
+              for dtype in ("quotes","trades"):
+                  urls.append((f"tardis_{dtype}_{ym.replace('/','_')}",f"https://datasets.tardis.dev/v1/binance-futures/{dtype}/{ym}/SOLUSDT.csv.gz"))
+
+          def one(item):
+              name,url=item; out={"name":name,"url":url}
+              try:
+                  req=urllib.request.Request(url,method="HEAD",headers={"User-Agent":"candidate-57-research"})
+                  with urllib.request.urlopen(req,timeout=15) as r:
+                      out.update(status=int(getattr(r,"status",200)),content_length=r.headers.get("Content-Length"),content_type=r.headers.get("Content-Type"),etag=r.headers.get("ETag"),last_modified=r.headers.get("Last-Modified"))
+              except Exception as exc:
+                  out["error"]=f"{type(exc).__name__}: {exc}"
+              return out
+
+          rows=[]
+          with ThreadPoolExecutor(max_workers=16) as ex:
+              futs=[ex.submit(one,x) for x in urls]
+              for fut in as_completed(futs): rows.append(fut.result())
+          rows.sort(key=lambda x:x["name"])
+          payload={"study":"Candidate-57 parallel historical L1 availability probe","rows":rows}
+          Path("artifacts/c57-l1-data-probe-v2/result.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-l1-data-availability-probe-v2-${{ github.sha }}
+          path: artifacts/c57-l1-data-probe-v2/**
+          retention-days: 30
