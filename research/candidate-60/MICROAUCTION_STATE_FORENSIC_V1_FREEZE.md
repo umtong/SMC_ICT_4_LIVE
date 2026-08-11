@@ -12,11 +12,12 @@ V1 separates those claims without changing any classifier threshold.
 
 ## Frozen source and data
 
-- exact router: `research/candidate-51/router_microauction.py`
+- immutable source commit: `f7787095f98b27f31fa3766bda13a94ae350269d`
+- exact router: `research/candidate-51/router_microauction.py` from that commit
 - router SHA-256: `4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9`
 - exact consumed development interval: `2026-04-13` through `2026-04-19` UTC
 - universe: `BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT`
-- observations: checksum-verified Binance futures 1-minute klines, aggregate trades and book-depth archives through the existing Candidate-05/51 ingestion path
+- observations: checksum-verified Binance futures 1-minute klines, aggregate trades and book-depth archives through the exact Candidate-05/51 ingestion path at the frozen commit
 - round-trip diagnostic cost: `20 bp`
 - no policy-fresh interval is consumed
 - no parameter or threshold search is permitted
