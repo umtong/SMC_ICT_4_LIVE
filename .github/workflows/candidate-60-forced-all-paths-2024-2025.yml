@@ -1,0 +1,155 @@
+name: candidate-60-forced-all-paths-2024-2025
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-forced-all-paths-2024-2025.yml"
+      - "research/candidate-60/forced_all_paths_2024_2025.py"
+      - "research/candidate-60/forced_rejection_holdout_v1.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-forced-all-paths-2024-2025
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SOURCE_COMMIT: d35fe7c3556a387933103e18d491ab56d2f37c18
+      VENDOR: .work/candidate-60-forced-all-paths-vendor
+      OUT: research/candidate-60/evidence/forced-all-paths-2024-2025
+      CONSOLE: .work/candidate-60-forced-all-paths-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize immutable Candidate 16 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_COMMIT"
+          mkdir -p "$VENDOR"
+          for name in \
+            v9_liquidation_event_study.py \
+            v9_tardis_liquidation_study.py \
+            v9_tardis_liquidation_study_v2.py \
+            v9_tardis_liquidation_study_v3.py \
+            v10_liquidation_path_diagnostic.py
+          do
+            git show "$SOURCE_COMMIT:research/candidate-16/$name" > "$VENDOR/$name"
+          done
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Verify environment and reconstruction contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$VENDOR" \
+            research/candidate-60/forced_rejection_holdout_v1.py \
+            research/candidate-60/forced_all_paths_2024_2025.py
+          PYTHONPATH="$VENDOR:research/candidate-60" python - <<'PY'
+          import forced_all_paths_2024_2025 as study
+          assert study.SOURCE_COMMIT == "d35fe7c3556a387933103e18d491ab56d2f37c18"
+          assert study.SCHEMA == "candidate-60-forced-all-paths-2024-2025-v1"
+          print("complete-path reconstruction contract verified")
+          PY
+
+      - name: Materialize every 2024-2025 event path
+        id: study
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUT" "$CONSOLE"
+          set -o pipefail
+          PYTHONPATH="$VENDOR:research/candidate-60" \
+            python research/candidate-60/forced_all_paths_2024_2025.py \
+              --start-month 2024-01 \
+              --end-month 2025-12 \
+              --cache .cache/candidate-60-forced-all-paths-2024-2025 \
+              --output "$OUT" \
+            2>&1 | tee "$CONSOLE/console.log"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify complete causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "complete-path materialization failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root = Path("research/candidate-60/evidence/forced-all-paths-2024-2025")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-forced-all-paths-2024-2025-v1"
+          sample = summary["sample_contract"]
+          assert sample["calendar_days"] == 24
+          assert sample["symbol_days"] == 96
+          assert summary["global_independent_events"] > 0
+          assert summary["path_rows"] > summary["global_independent_events"]
+          events = pd.read_csv(root / "events.csv")
+          paths = pd.read_csv(root / "paths.csv.gz")
+          assert events["event_id"].nunique() == summary["global_independent_events"]
+          assert paths["event_id"].nunique() == summary["global_independent_events"]
+          assert (paths["t_min"] == 0).any() and (paths["t_min"] > 0).any()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit checksum-verified development paths
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist complete 2024-2025 liquidation paths"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete reconstruction artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-forced-all-paths-2024-2025
+          path: |
+            research/candidate-60/evidence/forced-all-paths-2024-2025
+            .work/candidate-60-forced-all-paths-console/console.log
+          if-no-files-found: warn
+          retention-days: 90
