@@ -1,0 +1,114 @@
+name: candidate-60-quarter-hour-order-flow-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-quarter-hour-order-flow-v1.yml"
+      - "research/candidate-60/QUARTER_HOUR_ORDER_FLOW_V1_FREEZE.md"
+      - "research/candidate-60/quarter_hour_order_flow_diagnostic.py.gz.b64"
+      - "research/candidate-05/features.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-quarter-hour-order-flow-v1
+  cancel-in-progress: true
+
+jobs:
+  synchronized-order-flow-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Decode reused raw-trade diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/QUARTER_HOUR_ORDER_FLOW_V1_FREEZE.md
+          base64 -d \
+            research/candidate-60/quarter_hour_order_flow_diagnostic.py.gz.b64 \
+            | gzip -d > research/candidate-60/quarter_hour_order_flow_diagnostic.py
+          python -m py_compile \
+            research/candidate-60/quarter_hour_order_flow_diagnostic.py \
+            research/candidate-05/features.py \
+            research/candidate-51/kline_only_inputs.py
+
+      - name: Install locked research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+
+      - name: Run development and conditional fresh clock-phase diagnostic
+        id: diagnostic
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-quarter-hour-order-flow-v1-console
+          set -o pipefail
+          uv run python research/candidate-60/quarter_hour_order_flow_diagnostic.py \
+            2>&1 | tee \
+            .work/candidate-60-quarter-hour-order-flow-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact mechanism evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f research/candidate-60/quarter_hour_order_flow_diagnostic.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/quarter-hour-order-flow-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist quarter-hour order-flow diagnostic"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-quarter-hour-order-flow-v1
+          path: |
+            research/candidate-60/evidence/quarter-hour-order-flow-v1
+            .work/candidate-60-quarter-hour-order-flow-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce data and diagnostic validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.diagnostic.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "quarter-hour diagnostic failed; status=$status"
+            exit "${status:-1}"
+          fi
