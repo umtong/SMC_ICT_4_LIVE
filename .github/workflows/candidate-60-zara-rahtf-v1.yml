@@ -1,0 +1,183 @@
+name: candidate-60-zara-rahtf-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-zara-rahtf-v1.yml"
+      - "research/candidate-60/README.md"
+      - "research/candidate-60/ZARA_RAHTF_V1_FREEZE.md"
+      - "research/candidate-60/router_zara_rahtf_v1.py"
+      - "research/candidate-60/router_zara_rahtf_runtime.py"
+      - "research/candidate-60/strategy_zara_rahtf_v1.py"
+      - "research/candidate-60/zara_rahtf_v1_campaign.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-zara-rahtf-v1
+  cancel-in-progress: true
+
+jobs:
+  causal-state-study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble reused source, state and Nautilus execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/ZARA_RAHTF_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_zaratustra_v5.py research/candidate-51/router_zaratustra_base.py
+          cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_base.py
+          cp research/candidate-57/router_trendrider_exact_mtf_v2.py research/candidate-51/router_trendrider_exact_base.py
+          cp research/candidate-57/router_trendrider_rahtf_clean_v3.py research/candidate-51/router_rahtf_state.py
+          cp research/candidate-60/router_zara_rahtf_v1.py research/candidate-51/router_zara_rahtf_impl.py
+          cp research/candidate-60/router_zara_rahtf_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_zaratustra_v5.py research/candidate-51/strategy_zaratustra_base.py
+          cp research/candidate-60/strategy_zara_rahtf_v1.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_zaratustra_base.py \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_exact_base.py \
+            research/candidate-51/router_rahtf_state.py \
+            research/candidate-51/router_zara_rahtf_impl.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/strategy_zaratustra_base.py \
+            research/candidate-60/zara_rahtf_v1_campaign.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment, doctor once and prove frozen contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57:research/candidate-60 uv run python - <<'PY'
+          import inspect
+          import os
+          import router
+          import router_rahtf_state as state
+          import router_zaratustra_base as source
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_zaratustra_base import Candidate35Strategy as SourceStrategy
+
+          assert issubclass(Candidate35Strategy, SourceStrategy)
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert {"c60_signal_start_ns", "c60_signal_end_ns", "c60_history_minutes"}.issubset(fields)
+          assert state._HTF_MINUTES == 360
+          assert state._CLASSIFICATION_PERIOD == 14
+          assert state._ADX_THRESHOLD == 20.0
+          assert state._RETURN_EFF_THRESHOLD == 0.05
+          assert state._RANGE_EFF_THRESHOLD == 0.03
+          assert state._EFFICIENCY_THRESHOLD == 0.5
+          assert state._CONFIRM_BUCKETS == 2
+          assert state._SLOW_LOOKBACK == 100
+          assert state._TREND_DRIFT_CONFIRM == 0.10
+          assert abs(source.RouteConfig().zara_source_stop_fraction - 0.0296) < 1e-12
+          for mode in ("control", "rahtf_clean"):
+              os.environ["C60_ZARA_RAHTF_MODE"] = mode
+              assert router.state_mode() == mode
+          try:
+              os.environ["C60_ZARA_RAHTF_MODE"] = "outcome_best"
+              router.state_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen state mode accepted")
+          gate = inspect.getsource(router._apply_state_gate)
+          assert "_TREND_UP_CLEAN" in gate
+          assert "_TREND_DOWN_CLEAN" in gate
+          assert "C60_RAHTF_CONFIRMED_LABEL_REJECTED" in gate
+          assert "for threshold" not in gate
+          wrapper = inspect.getsource(Candidate35Strategy._on_complete_universe_minute)
+          assert "c60_signal_start_ns" in wrapper and "c60_signal_end_ns" in wrapper
+          print("candidate-60 source fidelity, symmetric state and signal-window contracts verified")
+          PY
+
+      - name: Run development and conditional policy-fresh accounts
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-zara-rahtf-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57:research/candidate-60 \
+            uv run python research/candidate-60/zara_rahtf_v1_campaign.py \
+            2>&1 | tee .work/candidate-60-zara-rahtf-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_zaratustra_base.py \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_exact_base.py \
+            research/candidate-51/router_rahtf_state.py \
+            research/candidate-51/router_zara_rahtf_impl.py \
+            research/candidate-51/strategy_zaratustra_base.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/zara-rahtf-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate60: persist Zaratustra RAHTF causal evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-zara-rahtf-v1
+          path: |
+            research/candidate-60/evidence/zara-rahtf-v1
+            artifacts/candidate-60-zara-rahtf-v1
+            .work/candidate-60-zara-rahtf-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "candidate-60 campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
