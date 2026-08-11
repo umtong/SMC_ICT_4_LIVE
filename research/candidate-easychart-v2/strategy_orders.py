@@ -4,7 +4,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
-from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
+from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce, TriggerType
 from nautilus_trader.model.events import OrderCanceled, OrderDenied, OrderExpired, OrderRejected, PositionClosed
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, Venue
 from nautilus_trader.model.objects import Currency
@@ -40,8 +40,6 @@ class EasyChartOrderMixin:
         if floored <= 0 or floored < minimum:
             return None
         # This is the venue's single-order contract, not an arbitrary notional cap.
-        # The project contract permits one entry only, so a plan requiring more than
-        # the venue maximum is not executable and is rejected rather than clipped.
         if maximum is not None and floored > maximum:
             return None
         return instrument.make_qty(floored)
@@ -63,11 +61,16 @@ class EasyChartOrderMixin:
             entry_order_type=OrderType.LIMIT,
             entry_post_only=False,
             tp_post_only=False,
+            # Official Nautilus bracket examples use local emulation. It keeps
+            # contingent protection inside the framework until its trigger instead
+            # of submitting a stop already through the market after a bar fill.
+            emulation_trigger=TriggerType.DEFAULT,
         )
         self.active_plan = plan
         self.active_instrument_id = instrument_id
         self.active_entry_id = order_list.first.client_order_id
         self.entry_cancel_requested = False
+        self.emergency_exit_requested = False
         self.submit_order_list(order_list)
         self._record("submitted", plan_id=plan.plan_id, instrument_id=str(instrument_id), quantity=str(quantity))
 
@@ -80,17 +83,16 @@ class EasyChartOrderMixin:
         self.active_instrument_id = None
         self.active_entry_id = None
         self.entry_cancel_requested = False
+        self.emergency_exit_requested = False
         return True
 
     def _protective_failure(self, client_order_id: ClientOrderId, reason: str) -> None:
         if self.active_plan is None or self.active_instrument_id is None:
             return
-        if client_order_id == self.active_entry_id:
+        if client_order_id == self.active_entry_id or self.emergency_exit_requested:
             return
-        # A rejected stop/target must never leave an unprotected position. Use the
-        # framework's native cancellation and market close path, then let the
-        # PositionClosed event release the global slot.
         if not self.portfolio.is_flat(self.active_instrument_id):
+            self.emergency_exit_requested = True
             self._record(
                 "emergency_exit_protective_failure",
                 plan_id=self.active_plan.plan_id,
@@ -125,6 +127,7 @@ class EasyChartOrderMixin:
         self.active_instrument_id = None
         self.active_entry_id = None
         self.entry_cancel_requested = False
+        self.emergency_exit_requested = False
 
     def on_stop(self) -> None:
         for instrument_id, signal_type, execution_type in zip(
