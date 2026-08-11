@@ -116,9 +116,12 @@ def preserve_results(
 
     nav = final_nav(engine)
     days = (end - start).days + 1
-    closed = sum(event.get("kind") == "position_closed" for event in strategy.event_log)
+    # The framework report is authoritative. PositionClosed callbacks are not
+    # guaranteed for the final on_stop flatten within the same engine run.
+    closed = int(len(positions.index))
     plans = sum(event.get("kind") == "plan" for event in strategy.event_log)
     submitted = sum(event.get("kind") == "submitted" for event in strategy.event_log)
+    emergency = sum(event.get("kind") == "emergency_exit_protective_failure" for event in strategy.event_log)
     metrics = {
         "candidate": "candidate-easychart-v2",
         "start": start.isoformat(),
@@ -133,6 +136,7 @@ def preserve_results(
         "closed_positions": closed,
         "plans": plans,
         "submitted_plans": submitted,
+        "emergency_protective_exits": emergency,
         "independent_trades_per_day": closed / days,
         "risk_fraction": 0.03,
         "minimum_gross_rr": 1.0,
