@@ -1,0 +1,109 @@
+name: candidate-easychart-v7-session-router-development
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-v7-router-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v7-session-router-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  selected-family-router:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v7-router-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify locked implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Route only development-positive independent time structures
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 5
+            --cache "$CACHE"
+            --signal-minutes 5
+            --accepted-break-widths 1.0
+            --cost-profile role
+          )
+          run_screen() {
+            python research/candidate-easychart/screen_v7_fixed.py "${common[@]}" "$@"
+          }
+
+          run_screen --families PRIOR_DAY_NY --disable-fakeout \
+            --output "$ROOT/prior-day-ny-trap"
+          run_screen --families PRIOR_DAY_NY \
+            --output "$ROOT/prior-day-ny-both"
+          run_screen --families FUNDING_16_00 --disable-fakeout \
+            --output "$ROOT/funding16-00-trap"
+          run_screen --families FUNDING_08_16 --disable-fakeout \
+            --output "$ROOT/funding08-16-trap"
+          run_screen --families PRIOR_DAY_NY,FUNDING_16_00 --disable-fakeout \
+            --output "$ROOT/pny-f16-trap"
+          run_screen --families PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16 --disable-fakeout \
+            --output "$ROOT/pny-f16-f08-trap"
+          run_screen --families PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16,LONDON_NY --disable-fakeout \
+            --output "$ROOT/pny-f16-f08-london-trap"
+          run_screen --families PRIOR_DAY_NY,LONDON_NY --disable-fakeout \
+            --output "$ROOT/pny-london-trap"
+
+          variants=(
+            prior-day-ny-trap
+            prior-day-ny-both
+            funding16-00-trap
+            funding08-16-trap
+            pny-f16-trap
+            pny-f16-f08-trap
+            pny-f16-f08-london-trap
+            pny-london-trap
+          )
+          python research/candidate-easychart/compare_v7.py \
+            --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in \
+            prior-day-ny-trap prior-day-ny-both funding16-00-trap funding08-16-trap \
+            pny-f16-trap pny-f16-f08-trap pny-f16-f08-london-trap pny-london-trap; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v7-router-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v7-router-development/**
+          if-no-files-found: warn
+          retention-days: 90
