@@ -12,11 +12,10 @@ import pandas as pd
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, RiskEngineConfig
-from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import TraderId, Venue
 from nautilus_trader.model.objects import Currency, Money
-from nautilus_trader.persistence.wranglers import BarDataWrangler
 
 from data import load_range, wrangler_frame
 
@@ -62,7 +61,20 @@ def add_symbol_data(
     raw = load_range(symbol, start, end, cache)
     source_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
     signal_type = BarType.from_str(f"{instrument.id}-5-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL")
-    source = BarDataWrangler(source_type, instrument).process(wrangler_frame(raw, 1))
+    frame = wrangler_frame(raw, 1)
+    source = [
+        Bar(
+            bar_type=source_type,
+            open=instrument.make_price(row.open),
+            high=instrument.make_price(row.high),
+            low=instrument.make_price(row.low),
+            close=instrument.make_price(row.close),
+            volume=instrument.make_qty(row.volume),
+            ts_event=int(row.Index.value),
+            ts_init=int(row.Index.value),
+        )
+        for row in frame.itertuples()
+    ]
     engine.add_data(source, sort=False)
     return source_type, signal_type
 
