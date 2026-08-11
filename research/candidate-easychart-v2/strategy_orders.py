@@ -39,7 +39,6 @@ class EasyChartOrderMixin:
         maximum = Decimal(str(instrument.max_quantity)) if instrument.max_quantity is not None else None
         if floored <= 0 or floored < minimum:
             return None
-        # This is the venue's single-order contract, not an arbitrary notional cap.
         if maximum is not None and floored > maximum:
             return None
         return instrument.make_qty(floored)
@@ -50,20 +49,23 @@ class EasyChartOrderMixin:
         if quantity is None:
             self._record("plan_rejected_quantity", plan_id=plan.plan_id, instrument_id=str(instrument_id))
             return
+        entry_price = instrument.make_price(plan.entry)
         order_list: OrderList = self.order_factory.bracket(
             instrument_id=instrument_id,
             order_side=OrderSide.BUY if plan.side is Side.LONG else OrderSide.SELL,
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
-            entry_price=instrument.make_price(plan.entry),
+            entry_price=entry_price,
+            entry_trigger_price=entry_price,
             sl_trigger_price=instrument.make_price(plan.stop),
             tp_price=instrument.make_price(plan.target),
-            entry_order_type=OrderType.LIMIT,
+            # A retest is naturally a limit-if-touched event. This is also the
+            # official Nautilus pattern for an emulated bracket: the entry is
+            # released only after the boundary is touched, while stop and target
+            # remain native contingent children managed by the framework.
+            entry_order_type=OrderType.LIMIT_IF_TOUCHED,
             entry_post_only=False,
             tp_post_only=False,
-            # Official Nautilus bracket examples use local emulation. It keeps
-            # contingent protection inside the framework until its trigger instead
-            # of submitting a stop already through the market after a bar fill.
             emulation_trigger=TriggerType.DEFAULT,
         )
         self.active_plan = plan
