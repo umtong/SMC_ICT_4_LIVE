@@ -1,0 +1,180 @@
+name: candidate-57-trendrider-exact-public-mtf-v2-policy-fresh
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-trendrider-exact-public-mtf-v2-policy-fresh.yml"
+      - "research/candidate-57/trendrider_exact_public_mtf_v2_policy_fresh.py"
+      - "research/candidate-57/evidence/trendrider-exact-public-mtf-v2/**"
+      - "research/candidate-57/TRENDRIDER_EXACT_PUBLIC_MTF_V2_FREEZE.md"
+      - "research/candidate-57/trendrider_public_mtf_context_v2.py"
+      - "research/candidate-57/router_trendrider_exact_mtf_v2.py"
+      - "research/candidate-57/router_trendrider_exact_runtime_v2.py"
+      - "research/candidate-57/strategy_trendrider_exact_mtf_v2.py"
+      - "research/candidate-57/trendrider_exact_public_mtf_v2_campaign.py"
+      - "research/candidate-57/router_trendrider_pullback_1h.py"
+      - "research/candidate-57/router_trendrider_runtime.py"
+      - "research/candidate-57/strategy_trendrider_pullback_1h.py"
+      - "research/candidate-57/strategy_trendrider_pullback_runoff_v1.py"
+      - "research/candidate-57/trendrider_pullback_long_v1_campaign.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-trendrider-exact-public-mtf-v2-policy-fresh
+  cancel-in-progress: true
+
+jobs:
+  conditional-october:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact public MTF account
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_base.py
+          cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_fallback_impl.py
+          cp research/candidate-57/router_trendrider_runtime.py research/candidate-51/router_trendrider_fallback_runtime.py
+          cp research/candidate-57/router_trendrider_exact_mtf_v2.py research/candidate-51/router_trendrider_exact_impl.py
+          cp research/candidate-57/router_trendrider_exact_runtime_v2.py research/candidate-51/router_trendrider_exact_runtime.py
+          cp research/candidate-57/trendrider_public_mtf_context_v2.py research/candidate-51/trendrider_public_mtf_context_v2.py
+          cp research/candidate-57/strategy_trendrider_pullback_1h.py research/candidate-51/strategy_trendrider_base.py
+          cp research/candidate-57/strategy_trendrider_pullback_runoff_v1.py research/candidate-51/strategy_trendrider_runoff_base.py
+          cp research/candidate-57/strategy_trendrider_exact_mtf_v2.py research/candidate-51/strategy_trendrider_exact_base.py
+          cp research/candidate-51/router_trendrider_exact_impl.py research/candidate-51/router_trendrider_impl.py
+          cp research/candidate-51/router_trendrider_exact_runtime.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_trendrider_exact_base.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_fallback_impl.py \
+            research/candidate-51/router_trendrider_fallback_runtime.py \
+            research/candidate-51/router_trendrider_exact_impl.py \
+            research/candidate-51/router_trendrider_exact_runtime.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_trendrider_base.py \
+            research/candidate-51/strategy_trendrider_runoff_base.py \
+            research/candidate-51/strategy_trendrider_exact_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/trendrider_public_mtf_context_v2.py \
+            research/candidate-57/trendrider_exact_public_mtf_v2_campaign.py \
+            research/candidate-57/trendrider_exact_public_mtf_v2_policy_fresh.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment and prove frozen October sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python - <<'PY'
+          import inspect
+          import trendrider_exact_public_mtf_v2_policy_fresh as policy
+          from strategy import Candidate35Strategy
+          from strategy_trendrider_runoff_base import Candidate35Strategy as FallbackPolicy
+
+          assert issubclass(Candidate35Strategy, FallbackPolicy)
+          assert str(policy.STAGE.start) == "2025-10-01"
+          assert str(policy.STAGE.end) == "2025-10-28"
+          assert policy.MIN_INFORMATIVE_TRADES == 7
+          main = inspect.getsource(policy.main)
+          assert "SOURCE_FIDELITY_SUPPORTED_POLICY_FRESH_REQUIRED" in main
+          assert "build_sidecar" in main
+          assert "exact_public_mtf" in main
+          print("predeclared exact-MTF October sequence verified")
+          PY
+
+      - name: Run only if consumed diagnostic supports exact source fidelity
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-trendrider-exact-public-mtf-v2-policy-fresh-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/trendrider_exact_public_mtf_v2_policy_fresh.py \
+            2>&1 | tee .work/candidate-57-trendrider-exact-public-mtf-v2-policy-fresh-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact policy-fresh evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_fallback_impl.py \
+            research/candidate-51/router_trendrider_fallback_runtime.py \
+            research/candidate-51/router_trendrider_exact_impl.py \
+            research/candidate-51/router_trendrider_exact_runtime.py \
+            research/candidate-51/strategy_trendrider_base.py \
+            research/candidate-51/strategy_trendrider_runoff_base.py \
+            research/candidate-51/strategy_trendrider_exact_base.py \
+            research/candidate-51/trendrider_public_mtf_context_v2.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/trendrider-exact-public-mtf-v2-policy-fresh
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist exact MTF October evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete policy-fresh evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-trendrider-exact-public-mtf-v2-policy-fresh
+          path: |
+            research/candidate-57/evidence/trendrider-exact-public-mtf-v2-policy-fresh
+            artifacts/candidate-57-trendrider-exact-public-mtf-v2-policy-fresh
+            .work/candidate-57-trendrider-exact-public-mtf-v2-policy-fresh-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "Exact MTF October replay failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
