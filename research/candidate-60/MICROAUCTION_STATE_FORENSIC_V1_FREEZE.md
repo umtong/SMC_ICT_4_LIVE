@@ -6,15 +6,17 @@ The Candidate-51 real-data micro-auction system lost money in its development ac
 
 1. the state classifier identified continuation or absorption correctly;
 2. the next-open entry still had enough unconsumed price space;
-3. the event-extreme stop and measured-move/midpoint target remained viable after 20 bp round-trip costs.
+3. the balance-boundary/sweep invalidation and measured-move/midpoint target remained viable after 20 bp round-trip costs.
 
 V1 separates those claims without changing any classifier threshold.
 
 ## Frozen source and data
 
 - immutable source commit: `f7787095f98b27f31fa3766bda13a94ae350269d`
-- exact router: `research/candidate-51/router_microauction.py` from that commit
-- router SHA-256: `4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9`
+- exact executable router: `research/candidate-51/router_microauction_boundary.py` from that commit
+- executable-router SHA-256: `4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9`
+- underlying state core: `research/candidate-51/router_microauction.py` from the same commit
+- state-core SHA-256: `01f65b19c09d22979e2db0e958962370022d99a48649eaf066adb91a8dcda639`
 - exact consumed development interval: `2026-04-13` through `2026-04-19` UTC
 - universe: `BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT`
 - observations: checksum-verified Binance futures 1-minute klines, aggregate trades and book-depth archives through the exact Candidate-05/51 ingestion path at the frozen commit
@@ -36,7 +38,7 @@ A positive mean alone is insufficient. Separation must be visible across symbols
 
 ### H2 — geometry may be the primary failure
 
-The original router validates gross reward/risk at the event close. The actual order is submitted only after the completed minute and can fill at a later price. A state can therefore be directionally informative yet untradeable because:
+The executable router validates gross reward/risk at the event close. The actual order is submitted only after the completed minute and can fill at a later price. A state can therefore be directionally informative yet untradeable because:
 
 - next-open objective distance is less than the 20 bp round-trip cost;
 - the actual next-open geometry is invalid;

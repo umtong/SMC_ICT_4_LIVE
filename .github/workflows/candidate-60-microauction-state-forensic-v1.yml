@@ -49,7 +49,7 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
           mkdir -p "$(dirname "$SCRIPT")" "$VENDOR"
           cat research/candidate-60/microauction_state_forensic_v1.py.part* > "$SCRIPT"
-          test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = "35fa17288f54d5412fad888240e986bf45cd933214927a7b3a0577fd81dc420b"
+          test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = "4105861cc6e1ed333ae51d33c2bcb2c480f28ac9b2439b655c30156dac166f45"
           git archive "$SOURCE_COMMIT" \
             research/candidate-05 \
             research/candidate-16 \
@@ -57,6 +57,7 @@ jobs:
             | tar -x -C "$VENDOR"
           test -s "$SCRIPT"
           test -s "$C60_RESEARCH_ROOT/candidate-51/router_microauction.py"
+          test -s "$C60_RESEARCH_ROOT/candidate-51/router_microauction_boundary.py"
 
       - name: Verify environment and exact source contract
         shell: bash
@@ -66,6 +67,7 @@ jobs:
           python -m compileall -q \
             "$SCRIPT" \
             "$C60_RESEARCH_ROOT/candidate-51/router_microauction.py" \
+            "$C60_RESEARCH_ROOT/candidate-51/router_microauction_boundary.py" \
             "$C60_RESEARCH_ROOT/candidate-51/router_picasso.py" \
             "$C60_RESEARCH_ROOT/candidate-51/run.py" \
             "$C60_RESEARCH_ROOT/candidate-05/features.py"
@@ -73,15 +75,25 @@ jobs:
           from hashlib import sha256
           import os
           from pathlib import Path
-          expected = "4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9"
-          source = Path(os.environ["C60_RESEARCH_ROOT"]) / "candidate-51/router_microauction.py"
-          actual = sha256(source.read_bytes()).hexdigest()
-          assert actual == expected, (actual, expected)
+          root = Path(os.environ["C60_RESEARCH_ROOT"]) / "candidate-51"
+          expected = {
+              "router_microauction.py": "01f65b19c09d22979e2db0e958962370022d99a48649eaf066adb91a8dcda639",
+              "router_microauction_boundary.py": "4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9",
+          }
+          for name, digest in expected.items():
+              actual = sha256((root / name).read_bytes()).hexdigest()
+              assert actual == digest, (name, actual, digest)
           freeze = Path("research/candidate-60/MICROAUCTION_STATE_FORENSIC_V1_FREEZE.md").read_text()
-          assert "f7787095f98b27f31fa3766bda13a94ae350269d" in freeze
-          assert "2026-04-13" in freeze and "2026-04-19" in freeze
-          assert "20 bp" in freeze
-          print("immutable micro-auction source and frozen interpretation contract verified")
+          for text in (
+              "f7787095f98b27f31fa3766bda13a94ae350269d",
+              "01f65b19c09d22979e2db0e958962370022d99a48649eaf066adb91a8dcda639",
+              "4ad9a1694ba5daab637b8fe51c5c36d9859218534116864bdec269c78d8903b9",
+              "2026-04-13",
+              "2026-04-19",
+              "20 bp",
+          ):
+              assert text in freeze
+          print("immutable micro-auction executable router and state core verified")
           PY
 
       - name: Run consumed-development state and geometry forensic
