@@ -1,0 +1,86 @@
+name: candidate-easychart-v4-trap-untouched-validation
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-v4-trap-validation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v4-trap-untouched-validation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  untouched-windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v4-trap-validation
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify locked implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run unchanged trap family on untouched windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          locked=(
+            --warmup-days 45
+            --cache "$CACHE"
+            --channel-minutes 15
+            --channel-pivot-span 2
+            --micro-pivot-span 2
+            --min-body-ratio 2.0
+            --min-previous-body-atr 0.10
+            --disable-fakeout
+            --cost-profile role
+          )
+          python research/candidate-easychart/screen_v4.py "${locked[@]}" \
+            --start 2024-03-01 --end 2024-06-30 \
+            --output "$ROOT/untouched-2024-03-06"
+          python research/candidate-easychart/screen_v4.py "${locked[@]}" \
+            --start 2025-01-01 --end 2025-04-30 \
+            --output "$ROOT/untouched-2025-01-04"
+          python research/candidate-easychart/compare_v4.py \
+            --root "$ROOT" \
+            --variants untouched-2024-03-06 untouched-2025-01-04
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in untouched-2024-03-06 untouched-2025-01-04; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v4-trap-validation-${{ github.sha }}
+          path: artifacts/candidate-easychart-v4-trap-validation/**
+          if-no-files-found: warn
+          retention-days: 90
