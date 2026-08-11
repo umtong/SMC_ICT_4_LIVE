@@ -49,20 +49,17 @@ class EasyChartOrderMixin:
         if quantity is None:
             self._record("plan_rejected_quantity", plan_id=plan.plan_id, instrument_id=str(instrument_id))
             return
-        entry_price = instrument.make_price(plan.entry)
         order_list: OrderList = self.order_factory.bracket(
             instrument_id=instrument_id,
             order_side=OrderSide.BUY if plan.side is Side.LONG else OrderSide.SELL,
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
-            entry_price=entry_price,
-            entry_trigger_price=entry_price,
             sl_trigger_price=instrument.make_price(plan.stop),
             tp_price=instrument.make_price(plan.target),
-            # A retest is a venue-native limit-if-touched event. Local emulation
-            # needs quotes or trades, while this research intentionally supplies
-            # only 1m bars; therefore the BacktestExchange owns the trigger path.
-            entry_order_type=OrderType.LIMIT_IF_TOUCHED,
+            # The scenario is confirmed on a closed 5m bar, so the next executable
+            # action is one market entry. NautilusTrader owns the native bracket,
+            # fills, stop, target, fees, position and account state.
+            entry_order_type=OrderType.MARKET,
             entry_post_only=False,
             tp_post_only=False,
             emulation_trigger=TriggerType.NO_TRIGGER,
