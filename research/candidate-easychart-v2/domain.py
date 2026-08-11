@@ -36,7 +36,7 @@ class Candle:
 @dataclass(slots=True)
 class Boundary:
     boundary_id: str
-    side: str  # HIGH or LOW
+    side: str
     level: float
     event_time_ns: int
     observed_time_ns: int
@@ -87,6 +87,7 @@ class AcceptanceCandidate:
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
     pivot_spans: tuple[int, ...] = (2, 6, 12)
+    min_tradable_span: int = 6
     atr_period: int = 14
     min_prominence_atr: float = 1.0
     min_gross_rr: float = 1.0
