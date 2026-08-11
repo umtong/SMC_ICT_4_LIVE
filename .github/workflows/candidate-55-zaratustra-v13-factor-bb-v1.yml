@@ -1,0 +1,316 @@
+name: candidate-55-zaratustra-v13-factor-bb-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v13-factor-bb-v1.yml"
+      - "research/candidate-55/router_zaratustra_v13_factor_bb.py"
+      - "research/candidate-55/strategy_zaratustra_v13_factor_bb.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v13-factor-bb-v1
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: policy-fresh-2024-02
+            start: "2024-02-05"
+            end: "2024-02-11"
+            calendar_days: 7
+          - label: policy-fresh-2024-08
+            start: "2024-08-05"
+            end: "2024-08-11"
+            calendar_days: 7
+          - label: policy-fresh-2025-04
+            start: "2025-04-07"
+            end: "2025-04-13"
+            calendar_days: 7
+          - label: policy-fresh-2025-11
+            start: "2025-11-03"
+            end: "2025-11-09"
+            calendar_days: 7
+          - label: policy-fresh-2026-02
+            start: "2026-02-02"
+            end: "2026-02-08"
+            calendar_days: 7
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 1
+
+      - name: Materialize reused V13 execution and factor-owned router
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/strategy_zaratustra_v13.py research/candidate-51/strategy_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v13_factor_bb.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra_v13_factor_bb.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor, compile and verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import BarObservation, _decode_factor_mode, _factor_snapshot
+
+          assert _decode_factor_mode("factor_bb_short") == (True, "bb_short")
+          assert _decode_factor_mode("bb_short") == (False, "bb_short")
+
+          minute = 60_000_000_000
+          def series(start, end):
+              return [
+                  BarObservation(
+                      ts_event=index * minute,
+                      open=start + (end - start) * index / 30,
+                      high=start + (end - start) * index / 30 + 0.1,
+                      low=start + (end - start) * index / 30 - 0.1,
+                      close=start + (end - start) * index / 30,
+                      volume=1.0,
+                  )
+                  for index in range(31)
+              ]
+
+          accepted, diag = _factor_snapshot({
+              "BTCUSDT": series(100.0, 99.0),
+              "ETHUSDT": series(100.0, 98.5),
+              "SOLUSDT": series(100.0, 99.5),
+              "XRPUSDT": series(100.0, 100.2),
+          })
+          assert accepted and diag["factor_down_assets"] == 3, diag
+          rejected, diag = _factor_snapshot({
+              "BTCUSDT": series(100.0, 99.0),
+              "ETHUSDT": series(100.0, 99.5),
+              "SOLUSDT": series(100.0, 100.5),
+              "XRPUSDT": series(100.0, 101.0),
+          })
+          assert not rejected and diag["factor_down_assets"] == 2, diag
+          print("V13 factor-BB causal contracts pass")
+          PY
+
+      - name: Freeze policies and create exact configs
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+          CALENDAR_DAYS: ${{ matrix.calendar_days }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          work = Path(".work/candidate-55-zaratustra-v13-factor-bb-v1")
+          work.mkdir(parents=True, exist_ok=True)
+          policies = {
+              "source_short": "source_short",
+              "bb_short": "bb_short",
+              "factor_bb_short": "factor_bb_short",
+          }
+          for name, mode in policies.items():
+              config = copy.deepcopy(source)
+              for key in (
+                  "sma_offset_low", "sma_offset_high",
+                  "sma_stop_min_fraction", "sma_stop_max_fraction",
+                  "sma_stop_atr_buffer",
+              ):
+                  config["strategy"].pop(key, None)
+              config["strategy"].update({
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 1_000_000,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+                  "zaratustra_variant": mode,
+                  "zaratustra_startup_30m_candles": 10,
+                  "zaratustra_rsi_period": 14,
+                  "zaratustra_di_period": 14,
+                  "zaratustra_bb_period": 20,
+                  "zaratustra_source_leverage": 10.0,
+                  "zaratustra_source_stoploss": 0.296,
+                  "zaratustra_trailing_positive": 0.010,
+                  "zaratustra_trailing_offset": 0.100,
+                  "zaratustra_emergency_target_fraction": 0.50,
+              })
+              (work / f"{name}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          manifest = {
+              "candidate": "candidate-55-zaratustra-v13-factor-bb-v1",
+              "label": os.environ["LABEL"],
+              "interval": [os.environ["START"], os.environ["END"]],
+              "calendar_days": int(os.environ["CALENDAR_DAYS"]),
+              "engine": "NautilusTrader BacktestNode",
+              "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "one_global_entry_or_position": True,
+              "current_nav_planned_loss_fraction": 0.03,
+              "policies": policies,
+              "new_policy": {
+                  "source_component": "Bollinger downside edge only",
+                  "side": "short only",
+                  "factor_lookback_minutes": 30,
+                  "factor_min_down_assets": 3,
+                  "factor_common_return_rule": "cross-asset median < 0",
+                  "optimized_magnitude_thresholds": False,
+              },
+              "prediction": (
+                  "the factor gate should mainly remove idiosyncratic downside "
+                  "breaks during broad rebound/up states, preserving BB-short "
+                  "profit while reducing full structural stops"
+              ),
+              "falsification": (
+                  "factor_bb_short remains cost-negative in most fixed weeks, "
+                  "removes winners without reducing full stops, or becomes too "
+                  "sparse to contribute meaningful independent opportunity"
+              ),
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Run three continuous Nautilus accounts on identical data
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+        run: |
+          set +e
+          work=".work/candidate-55-zaratustra-v13-factor-bb-v1"
+          mkdir -p "$work/status"
+          for variant in source_short bb_short factor_bb_short; do
+            output="artifacts/candidate-55/zaratustra-v13-factor-bb-v1-${variant}-${LABEL}"
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config "$work/${variant}.json" \
+              --start "$START" --end "$END" \
+              --cache ".cache/candidate-55-zaratustra-v13-factor-bb-v1-${LABEL}" \
+              --output "$output" \
+              --workspace "$work/${variant}-${LABEL}"
+            echo "$?" > "$work/status/${variant}.txt"
+          done
+          exit 0
+
+      - name: Write compact causal comparison
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          CALENDAR_DAYS: ${{ matrix.calendar_days }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          label = os.environ["LABEL"]
+          days = int(os.environ["CALENDAR_DAYS"])
+          work = Path(".work/candidate-55-zaratustra-v13-factor-bb-v1")
+          comparison = {}
+          for variant in ("source_short", "bb_short", "factor_bb_short"):
+              root = Path("artifacts/candidate-55") / f"zaratustra-v13-factor-bb-v1-{variant}-{label}"
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              status_path = work / "status" / f"{variant}.txt"
+              row = {
+                  "exit_code": int(status_path.read_text()) if status_path.is_file() else None,
+                  "produced": metrics_path.is_file() and diagnostics_path.is_file(),
+              }
+              if row["produced"]:
+                  metrics = json.loads(metrics_path.read_text())
+                  diagnostics = json.loads(diagnostics_path.read_text())
+                  row.update({
+                      key: metrics.get(key) for key in (
+                          "ending_nav", "total_return", "geometric_daily_growth",
+                          "max_drawdown", "trades", "wins", "losses",
+                          "win_rate", "profit_factor", "expectancy_usdt",
+                          "largest_winner_share", "min_equity",
+                      )
+                  })
+                  row.update({
+                      "trades_per_day": float(metrics.get("trades") or 0) / days,
+                      "entry_submissions": diagnostics.get("entry_submissions"),
+                      "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                      "factor_gate_rejections": int(
+                          (diagnostics.get("unresolved_reason_counts") or {}).get(
+                              "FACTOR_BB_BROAD_30M_DOWNSIDE_NOT_ACCEPTED", 0
+                          )
+                      ),
+                      "global_position_violations": diagnostics.get("global_position_violations"),
+                      "order_rejections": diagnostics.get("order_rejections"),
+                      "max_open_positions_observed": diagnostics.get("max_open_positions_observed"),
+                  })
+              comparison[variant] = row
+          summary = {
+              "candidate": "candidate-55-zaratustra-v13-factor-bb-v1",
+              "label": label,
+              "calendar_days": days,
+              "comparison": comparison,
+          }
+          destination = Path("artifacts/candidate-55") / f"zaratustra-v13-factor-bb-v1-summary-{label}.json"
+          destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v13-factor-bb-v1-${{ matrix.label }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v13-factor-bb-v1-*-${{ matrix.label }}/**
+            artifacts/candidate-55/zaratustra-v13-factor-bb-v1-summary-${{ matrix.label }}.json
+            .work/candidate-55-zaratustra-v13-factor-bb-v1/manifest.json
+            .work/candidate-55-zaratustra-v13-factor-bb-v1/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce exact run completion
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          work=".work/candidate-55-zaratustra-v13-factor-bb-v1"
+          for variant in source_short bb_short factor_bb_short; do
+            test "$(cat "$work/status/${variant}.txt")" -eq 0
+            root="artifacts/candidate-55/zaratustra-v13-factor-bb-v1-${variant}-${LABEL}"
+            test -s "$root/metrics.json"
+            test -s "$root/strategy_diagnostics.json"
+          done
