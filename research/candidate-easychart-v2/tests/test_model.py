@@ -34,11 +34,11 @@ class EasyChartStateEngineTest(unittest.TestCase):
         engine.boundaries.extend([source, later_origin])
         self.assertEqual(engine._latest_origin(Side.LONG, before_ns=10), 100.0)
 
-    def test_rejection_close_uses_excursion_and_nearest_preexisting_target(self) -> None:
+    def test_rejection_requires_confirmation_then_first_close_held_retest(self) -> None:
         engine = EasyChartStateEngine(
             "BTCUSDT",
             EngineConfig(
-                pivot_spans=(1,),
+                pivot_spans=(50,),
                 atr_period=2,
                 min_prominence_atr=0.1,
                 min_gross_rr=1.0,
@@ -46,24 +46,29 @@ class EasyChartStateEngineTest(unittest.TestCase):
                 enable_acceptance=False,
             ),
         )
+        engine.boundaries.extend(
+            [
+                Boundary("source", "LOW", 100.0, 0, 0, 12, 3.0),
+                Boundary("target", "HIGH", 110.0, 0, 0, 12, 3.0),
+            ],
+        )
         bars = [
-            self.bar(1, 10, 11, 9, 10),
-            self.bar(2, 10, 13, 10, 12),
-            self.bar(3, 12, 12, 8, 9),
-            self.bar(4, 9, 14, 9, 13),
-            self.bar(5, 13, 13, 10, 11),
-            self.bar(6, 11, 12, 7.5, 8.5),
+            self.bar(1, 101, 102, 100.5, 101),
+            self.bar(2, 101, 102, 99, 100.5),   # sweep and reclaim: arm
+            self.bar(3, 100.5, 103, 100.4, 102), # displacement: confirm
+            self.bar(4, 102, 104, 101, 103),
+            self.bar(5, 103, 104, 99.9, 101),    # first retest closes inside
         ]
         plans = []
         for bar in bars:
             plans.extend(engine.on_bar(bar))
-        rejections = [plan for plan in plans if plan.family is Family.REJECTION_CLOSE]
-        self.assertTrue(rejections)
-        plan = rejections[-1]
+        rejections = [plan for plan in plans if plan.family is Family.REJECTION_RETEST_CLOSE]
+        self.assertEqual(len(rejections), 1)
+        plan = rejections[0]
         self.assertIs(plan.side, Side.LONG)
         self.assertEqual(plan.entry, bars[-1].close)
-        self.assertLess(plan.stop, plan.entry)
-        self.assertGreater(plan.target, plan.entry)
+        self.assertEqual(plan.stop, 98.9)
+        self.assertEqual(plan.target, 110.0)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
 
 
