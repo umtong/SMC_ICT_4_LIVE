@@ -1,0 +1,54 @@
+name: candidate-60-materialize-metaorder-v1-source
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-materialize-metaorder-v1-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-materialize-metaorder-v1-source
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+      - name: Decode immutable V1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-60/metaorder_lifecycle_exhaustion_v1.py.gz.b64.part* \
+            | base64 -d | gzip -d \
+            > research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py
+          test "$(sha256sum research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py | awk '{print $1}')" = \
+            "7dc2c1da597c518bc427ec2869d03623f363cbf212cf90eb319aca127885b71a"
+          python -m py_compile research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py
+      - name: Commit materialized source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          git add research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit --no-gpg-sign -m "candidate60: materialize V1 source for causal reuse"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-60
+            git rebase origin/research/candidate-60
+            if git push origin HEAD:research/candidate-60; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
