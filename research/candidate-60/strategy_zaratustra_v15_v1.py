@@ -7,6 +7,7 @@ public strategy has no ROI table and no source exit signal.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import replace
 
 from router import Z15_STATE
@@ -29,6 +30,9 @@ class Candidate35Config(_PicassoConfig, frozen=True):
     z15_atr_absolute_max: float = 0.2
     z15_stop_fraction: float = 0.015
     z15_emergency_objective_fraction: float = 0.20
+    c60_signal_start_ns: int = 0
+    c60_signal_end_ns: int = 9_223_372_036_854_775_807
+    c60_history_minutes: int = 6_000
 
 
 class Candidate35Strategy(_PicassoStrategy):
@@ -43,7 +47,16 @@ class Candidate35Strategy(_PicassoStrategy):
             raise ValueError("ZaratustraV15 trailing distance must be 0.12% underlying")
         if abs(float(config.picasso_source_effective_leverage) - 1.0) > 1e-12:
             raise ValueError("source leverage must already be normalized to underlying price")
+        if int(config.c60_signal_start_ns) > int(config.c60_signal_end_ns):
+            raise ValueError("candidate-60 V15 signal window is inverted")
+        if int(config.c60_history_minutes) < 500:
+            raise ValueError("candidate-60 V15 history is insufficient")
         super().__init__(config)
+        history = int(config.c60_history_minutes)
+        self.bars = {
+            symbol: deque(self.bars[symbol], maxlen=history)
+            for symbol in SYMBOLS
+        }
         self.route_config = replace(
             self.route_config,
             z15_family=str(config.z15_family),
@@ -76,6 +89,10 @@ class Candidate35Strategy(_PicassoStrategy):
                 "z15_one_minute_trailing_detail": 1,
                 "z15_same_source_bar_trailing_fill_allowed": 0,
                 "z15_policy_changed_risk_or_costs": 0,
+                "c60_signal_start_ns": int(config.c60_signal_start_ns),
+                "c60_signal_end_ns": int(config.c60_signal_end_ns),
+                "c60_history_minutes": history,
+                "c60_outside_signal_minutes": 0,
             }
         )
 
@@ -86,6 +103,22 @@ class Candidate35Strategy(_PicassoStrategy):
         return False, {"source_exit_enabled": 0}
 
     def _on_complete_universe_minute(self, ts_event: int) -> None:
+        open_symbols = [
+            symbol
+            for symbol in SYMBOLS
+            if not self.portfolio.is_flat(self.instrument_ids[symbol])
+        ]
+        in_signal_window = (
+            int(self.config.c60_signal_start_ns)
+            <= int(ts_event)
+            <= int(self.config.c60_signal_end_ns)
+        )
+        if not open_symbols and not self.entry_pending and not in_signal_window:
+            self.minute_index += 1
+            self.diagnostics["complete_universe_minutes"] += 1
+            self._record_equity(ts_event)
+            self.diagnostics["c60_outside_signal_minutes"] += 1
+            return
         super()._on_complete_universe_minute(ts_event)
         if (
             self.current_scenario is not None
@@ -97,6 +130,7 @@ class Candidate35Strategy(_PicassoStrategy):
                     "source_family": str(self.config.z15_family),
                     "source_trigger_mode": str(self.config.z15_trigger_mode),
                     "source_trailing_detail": "completed_1m_next_bar_usable",
+                    "c60_signal_window_enforced": 1,
                 }
             )
 
