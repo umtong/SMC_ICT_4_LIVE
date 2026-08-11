@@ -1,0 +1,57 @@
+name: candidate-57-tardis-stream-probe-v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths: [.github/workflows/candidate-57-tardis-stream-probe-v4.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+      - name: Stream prefixes without Range
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/c57-tardis-stream-v4
+          python - <<'PY' | tee artifacts/c57-tardis-stream-v4/console.log
+          import gzip, io, json, urllib.request
+          from pathlib import Path
+
+          cases=[]
+          for sym in ('BTCUSDT','SOLUSDT'):
+              for dtype in ('book_ticker','quotes','trades','incremental_book_L2'):
+                  cases.append((sym,dtype,f'https://datasets.tardis.dev/v1/binance-futures/{dtype}/2025/07/01/{sym}.csv.gz'))
+          rows=[]
+          for sym,dtype,url in cases:
+              out={'symbol':sym,'data_type':dtype,'url':url}
+              try:
+                  req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 candidate-57-research','Accept':'*/*'})
+                  with urllib.request.urlopen(req,timeout=90) as r:
+                      raw=r.read(262144)
+                      out.update(status=int(getattr(r,'status',200)),content_length=r.headers.get('Content-Length'),content_type=r.headers.get('Content-Type'),etag=r.headers.get('ETag'),prefix_bytes=len(raw))
+                      try:
+                          with gzip.GzipFile(fileobj=io.BytesIO(raw)) as z:
+                              out['prefix_text']=z.read(4096).decode('utf-8',errors='replace')
+                      except Exception as exc:
+                          out['gzip_error']=f'{type(exc).__name__}: {exc}'
+              except Exception as exc:
+                  out['error']=f'{type(exc).__name__}: {exc}'
+              rows.append(out)
+          payload={'study':'Candidate-57 Tardis direct streaming probe v4','rows':rows}
+          Path('artifacts/c57-tardis-stream-v4/result.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-tardis-stream-probe-v4-${{ github.sha }}
+          path: artifacts/c57-tardis-stream-v4/**
+          retention-days: 30
