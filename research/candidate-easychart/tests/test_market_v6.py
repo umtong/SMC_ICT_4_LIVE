@@ -46,13 +46,14 @@ def liquidity_range():
 
 class TestDirectionalLiquidityRange(unittest.TestCase):
     def engine(self, **overrides):
-        config = ScenarioConfigV5(
-            min_body_ratio=1.0,
-            min_previous_body_atr=0.0,
-            enable_immediate_fakeout=True,
-            enable_one_bar_trap=True,
-            **overrides,
-        )
+        values = {
+            "min_body_ratio": 1.0,
+            "min_previous_body_atr": 0.0,
+            "enable_immediate_fakeout": True,
+            "enable_one_bar_trap": True,
+        }
+        values.update(overrides)
+        config = ScenarioConfigV5(**values)
         engine = EasyChartDirectionalLiquidityEngine("BTCUSDT", config)
         engine.micro_high = StructuralPivot(0, 0, "HIGH", 103.0, 0, 1)
         engine.micro_low = StructuralPivot(0, 0, "LOW", 107.0, 0, 1)
