@@ -1,0 +1,90 @@
+    if events.empty:
+        return events.copy()
+    priority = {router.ABSORPTION_STATE: 0, router.CONTINUATION_STATE: 1}
+    ordered = events.copy()
+    ordered["family_priority"] = ordered["state"].map(priority).fillna(9).astype(int)
+    ordered = ordered.sort_values(
+        ["event_ts_ns", "family_priority", "score", "symbol"],
+        ascending=[True, True, False, True],
+        kind="stable",
+    )
+    selected: list[pd.Series] = []
+    cluster: list[pd.Series] = []
+    last_ts: int | None = None
+    gap_ns = GLOBAL_EPISODE_MINUTES * 60 * 1_000_000_000
+
+    def flush() -> None:
+        if not cluster:
+            return
+        frame = pd.DataFrame(cluster).sort_values(
+            ["family_priority", "score", "symbol", "event_ts_ns"],
+            ascending=[True, False, True, True],
+            kind="stable",
+        )
+        selected.append(frame.iloc[0])
+        cluster.clear()
+
+    for _, row in ordered.iterrows():
+        ts = int(row["event_ts_ns"])
+        if last_ts is None or ts - last_ts <= gap_ns:
+            cluster.append(row)
+        else:
+            flush()
+            cluster.append(row)
+        last_ts = ts
+    flush()
+    if not selected:
+        return ordered.iloc[0:0].copy()
+    return pd.DataFrame(selected).drop(columns=["family_priority"], errors="ignore")
+
+
+def _one_slot(events: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    if events.empty:
+        return events.copy()
+    priority = {router.ABSORPTION_STATE: 0, router.CONTINUATION_STATE: 1}
+    ordered = events.copy()
+    ordered["family_priority"] = ordered["state"].map(priority).fillna(9).astype(int)
+    ordered = ordered.sort_values(
+        ["entry_time", "family_priority", "score", "symbol"],
+        ascending=[True, True, False, True],
+        kind="stable",
+    )
+    selected: list[pd.Series] = []
+    free_time: pd.Timestamp | None = None
+    same_time_seen: set[str] = set()
+    for _, row in ordered.iterrows():
+        entry = pd.Timestamp(row["entry_time"])
+        if entry.tzinfo is None:
+            entry = entry.tz_localize("UTC")
+        else:
+            entry = entry.tz_convert("UTC")
+        key = entry.isoformat()
+        if key in same_time_seen:
+            continue
+        if free_time is not None and entry < free_time:
+            continue
+        selected.append(row)
+        same_time_seen.add(key)
+        free_time = entry + pd.Timedelta(minutes=int(horizon))
+    if not selected:
+        return ordered.iloc[0:0].copy()
+    return pd.DataFrame(selected).drop(columns=["family_priority"], errors="ignore")
+
+
+def run(
+    *,
+    start: date,
+    end: date,
+    cache: Path,
+    output: Path,
+) -> dict[str, Any]:
+    source = Path(router.__file__)
+    if _sha256(source) != SOURCE_ROUTER_SHA256:
+        raise RuntimeError(
+            f"router source drifted: {_sha256(source)} != {SOURCE_ROUTER_SHA256}"
+        )
+    klines, feature_paths, input_records = c51run.load_inputs(
+        start=start,
+        end=end,
+        cache=cache,
+        output=cache / "materialized-source",
