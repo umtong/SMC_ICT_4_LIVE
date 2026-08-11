@@ -12,7 +12,7 @@ class Side(int, Enum):
 
 
 class Family(str, Enum):
-    REJECTION_CLOSE = "REJECTION_CLOSE"
+    REJECTION_RETEST_CLOSE = "REJECTION_RETEST_CLOSE"
     ACCEPTANCE_HOLD_CLOSE = "ACCEPTANCE_HOLD_CLOSE"
 
 
@@ -64,6 +64,18 @@ class TradePlan:
 
 
 @dataclass(slots=True)
+class RejectionCandidate:
+    source: Boundary
+    target: Boundary
+    side: Side
+    sweep_index: int
+    sweep_close: float
+    excursion: float
+    confirmation_deadline: int
+    confirmed_index: int | None = None
+
+
+@dataclass(slots=True)
 class AcceptanceCandidate:
     source: Boundary
     side: Side
@@ -79,5 +91,6 @@ class EngineConfig:
     min_prominence_atr: float = 1.0
     min_gross_rr: float = 1.0
     tick_size: float = 0.1
+    rejection_confirmation_bars: int = 2
     enable_rejection: bool = True
     enable_acceptance: bool = True
