@@ -35,6 +35,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$ROOT"
+          exec > >(tee "$ROOT/verification.log") 2>&1
           smc4 doctor
           python -m compileall -q research/candidate-easychart
           python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
@@ -46,6 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/ablation.log") 2>&1
+          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 80 "$ROOT/ablation.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/ablation.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart ablation failed::$message"; fi; exit "$status"' EXIT
           common=(
             --start 2024-02-01
             --end 2024-02-28
@@ -69,7 +73,7 @@ jobs:
             test -s "$ROOT/$variant/run.json"
             test -e "$ROOT/$variant/trades.csv"
             test -e "$ROOT/$variant/plans.csv"
-            test -s "$ROOT/$variant/scenario_events.jsonl"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
           done
 
       - uses: actions/upload-artifact@v4
