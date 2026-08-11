@@ -13,7 +13,7 @@
             raise RuntimeError(
                 f"feature/kline rows differ for {symbol}: {len(features)} != {len(frame)}"
             )
-        close_ns = pd.to_datetime(frame["close_time_dt"], utc=True).astype("int64").to_numpy()
+        close_ns = (pd.to_datetime(frame["close_time_dt"], utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy())
         observed_ns = pd.to_numeric(features["observed_time_ns"], errors="raise").astype("int64").to_numpy()
         if not np.array_equal(close_ns, observed_ns):
             raise RuntimeError(f"feature clock differs from kline close clock for {symbol}")
