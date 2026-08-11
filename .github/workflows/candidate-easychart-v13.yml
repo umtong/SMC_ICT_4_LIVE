@@ -1,0 +1,117 @@
+name: candidate-easychart-v13-first-structural-objective
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v13.py"
+      - "research/candidate-easychart/screen_v13.py"
+      - "research/candidate-easychart/tests/test_market_v13.py"
+      - ".github/workflows/candidate-easychart-v13.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v13-first-structural-objective
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v13-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+
+      - name: Verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run first-objective matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 5
+            --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0
+            --cost-profile role --disable-fakeout --cross-state isolated
+          )
+          leader="PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16,LONDON_NY"
+          funding="FUNDING_16_00,FUNDING_08_16"
+
+          EC_TARGET_MINUTES=5 python research/candidate-easychart/screen_v13.py "${common[@]}" \
+            --families "$leader" --output "$ROOT/leader-first5"
+          EC_TARGET_MINUTES=15 python research/candidate-easychart/screen_v13.py "${common[@]}" \
+            --families "$leader" --output "$ROOT/leader-first15"
+          EC_TARGET_MINUTES=5 python research/candidate-easychart/screen_v13.py "${common[@]}" \
+            --families "$funding" --output "$ROOT/funding-first5"
+          EC_TARGET_MINUTES=15 python research/candidate-easychart/screen_v13.py "${common[@]}" \
+            --families "$funding" --output "$ROOT/funding-first15"
+
+          EC_TARGET_MINUTES=5 python research/candidate-easychart/screen_v13.py \
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 5 \
+            --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0 \
+            --cost-profile taker --disable-fakeout --cross-state isolated \
+            --families "$leader" --output "$ROOT/leader-first5-taker"
+
+          variants=(leader-first5 leader-first15 funding-first5 funding-first15 leader-first5-taker)
+          python research/candidate-easychart/compare_v10.py --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in leader-first5 leader-first15 funding-first5 funding-first15 leader-first5-taker; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+          done
+
+      - name: Persist compact evidence on research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination=research/candidate-easychart/results/v13-development
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp "$ROOT/comparison.json" "$destination/comparison.json"
+          for variant in leader-first5 leader-first15 funding-first5 funding-first15 leader-first5-taker; do
+            mkdir -p "$destination/$variant"
+            cp "$ROOT/$variant/metrics.json" "$destination/$variant/metrics.json"
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "candidate-easychart: record v13 development evidence" || exit 0
+          git pull --rebase origin research/candidate-easychart
+          git push origin HEAD:research/candidate-easychart
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v13-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v13-development/**
+          if-no-files-found: warn
+          retention-days: 90
