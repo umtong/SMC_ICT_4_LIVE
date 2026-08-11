@@ -1,0 +1,81 @@
+    if not stages.empty:
+        for (family, reason), group in stages.groupby(["family", "reason"], sort=True):
+            if len(group) < 3:
+                continue
+            stage_primary[f"{family}:{reason}"] = {
+                "events": int(len(group)),
+                "symbols": int(group["symbol"].nunique()),
+                "primary_gross_bps": _describe(group[f"gross_{PRIMARY_HORIZON}m_bps"]),
+                "primary_net_bps": _describe(group[f"net_{PRIMARY_HORIZON}m_bps"]),
+            }
+
+    one_slot: dict[str, Any] = {}
+    for horizon in HORIZONS:
+        selected = _one_slot(exact, horizon)
+        one_slot[str(horizon)] = _summarize_group(selected)
+        selected.to_csv(output / f"one_slot_{horizon}m.csv", index=False)
+
+    result = {
+        "schema": SCHEMA,
+        "role": (
+            "consumed-development micro-auction state and geometry forensic; "
+            "no threshold search, no strategy promotion, and no fresh-data claim"
+        ),
+        "interval": {"start": str(start), "end": str(end)},
+        "universe": list(SYMBOLS),
+        "router_source": str(source),
+        "router_sha256": SOURCE_ROUTER_SHA256,
+        "frozen_route_config": asdict(config),
+        "round_trip_cost_bps": ROUND_TRIP_COST_BPS,
+        "primary_horizon_minutes": PRIMARY_HORIZON,
+        "exact_rising_edges": int(len(exact)),
+        "stage_rising_edges": int(len(stages)),
+        "global_3m_episodes": int(len(global_episodes)),
+        "decision_counts": {
+            family: dict(sorted(counts.items()))
+            for family, counts in decision_counts.items()
+        },
+        "exact_by_family": exact_summary,
+        "global_episodes_summary": _summarize_group(global_episodes),
+        "one_slot_nonoverlap": one_slot,
+        "first_failure_stage_primary_forensics": stage_primary,
+        "input_records": input_records,
+        "interpretation_contract": {
+            "positive_return_is_not_sufficient_for_promotion": True,
+            "negative_strategy_pnl_does_not_by_itself_invalidate_state_information": True,
+            "preserve_state_only_if_directional_separation_is_consistent": (
+                "exact state must beat exact opposite and first-failure controls "
+                "across symbols without one-event dependence"
+            ),
+            "preserve_geometry_only_if_cost_aware": (
+                "actual next-open objective space must exceed 20bp costs and "
+                "retain coherent reward/risk"
+            ),
+            "fresh_interval_consumed": False,
+        },
+    }
+    (output / "summary.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=date.fromisoformat, default=date(2026, 4, 13))
+    parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 4, 19))
+    parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    result = run(
+        start=args.start,
+        end=args.end,
+        cache=args.cache.resolve(),
+        output=args.output.resolve(),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+
+
+if __name__ == "__main__":
+    main()
