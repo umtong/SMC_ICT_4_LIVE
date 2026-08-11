@@ -1,0 +1,185 @@
+name: candidate-60-liquidity-vacuum-repaired-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-liquidity-vacuum-repaired-v1.yml"
+      - "research/candidate-60/LIQUIDITY_VACUUM_REPAIRED_V1_FREEZE.md"
+      - "research/candidate-60/patch_liquidity_vacuum_timestamp.py"
+      - "research/candidate-60/liquidity_vacuum_aggregate_v1.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-liquidity-vacuum-repaired-v1
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SOURCE_COMMIT: d2856dc7c7805617b2d760fecf087cf8975ea884
+      VENDOR: .work/candidate-60-liquidity-vacuum-repaired-v1/vendor
+      OUT: research/candidate-60/evidence/liquidity-vacuum-repaired-v1
+      CACHE: .cache/candidate-60-liquidity-vacuum-repaired-v1
+      CONSOLE: .work/candidate-60-liquidity-vacuum-repaired-v1-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize immutable source and apply only the timestamp repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_COMMIT"
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p "$VENDOR"
+          git archive "$SOURCE_COMMIT" \
+            research/external-leverage-flow-router \
+            research/candidate-05 \
+            | tar -x -C "$VENDOR"
+          wrapper="$VENDOR/research/external-leverage-flow-router/spot_participation_contract.py"
+          python research/candidate-60/patch_liquidity_vacuum_timestamp.py "$wrapper"
+          grep -F 'base["observed_time_ns"] = close_ns' "$wrapper"
+          grep -F 'base["minute_start_ns"] = open_ns' "$wrapper"
+
+      - name: Verify environment and frozen strategy contract
+        shell: bash
+        env:
+          PYTHONPATH: .work/candidate-60-liquidity-vacuum-repaired-v1/vendor/research/external-leverage-flow-router:.work/candidate-60-liquidity-vacuum-repaired-v1/vendor/research/candidate-05
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$VENDOR/research/external-leverage-flow-router" \
+            "$VENDOR/research/candidate-05/features.py" \
+            research/candidate-60/patch_liquidity_vacuum_timestamp.py \
+            research/candidate-60/liquidity_vacuum_aggregate_v1.py
+          python - <<'PY'
+          import inspect
+          import liquidity_vacuum_screen as source
+          assert source.SYMBOLS == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          assert source.BALANCE_BARS == 60
+          assert source.MAX_HOLD_BARS == 60
+          assert source.PARENT_COOLDOWN_BARS == 60
+          assert source.ROUND_TRIP_HURDLE_BPS == 20.0
+          assert source.MIN_NET_RR == 1.0
+          parent = inspect.getsource(source.parent_direction)
+          geometry = inspect.getsource(source.geometry)
+          assert "spot_flow_60s" in parent and "depth_imbalance_2" in parent
+          assert "net_reward = reward - ROUND_TRIP_HURDLE_BPS" in geometry
+          print("source-faithful liquidity-vacuum strategy contract verified")
+          PY
+
+      - name: Run four frozen source screens
+        id: study
+        shell: bash
+        env:
+          PYTHONPATH: .work/candidate-60-liquidity-vacuum-repaired-v1/vendor/research/external-leverage-flow-router:.work/candidate-60-liquidity-vacuum-repaired-v1/vendor/research/candidate-05
+        run: |
+          set +e
+          mkdir -p "$OUT/source" "$CONSOLE"
+          status=0
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$OUT/source/$symbol"
+            set -o pipefail
+            python "$VENDOR/research/external-leverage-flow-router/liquidity_vacuum_screen.py" \
+              --symbol "$symbol" \
+              --start 2023-06-01 \
+              --end 2023-06-14 \
+              --cache "$CACHE/$symbol" \
+              --output "$OUT/source/$symbol" \
+              2>&1 | tee "$CONSOLE/$symbol.log"
+            rc=${PIPESTATUS[0]}
+            if [[ "$rc" != "0" ]]; then status="$rc"; fi
+          done
+          if [[ "$status" == "0" ]]; then
+            python research/candidate-60/liquidity_vacuum_aggregate_v1.py \
+              --root "$OUT/source" \
+              --output "$OUT" \
+              --start 2023-06-01 \
+              --end 2023-06-14 \
+              2>&1 | tee "$CONSOLE/aggregate.log"
+            status=${PIPESTATUS[0]}
+          fi
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify complete evidence without a performance gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "liquidity-vacuum repaired study failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-60/evidence/liquidity-vacuum-repaired-v1")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-liquidity-vacuum-repaired-v1"
+          assert summary["development_period"] == ["2023-06-01", "2023-06-14"]
+          assert summary["interpretation_contract"]["timestamp_repair_changed_strategy_logic"] is False
+          assert (root / "all_symbol_events.csv").is_file()
+          assert (root / "global_episodes_3m.csv").is_file()
+          assert (root / "one_slot_events.csv").is_file()
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              source = root / "source" / symbol
+              report = json.loads((source / "liquidity_vacuum_screen.json").read_text())
+              assert report["symbol"] == symbol
+              assert report["development_period"] == ["2023-06-01", "2023-06-14"]
+              assert report["round_trip_hurdle_bps"] == 20.0
+              assert (source / "liquidity_vacuum_events.csv").is_file()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist repaired liquidity-vacuum evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete replay artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-liquidity-vacuum-repaired-v1
+          path: |
+            research/candidate-60/evidence/liquidity-vacuum-repaired-v1
+            .work/candidate-60-liquidity-vacuum-repaired-v1-console
+          if-no-files-found: warn
+          retention-days: 90
