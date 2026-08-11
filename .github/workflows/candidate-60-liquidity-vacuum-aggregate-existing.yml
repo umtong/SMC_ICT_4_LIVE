@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-60-liquidity-vacuum-aggregate-existing.yml"
       - "research/candidate-60/liquidity_vacuum_aggregate_v1.py"
+      - "research/candidate-60/liquidity_vacuum_nonprice_funnel.py"
       - "research/candidate-60/evidence/liquidity-vacuum-repaired-v1/source/**"
   workflow_dispatch:
 
@@ -30,19 +31,25 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Aggregate persisted source evidence
+      - name: Aggregate persisted source evidence and causal funnel
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pandas numpy
-          python -m compileall -q research/candidate-60/liquidity_vacuum_aggregate_v1.py
+          python -m compileall -q \
+            research/candidate-60/liquidity_vacuum_aggregate_v1.py \
+            research/candidate-60/liquidity_vacuum_nonprice_funnel.py
+          root=research/candidate-60/evidence/liquidity-vacuum-repaired-v1
           python research/candidate-60/liquidity_vacuum_aggregate_v1.py \
-            --root research/candidate-60/evidence/liquidity-vacuum-repaired-v1/source \
-            --output research/candidate-60/evidence/liquidity-vacuum-repaired-v1 \
+            --root "$root/source" \
+            --output "$root" \
             --start 2023-06-01 \
             --end 2023-06-14
+          python research/candidate-60/liquidity_vacuum_nonprice_funnel.py \
+            --root "$root/source" \
+            --output "$root/nonprice_funnel.json"
 
-      - name: Verify zero-event evidence is represented, not discarded
+      - name: Verify zero-event evidence is represented and explained
         shell: bash
         run: |
           set -euo pipefail
@@ -51,16 +58,20 @@ jobs:
           from pathlib import Path
           root = Path("research/candidate-60/evidence/liquidity-vacuum-repaired-v1")
           summary = json.loads((root / "summary.json").read_text())
+          funnel = json.loads((root / "nonprice_funnel.json").read_text())
           assert summary["schema"] == "candidate-60-liquidity-vacuum-repaired-v1"
           assert summary["source_events"] == 0
           assert summary["global_independent_episodes_3m"] == 0
           assert summary["one_slot_completed_trades"] == 0
           assert summary["diagnostic_three_percent_risk_account"]["ending_nav"] == 1.0
           assert summary["interpretation_contract"]["zero_event_files_are_valid_source_evidence"] is True
-          print(json.dumps(summary, indent=2, sort_keys=True))
+          assert funnel["schema"] == "candidate-60-liquidity-vacuum-nonprice-funnel-v1"
+          assert funnel["aggregate"]["long"]["complete_nonprice_parent"] == 0
+          assert funnel["aggregate"]["short"]["complete_nonprice_parent"] == 0
+          print(json.dumps({"summary": summary, "funnel": funnel}, indent=2, sort_keys=True))
           PY
 
-      - name: Commit compact aggregate
+      - name: Commit compact aggregate and funnel
         shell: bash
         run: |
           set -euo pipefail
@@ -69,7 +80,7 @@ jobs:
           git add -f research/candidate-60/evidence/liquidity-vacuum-repaired-v1
           if ! git diff --cached --quiet; then
             git commit --no-gpg-sign -m \
-              "candidate60: persist zero-event liquidity-vacuum aggregate"
+              "candidate60: persist zero-parent liquidity-vacuum funnel"
             for attempt in 1 2 3 4 5; do
               git fetch origin research/candidate-60
               git rebase origin/research/candidate-60
