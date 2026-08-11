@@ -1,0 +1,81 @@
+name: candidate-60-liquidity-vacuum-aggregate-existing
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-liquidity-vacuum-aggregate-existing.yml"
+      - "research/candidate-60/liquidity_vacuum_aggregate_v1.py"
+      - "research/candidate-60/evidence/liquidity-vacuum-repaired-v1/source/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-liquidity-vacuum-aggregate-existing
+  cancel-in-progress: true
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Aggregate persisted source evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pandas numpy
+          python -m compileall -q research/candidate-60/liquidity_vacuum_aggregate_v1.py
+          python research/candidate-60/liquidity_vacuum_aggregate_v1.py \
+            --root research/candidate-60/evidence/liquidity-vacuum-repaired-v1/source \
+            --output research/candidate-60/evidence/liquidity-vacuum-repaired-v1 \
+            --start 2023-06-01 \
+            --end 2023-06-14
+
+      - name: Verify zero-event evidence is represented, not discarded
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-60/evidence/liquidity-vacuum-repaired-v1")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-liquidity-vacuum-repaired-v1"
+          assert summary["source_events"] == 0
+          assert summary["global_independent_episodes_3m"] == 0
+          assert summary["one_slot_completed_trades"] == 0
+          assert summary["diagnostic_three_percent_risk_account"]["ending_nav"] == 1.0
+          assert summary["interpretation_contract"]["zero_event_files_are_valid_source_evidence"] is True
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact aggregate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          git add -f research/candidate-60/evidence/liquidity-vacuum-repaired-v1
+          if ! git diff --cached --quiet; then
+            git commit --no-gpg-sign -m \
+              "candidate60: persist zero-event liquidity-vacuum aggregate"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-60
+              git rebase origin/research/candidate-60
+              if git push origin HEAD:research/candidate-60; then
+                break
+              fi
+              sleep 2
+            done
+          fi
