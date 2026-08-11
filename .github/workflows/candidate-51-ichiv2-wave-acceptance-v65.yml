@@ -1,0 +1,146 @@
+name: candidate-51-ichiv2-wave-acceptance-v65
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichiv2-wave-acceptance-v65.yml"
+      - "research/candidate-51/ichiv2_wave_acceptance_v65.py"
+      - "research/candidate-51/ichiv2_claim_anatomy_v63.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichiv2-wave-acceptance-v65
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        period:
+          - {label: fresh_2022_spring, start: 2022-03-01, end: 2022-04-30, split: fresh_confirmation}
+          - {label: fresh_2023_summer, start: 2023-06-01, end: 2023-07-31, split: fresh_confirmation}
+          - {label: fresh_2024_autumn, start: 2024-10-01, end: 2024-11-30, split: fresh_confirmation}
+          - {label: fresh_2025_summer, start: 2025-05-01, end: 2025-06-30, split: fresh_confirmation}
+          - {label: fresh_2026_feb_mar, start: 2026-02-01, end: 2026-03-31, split: fresh_confirmation}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 20
+          sparse-checkout: |
+            research/candidate-05
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install verified environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile \
+            research/candidate-51/ichiv2_claim_anatomy_v63.py \
+            research/candidate-51/ichiv2_wave_acceptance_v65.py
+      - name: Measure fresh causal fan waves and acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/ichiv2-wave-acceptance-v65/${{ matrix.period.label }}"
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichiv2_wave_acceptance_v65.py run \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" \
+            --split "${{ matrix.period.split }}" \
+            --cache ".cache/candidate-51-ichiv2-wave-v65/${{ matrix.period.label }}" \
+            --candidate05-path research/candidate-05 \
+            --candidate51-path research/candidate-51 \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichiv2-wave-acceptance-v65-${{ matrix.period.label }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/ichiv2-wave-acceptance-v65/${{ matrix.period.label }}/result.json
+
+  aggregate:
+    if: always()
+    needs: measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-ichiv2-wave-acceptance-v65-*
+          path: downloaded
+      - name: Aggregate five fresh periods
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 5
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          output=artifacts/candidate-51/ichiv2-wave-acceptance-v65
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichiv2_wave_acceptance_v65.py aggregate \
+            --results-root downloaded \
+            --output "$output"
+          for file in ANATOMY.json ANATOMY.md CANDIDATES.csv SELECTED.csv REJECTED.csv; do
+            test -e "$output/$file"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichiv2-wave-acceptance-v65-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/ichiv2-wave-acceptance-v65/
+      - name: Commit compact fresh-data anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichiv2-wave-acceptance-v65
+          destination=research/candidate-51/evidence/ichiv2-wave-acceptance-v65
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/CANDIDATES.csv" "$destination/CANDIDATES.csv"
+          cp "$source/SELECTED.csv" "$destination/SELECTED.csv"
+          cp "$source/REJECTED.csv" "$destination/REJECTED.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record fresh ichiV2 wave acceptance anatomy"
+          for attempt in 1 2 3 4 5 6; do
+            git fetch origin research/candidate-51
+            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
