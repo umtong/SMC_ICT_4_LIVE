@@ -35,7 +35,14 @@ class EasyChartOrderMixin:
         raw = self._current_nav() * Decimal(str(self.config.risk_fraction)) / per_unit
         step = Decimal(str(instrument.size_increment))
         floored = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
-        if floored <= 0 or floored < Decimal(str(instrument.min_quantity)):
+        minimum = Decimal(str(instrument.min_quantity))
+        maximum = Decimal(str(instrument.max_quantity)) if instrument.max_quantity is not None else None
+        if floored <= 0 or floored < minimum:
+            return None
+        # This is the venue's single-order contract, not an arbitrary notional cap.
+        # The project contract permits one entry only, so a plan requiring more than
+        # the venue maximum is not executable and is rejected rather than clipped.
+        if maximum is not None and floored > maximum:
             return None
         return instrument.make_qty(floored)
 
@@ -43,7 +50,7 @@ class EasyChartOrderMixin:
         instrument = self.instruments[instrument_id]
         quantity = self._quantity(instrument, plan)
         if quantity is None:
-            self._record("plan_rejected_quantity", plan_id=plan.plan_id)
+            self._record("plan_rejected_quantity", plan_id=plan.plan_id, instrument_id=str(instrument_id))
             return
         order_list: OrderList = self.order_factory.bracket(
             instrument_id=instrument_id,
@@ -54,6 +61,8 @@ class EasyChartOrderMixin:
             sl_trigger_price=instrument.make_price(plan.stop),
             tp_price=instrument.make_price(plan.target),
             entry_order_type=OrderType.LIMIT,
+            entry_post_only=False,
+            tp_post_only=False,
         )
         self.active_plan = plan
         self.active_instrument_id = instrument_id
@@ -62,15 +71,34 @@ class EasyChartOrderMixin:
         self.submit_order_list(order_list)
         self._record("submitted", plan_id=plan.plan_id, instrument_id=str(instrument_id), quantity=str(quantity))
 
-    def _clear_if_entry(self, client_order_id: ClientOrderId) -> None:
+    def _clear_if_entry(self, client_order_id: ClientOrderId) -> bool:
         if self.active_entry_id is None or client_order_id != self.active_entry_id:
-            return
+            return False
         plan_id = self.active_plan.plan_id if self.active_plan else None
         self._record("entry_terminal_without_position", plan_id=plan_id)
         self.active_plan = None
         self.active_instrument_id = None
         self.active_entry_id = None
         self.entry_cancel_requested = False
+        return True
+
+    def _protective_failure(self, client_order_id: ClientOrderId, reason: str) -> None:
+        if self.active_plan is None or self.active_instrument_id is None:
+            return
+        if client_order_id == self.active_entry_id:
+            return
+        # A rejected stop/target must never leave an unprotected position. Use the
+        # framework's native cancellation and market close path, then let the
+        # PositionClosed event release the global slot.
+        if not self.portfolio.is_flat(self.active_instrument_id):
+            self._record(
+                "emergency_exit_protective_failure",
+                plan_id=self.active_plan.plan_id,
+                client_order_id=str(client_order_id),
+                reason=reason,
+            )
+            self.cancel_all_orders(self.active_instrument_id)
+            self.close_all_positions(self.active_instrument_id)
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         self._clear_if_entry(event.client_order_id)
@@ -79,12 +107,16 @@ class EasyChartOrderMixin:
         self._clear_if_entry(event.client_order_id)
 
     def on_order_rejected(self, event: OrderRejected) -> None:
-        self._record("order_rejected", client_order_id=str(event.client_order_id), reason=str(event.reason))
-        self._clear_if_entry(event.client_order_id)
+        reason = str(event.reason)
+        self._record("order_rejected", client_order_id=str(event.client_order_id), reason=reason)
+        if not self._clear_if_entry(event.client_order_id):
+            self._protective_failure(event.client_order_id, reason)
 
     def on_order_denied(self, event: OrderDenied) -> None:
-        self._record("order_denied", client_order_id=str(event.client_order_id), reason=str(event.reason))
-        self._clear_if_entry(event.client_order_id)
+        reason = str(event.reason)
+        self._record("order_denied", client_order_id=str(event.client_order_id), reason=reason)
+        if not self._clear_if_entry(event.client_order_id):
+            self._protective_failure(event.client_order_id, reason)
 
     def on_position_closed(self, event: PositionClosed) -> None:
         plan_id = self.active_plan.plan_id if self.active_plan else None
