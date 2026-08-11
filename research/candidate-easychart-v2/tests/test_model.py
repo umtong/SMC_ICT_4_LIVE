@@ -34,7 +34,7 @@ class EasyChartStateEngineTest(unittest.TestCase):
         engine.boundaries.extend([source, later_origin])
         self.assertEqual(engine._latest_origin(Side.LONG, before_ns=10), 100.0)
 
-    def test_rejection_uses_boundary_excursion_and_nearest_preexisting_target(self) -> None:
+    def test_rejection_close_uses_excursion_and_nearest_preexisting_target(self) -> None:
         engine = EasyChartStateEngine(
             "BTCUSDT",
             EngineConfig(
@@ -57,10 +57,11 @@ class EasyChartStateEngineTest(unittest.TestCase):
         plans = []
         for bar in bars:
             plans.extend(engine.on_bar(bar))
-        rejections = [plan for plan in plans if plan.family is Family.REJECTION_RETEST]
+        rejections = [plan for plan in plans if plan.family is Family.REJECTION_CLOSE]
         self.assertTrue(rejections)
         plan = rejections[-1]
         self.assertIs(plan.side, Side.LONG)
+        self.assertEqual(plan.entry, bars[-1].close)
         self.assertLess(plan.stop, plan.entry)
         self.assertGreater(plan.target, plan.entry)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
