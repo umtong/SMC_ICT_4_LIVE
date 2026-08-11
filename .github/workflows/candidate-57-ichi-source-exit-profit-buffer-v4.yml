@@ -1,0 +1,158 @@
+name: candidate-57-ichi-source-exit-profit-buffer-v4
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-ichi-source-exit-profit-buffer-v4.yml"
+      - "research/candidate-57/ICHI_SOURCE_EXIT_PROFIT_BUFFER_V4_FREEZE.md"
+      - "research/candidate-57/strategy_ichi_source_exit_profit_buffer_v4.py"
+      - "research/candidate-57/ichi_source_exit_profit_buffer_v4_campaign.py"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/router_ichi_v2_runtime.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_fast_v2.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-ichi-source-exit-profit-buffer-v4
+  cancel-in-progress: true
+
+jobs:
+  policy-fresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble verified Ichi source and frozen lifecycle repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/ICHI_SOURCE_EXIT_PROFIT_BUFFER_V4_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_v2_impl.py
+          cp research/candidate-57/router_ichi_v2_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_v2_base.py
+          cp research/candidate-57/strategy_ichi_v2_fast_v2.py research/candidate-51/strategy_ichi_v2_fast_base.py
+          cp research/candidate-57/strategy_ichi_source_exit_profit_buffer_v4.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_v2_fast_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/ichi_source_exit_profit_buffer_v4_campaign.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment and prove frozen causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_ichi_v2_fast_base import Candidate35Strategy as VerifiedSource
+
+          assert issubclass(Candidate35Strategy, VerifiedSource)
+          config = Candidate35Config()
+          assert abs(float(config.ichi_profit_buffer_round_trip_cost_fraction) - 0.0021) < 1e-12
+          source = inspect.getsource(Candidate35Strategy._source_exit_signal)
+          assert "estimated_net <= 0.0" in source
+          assert "int(completed_ts) > armed_ts" in source
+          assert "_source_exit_state_active" in source
+          assert "for threshold" not in source
+          close_source = inspect.getsource(Candidate35Strategy._close_ichi_position)
+          assert "UNCHANGED_PUBLIC_ROI" in close_source
+          assert "submit_order" not in source
+          assert "_submit_decision" not in source
+          print("frozen profitable-cross lifecycle contract verified")
+          PY
+
+      - name: Run source control and frozen repair on policy-fresh February
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-ichi-source-exit-profit-buffer-v4-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_source_exit_profit_buffer_v4_campaign.py \
+            2>&1 | tee .work/candidate-57-ichi-source-exit-profit-buffer-v4-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_v2_fast_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/ichi-source-exit-profit-buffer-v4
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist Ichi profitable-cross policy-fresh evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-ichi-source-exit-profit-buffer-v4
+          path: |
+            research/candidate-57/evidence/ichi-source-exit-profit-buffer-v4
+            artifacts/candidate-57-ichi-source-exit-profit-buffer-v4
+            .work/candidate-57-ichi-source-exit-profit-buffer-v4-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "Ichi source-exit profit-buffer campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
