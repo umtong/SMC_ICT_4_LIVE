@@ -6,7 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-60-seesaw-rotation-v1.yml"
       - "research/candidate-60/SEESAW_ROTATION_V1_FREEZE.md"
-      - "research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part*"
+      - "research/candidate-60/seesaw_rotation_diagnostic_v1e.b64"
   workflow_dispatch:
 
 permissions:
@@ -35,18 +35,18 @@ jobs:
         run: |
           set -euo pipefail
           test -f research/candidate-60/SEESAW_ROTATION_V1_FREEZE.md
-          cat research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part* \
-            > .work-seesaw.b64
+          cp research/candidate-60/seesaw_rotation_diagnostic_v1e.b64 \
+            .work-seesaw.b64
           test "$(wc -c < .work-seesaw.b64)" = "9048"
           test "$(sha256sum .work-seesaw.b64 | awk '{print $1}')" = \
-            "d8dc65c095c7102b42d7c20d0ad93f487f7a1d2a80619c4280ea4c10c9ff49ba"
+            "4787ef6aecdfd8dbe193a7b5ba2589034dd8e8c56466c142e34e91ea69af7afa"
           base64 -d .work-seesaw.b64 > .work-seesaw.py.gz
           test "$(sha256sum .work-seesaw.py.gz | awk '{print $1}')" = \
-            "ae362953aef21160bd9b0351f10c075c4345b4f9288adaf561374e2c547bc14b"
+            "334cf9b6a8ce1afcd215acedd15006688773ebd90d32b5c9e3962709a1df0973"
           gzip -dc .work-seesaw.py.gz \
             > research/candidate-60/seesaw_rotation_diagnostic.py
           test "$(sha256sum research/candidate-60/seesaw_rotation_diagnostic.py | awk '{print $1}')" = \
-            "f23d39b498e9917a9973543d16dd2ca21156408f6d88097da9b9e8366e9d1ba7"
+            "91637aa996db7182a29ac846e7dbde144aa627b3f4dc450e2f75e2e35a116ca4"
           python -m py_compile research/candidate-60/seesaw_rotation_diagnostic.py
 
       - name: Install locked environment and prove causal contract
@@ -108,7 +108,17 @@ jobs:
             research/candidate-60/seesaw_rotation_diagnostic.py
           git rm -f --ignore-unmatch \
             research/candidate-60/seesaw_rotation_diagnostic_v1c.b64.part00 \
-            research/candidate-60/seesaw_rotation_diagnostic_v1c.b64.part01
+            research/candidate-60/seesaw_rotation_diagnostic_v1c.b64.part01 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part00 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part01 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part02 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part03 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part04 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part05 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part06 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part07 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part08 \
+            research/candidate-60/seesaw_rotation_diagnostic_v1d.b64.part09
           git config user.name "candidate-60-research-bot"
           git config user.email "candidate-60-research-bot@users.noreply.github.com"
           out=research/candidate-60/evidence/seesaw-rotation-v1
