@@ -19,6 +19,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _timestamp_unit(values: pd.Series) -> str:
+    """Binance archives changed from millisecond to microsecond timestamps."""
+    first = int(pd.to_numeric(values, errors="raise").iloc[0])
+    return "us" if abs(first) >= 10**15 else "ms"
+
+
 def _download(url: str, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -49,12 +55,12 @@ def load_day(symbol: str, day: date, cache: Path) -> pd.DataFrame:
             raw = raw.iloc[1:].copy()
     for column in ("open", "high", "low", "close", "volume"):
         raw[column] = pd.to_numeric(raw[column], errors="raise")
-    stamp_value = float(pd.to_numeric(raw["open_time"], errors="raise").iloc[0])
-    unit = "us" if stamp_value > 10**14 else "ms"
-    raw["open_time_dt"] = pd.to_datetime(raw["open_time"], unit=unit, utc=True)
-    stamp_value = float(pd.to_numeric(raw["close_time"], errors="raise").iloc[0])
-    unit = "us" if stamp_value > 10**14 else "ms"
-    raw["close_time_dt"] = pd.to_datetime(raw["close_time"], unit=unit, utc=True)
+    open_values = pd.to_numeric(raw["open_time"], errors="raise")
+    unit = _timestamp_unit(open_values)
+    raw["open_time_dt"] = pd.to_datetime(open_values, unit=unit, utc=True)
+    close_values = pd.to_numeric(raw["close_time"], errors="raise")
+    unit = _timestamp_unit(close_values)
+    raw["close_time_dt"] = pd.to_datetime(close_values, unit=unit, utc=True)
     return raw[["open_time_dt", "close_time_dt", "open", "high", "low", "close", "volume"]].sort_values("open_time_dt")
 
 
