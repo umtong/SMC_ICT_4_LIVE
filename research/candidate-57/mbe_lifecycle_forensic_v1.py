@@ -27,24 +27,15 @@ PERIODS = {
 }
 HORIZONS = (15, 41, 114, 180, 420)
 METRICS = (
-    "estimated_after_cost_r",
-    "source_profit_ratio",
-    "mfe_source_profit_ratio",
-    "mae_source_profit_ratio",
-    "raw_short_cross_breadth",
-    "rsi_reoverbought_breadth",
-    "tema_above_middle_breadth",
-    "tema_rising_breadth",
-    "renewed_short_pressure_breadth",
-    "mean_reversion_progress_breadth",
-    "entry_symbol_rsi",
-    "entry_symbol_tema_to_middle_bps",
-    "entry_symbol_tema_slope_bps",
-    "entry_symbol_return_1h_bps",
-    "entry_symbol_return_4h_bps",
-    "entry_symbol_return_8h_bps",
-    "entry_symbol_realized_vol_1h_bps",
-    "entry_symbol_range_1h_bps",
+    "estimated_after_cost_r", "source_profit_ratio",
+    "mfe_source_profit_ratio", "mae_source_profit_ratio",
+    "raw_short_cross_breadth", "rsi_reoverbought_breadth",
+    "tema_above_middle_breadth", "tema_rising_breadth",
+    "renewed_short_pressure_breadth", "mean_reversion_progress_breadth",
+    "entry_symbol_rsi", "entry_symbol_tema_to_middle_bps",
+    "entry_symbol_tema_slope_bps", "entry_symbol_return_1h_bps",
+    "entry_symbol_return_4h_bps", "entry_symbol_return_8h_bps",
+    "entry_symbol_realized_vol_1h_bps", "entry_symbol_range_1h_bps",
 )
 
 
@@ -83,15 +74,13 @@ def configure_reused_campaign() -> None:
     topology.REFERENCE = REFERENCE
 
 
-def group_name(row: dict[str, Any]) -> str:
-    actual_r = number(row.get("actual_r"), 0.0)
-    reason = str(row.get("exit_reason") or "")
+def outcome_group(trade: dict[str, Any]) -> str:
+    actual_r = number(trade.get("actual_r"), 0.0)
+    reason = str(trade.get("exit_reason") or "")
     if "PUBLIC_MBE2_ROI_EXIT" in reason and actual_r > 0.0:
         return "roi_winner"
-    if actual_r <= -0.80:
-        return "stop_like_loss"
     if actual_r < 0.0:
-        return "other_loss"
+        return "non_roi_loss"
     return "other_win"
 
 
@@ -102,19 +91,15 @@ def quantiles(values: list[float]) -> dict[str, float | None]:
 
     def q(fraction: float) -> float:
         position = (len(clean) - 1) * fraction
-        lower = int(math.floor(position))
-        upper = int(math.ceil(position))
+        lower, upper = math.floor(position), math.ceil(position)
         if lower == upper:
             return clean[lower]
         weight = position - lower
         return clean[lower] * (1.0 - weight) + clean[upper] * weight
 
     return {
-        "min": clean[0],
-        "q25": q(0.25),
-        "median": q(0.50),
-        "q75": q(0.75),
-        "max": clean[-1],
+        "min": clean[0], "q25": q(0.25), "median": q(0.50),
+        "q75": q(0.75), "max": clean[-1],
     }
 
 
@@ -123,15 +108,13 @@ def summarize(values: list[float]) -> dict[str, Any]:
     return {
         "n": len(clean),
         "mean": sum(clean) / len(clean) if clean else None,
-        "positive_share": (
-            sum(value > 0.0 for value in clean) / len(clean) if clean else None
-        ),
+        "positive_share": sum(value > 0.0 for value in clean) / len(clean) if clean else None,
         "distribution": quantiles(clean),
     }
 
 
 def direct_source_recross_failure(snapshot: dict[str, Any]) -> bool:
-    """Exact reversal of the short entry transition while the trade has no edge."""
+    """The short entry transition has reversed while the trade has no edge."""
     return (
         number(snapshot.get("estimated_after_cost_r"), math.inf) <= 0.0
         and number(snapshot.get("entry_symbol_rsi"), -math.inf) >= 70.0
@@ -140,33 +123,31 @@ def direct_source_recross_failure(snapshot: dict[str, Any]) -> bool:
 
 
 def analyze_period(label: str, row: dict[str, Any], output: Path) -> dict[str, Any]:
-    closed_path = output / "closed_scenarios.json"
-    records = json.loads(closed_path.read_text(encoding="utf-8"))
+    records = json.loads((output / "closed_scenarios.json").read_text(encoding="utf-8"))
     by_id = {str(record.get("scenario_id")): record for record in records}
     ledger = (row.get("trade_forensics") or {}).get("trade_ledger") or []
-
-    enriched: list[dict[str, Any]] = []
-    horizon_rows: dict[int, list[dict[str, Any]]] = defaultdict(list)
     groups: dict[str, int] = defaultdict(int)
+    horizon_rows: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    enriched: list[dict[str, Any]] = []
+
     for trade in ledger:
         scenario = by_id.get(str(trade.get("scenario_id"))) or {}
-        group = group_name(trade)
+        group = outcome_group(trade)
         groups[group] += 1
+        severe = int(number(trade.get("actual_r"), 0.0) <= -0.80)
         snapshots = list(scenario.get("mbe_lifecycle_horizon_snapshots") or [])
-        boundary_snapshots = list(
-            scenario.get("mbe_lifecycle_boundary_snapshots") or []
+        boundaries = list(scenario.get("mbe_lifecycle_boundary_snapshots") or [])
+        enriched.append(
+            {
+                **trade,
+                "period": label,
+                "outcome_group": group,
+                "severe_stop_like": severe,
+                "entry_topology_count": int(scenario.get("mbe_actionable_candidates") or 0),
+                "horizon_snapshots": snapshots,
+                "boundary_snapshot_count": len(boundaries),
+            }
         )
-        item = {
-            **trade,
-            "period": label,
-            "outcome_group": group,
-            "entry_topology_count": int(
-                scenario.get("mbe_actionable_candidates") or 0
-            ),
-            "horizon_snapshots": snapshots,
-            "boundary_snapshot_count": len(boundary_snapshots),
-        }
-        enriched.append(item)
         for snapshot in snapshots:
             horizon = int(snapshot.get("source_horizon_minutes") or 0)
             horizon_rows[horizon].append(
@@ -176,30 +157,28 @@ def analyze_period(label: str, row: dict[str, Any], output: Path) -> dict[str, A
                     "actual_r": trade.get("actual_r"),
                     "exit_reason": trade.get("exit_reason"),
                     "outcome_group": group,
-                    "direct_source_recross_failure": int(
-                        direct_source_recross_failure(snapshot)
-                    ),
+                    "severe_stop_like": severe,
+                    "direct_source_recross_failure": int(direct_source_recross_failure(snapshot)),
                 }
             )
 
+    total_winners = groups.get("roi_winner", 0)
+    total_losses = groups.get("non_roi_loss", 0)
     horizon_summary: dict[str, Any] = {}
-    transition_effects: dict[str, Any] = {}
-    total_roi_winners = groups.get("roi_winner", 0)
-    total_stop_losses = groups.get("stop_like_loss", 0)
+    effects: dict[str, Any] = {}
     for horizon in HORIZONS:
         snapshots = horizon_rows.get(horizon, [])
         by_group: dict[str, Any] = {}
-        for group in ("roi_winner", "stop_like_loss", "other_loss", "other_win"):
+        for group in ("roi_winner", "non_roi_loss", "other_win"):
             subset = [item for item in snapshots if item["outcome_group"] == group]
             by_group[group] = {
                 "snapshots": len(subset),
+                "severe_stop_like_snapshots": sum(int(item["severe_stop_like"]) for item in subset),
                 "direct_source_recross_failures": sum(
                     int(item["direct_source_recross_failure"]) for item in subset
                 ),
                 "metrics": {
-                    metric: summarize(
-                        [number(item.get(metric)) for item in subset]
-                    )
+                    metric: summarize([number(item.get(metric)) for item in subset])
                     for metric in METRICS
                 },
             }
@@ -207,36 +186,33 @@ def analyze_period(label: str, row: dict[str, Any], output: Path) -> dict[str, A
 
         winner_matches = sum(
             int(item["direct_source_recross_failure"])
-            for item in snapshots
-            if item["outcome_group"] == "roi_winner"
+            for item in snapshots if item["outcome_group"] == "roi_winner"
         )
-        stop_matches = sum(
+        loss_matches = sum(
             int(item["direct_source_recross_failure"])
-            for item in snapshots
-            if item["outcome_group"] == "stop_like_loss"
+            for item in snapshots if item["outcome_group"] == "non_roi_loss"
         )
-        observable_winners = sum(
-            item["outcome_group"] == "roi_winner" for item in snapshots
-        )
-        observable_stops = sum(
-            item["outcome_group"] == "stop_like_loss" for item in snapshots
-        )
-        transition_effects[str(horizon)] = {
-            "total_roi_winners": total_roi_winners,
+        observable_winners = sum(item["outcome_group"] == "roi_winner" for item in snapshots)
+        observable_losses = sum(item["outcome_group"] == "non_roi_loss" for item in snapshots)
+        effects[str(horizon)] = {
+            "total_roi_winners": total_winners,
             "observable_roi_winners": observable_winners,
             "matched_roi_winners": winner_matches,
             "estimated_total_winner_preservation_share": (
-                1.0 - winner_matches / total_roi_winners
-                if total_roi_winners else None
+                1.0 - winner_matches / total_winners if total_winners else None
             ),
-            "total_stop_like_losses": total_stop_losses,
-            "observable_stop_like_losses": observable_stops,
-            "matched_stop_like_losses": stop_matches,
-            "total_stop_like_loss_capture_share": (
-                stop_matches / total_stop_losses if total_stop_losses else None
+            "total_non_roi_losses": total_losses,
+            "observable_non_roi_losses": observable_losses,
+            "matched_non_roi_losses": loss_matches,
+            "total_non_roi_loss_capture_share": (
+                loss_matches / total_losses if total_losses else None
             ),
-            "observable_stop_like_loss_capture_share": (
-                stop_matches / observable_stops if observable_stops else None
+            "observable_non_roi_loss_capture_share": (
+                loss_matches / observable_losses if observable_losses else None
+            ),
+            "observable_severe_stop_like_losses": sum(
+                item["outcome_group"] == "non_roi_loss" and int(item["severe_stop_like"])
+                for item in snapshots
             ),
         }
 
@@ -246,7 +222,7 @@ def analyze_period(label: str, row: dict[str, Any], output: Path) -> dict[str, A
         "account_valid": topology.account_ok(row),
         "outcome_group_counts": dict(groups),
         "horizon_summary": horizon_summary,
-        "direct_source_recross_transition_effects": transition_effects,
+        "direct_source_recross_transition_effects": effects,
         "trade_ledger": enriched,
     }
 
@@ -257,14 +233,12 @@ def supported_horizons(periods: dict[str, Any]) -> list[int]:
         valid = True
         for period in periods.values():
             effect = period["direct_source_recross_transition_effects"][str(horizon)]
-            capture = effect.get("total_stop_like_loss_capture_share")
+            capture = effect.get("total_non_roi_loss_capture_share")
             preserve = effect.get("estimated_total_winner_preservation_share")
             if (
-                capture is None
-                or preserve is None
-                or float(capture) < 0.50
-                or float(preserve) < 0.80
-                or int(effect.get("total_stop_like_losses") or 0) < 2
+                capture is None or preserve is None
+                or float(capture) < 0.50 or float(preserve) < 0.80
+                or int(effect.get("total_non_roi_losses") or 0) < 5
             ):
                 valid = False
                 break
@@ -285,7 +259,7 @@ def render(result: dict[str, Any]) -> None:
         "",
         "The direct invalidation is fixed: estimated after-cost R is non-positive, the entry symbol has re-crossed to RSI ≥ 70, and TEMA slope is positive.",
         "",
-        "| period | horizon | ROI winners preserved | stop-like losses captured | observable stops |",
+        "| period | horizon | ROI winners preserved | all negative trades captured | observable losses |",
         "|---|---:|---:|---:|---:|",
     ]
     for period_name, period in result.get("periods", {}).items():
@@ -294,12 +268,12 @@ def render(result: dict[str, Any]) -> None:
             lines.append(
                 f"| {period_name} | {horizon} | "
                 f"{effect.get('estimated_total_winner_preservation_share')} | "
-                f"{effect.get('total_stop_like_loss_capture_share')} | "
-                f"{effect.get('observable_stop_like_losses')} |"
+                f"{effect.get('total_non_roi_loss_capture_share')} | "
+                f"{effect.get('observable_non_roi_losses')} |"
             )
     lines += [
         "",
-        "A policy-fresh test is authorized only when the same source-defined horizon captures at least half of stop-like losses in both months while preserving at least 80% of ROI winners. Otherwise this lifecycle explanation is rejected.",
+        "A fresh policy is authorized only when the same source-defined horizon captures at least half of all negative trades in both months while preserving at least 80% of ROI winners. The severe-stop subset is diagnostic only.",
     ]
     (EVIDENCE / "RESULT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -315,10 +289,8 @@ def main() -> int:
     EVIDENCE.mkdir(parents=True, exist_ok=True)
 
     april = topology.run_case(
-        label="april_2026_forensic_parity",
-        mode="ge2_control",
-        start=PERIODS["april_2026"][0],
-        end=PERIODS["april_2026"][1],
+        label="april_2026_forensic_parity", mode="ge2_control",
+        start=PERIODS["april_2026"][0], end=PERIODS["april_2026"][1],
         destination=Path("april_2026_forensic_parity"),
     )
     parity = topology.parity_check(april)
@@ -339,22 +311,16 @@ def main() -> int:
         return 2
 
     march = topology.run_case(
-        label="march_2024_forensic",
-        mode="ge2_control",
-        start=PERIODS["march_2024"][0],
-        end=PERIODS["march_2024"][1],
+        label="march_2024_forensic", mode="ge2_control",
+        start=PERIODS["march_2024"][0], end=PERIODS["march_2024"][1],
         destination=Path("march_2024_forensic"),
     )
     period_results = {
         "march_2024": analyze_period(
-            "march_2024",
-            march,
-            ARTIFACTS / "march_2024_forensic",
+            "march_2024", march, ARTIFACTS / "march_2024_forensic"
         ),
         "april_2026": analyze_period(
-            "april_2026",
-            april,
-            ARTIFACTS / "april_2026_forensic_parity",
+            "april_2026", april, ARTIFACTS / "april_2026_forensic_parity"
         ),
     }
     supported = supported_horizons(period_results)
@@ -386,17 +352,10 @@ def main() -> int:
     for name, period in period_results.items():
         dump(EVIDENCE / "periods" / f"{name}.json", period)
     render(result)
-    print(
-        json.dumps(
-            {
-                "decision": decision,
-                "supported_source_horizons": supported,
-                "parity": parity.get("pass"),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    print(json.dumps(
+        {"decision": decision, "supported_source_horizons": supported, "parity": parity.get("pass")},
+        indent=2, sort_keys=True,
+    ))
     return 0 if mechanically_valid else 2
 
 
