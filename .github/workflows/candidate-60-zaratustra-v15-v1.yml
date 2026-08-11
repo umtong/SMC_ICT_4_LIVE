@@ -7,6 +7,7 @@ on:
       - ".github/workflows/candidate-60-zaratustra-v15-v1.yml"
       - "research/candidate-60/ZARATUSTRA_V15_V1_FREEZE.md"
       - "research/candidate-60/router_zaratustra_v15_v1.py"
+      - "research/candidate-60/router_zaratustra_v15_runtime.py"
       - "research/candidate-60/strategy_zaratustra_v15_v1.py"
       - "research/candidate-60/zaratustra_v15_v1_campaign.py"
   workflow_dispatch:
@@ -40,7 +41,8 @@ jobs:
           test -f research/candidate-60/ZARATUSTRA_V15_V1_FREEZE.md
           cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
           cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_base.py
-          cp research/candidate-60/router_zaratustra_v15_v1.py research/candidate-51/router.py
+          cp research/candidate-60/router_zaratustra_v15_v1.py research/candidate-51/router_zaratustra_v15_impl.py
+          cp research/candidate-60/router_zaratustra_v15_runtime.py research/candidate-51/router.py
           cp research/candidate-60/strategy_zaratustra_v15_v1.py research/candidate-51/strategy.py
           python -m compileall -q \
             research/candidate-51/launch.py \
@@ -48,6 +50,7 @@ jobs:
             research/candidate-51/router.py \
             research/candidate-51/router_picasso.py \
             research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_zaratustra_v15_impl.py \
             research/candidate-51/strategy.py \
             research/candidate-51/strategy_picasso.py \
             research/candidate-60/zaratustra_v15_v1_campaign.py \
@@ -118,7 +121,9 @@ jobs:
         run: |
           set -euo pipefail
           git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
-          rm -f research/candidate-51/router_trendrider_base.py
+          rm -f \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_zaratustra_v15_impl.py
           git config user.name "candidate-60-research-bot"
           git config user.email "candidate-60-research-bot@users.noreply.github.com"
           out=research/candidate-60/evidence/zaratustra-v15-v1
