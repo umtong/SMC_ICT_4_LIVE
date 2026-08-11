@@ -7,12 +7,7 @@ from domain import AcceptanceCandidate, Boundary, Candle, EngineConfig, Family, 
 
 
 class BoundaryState:
-    """Event-driven boundary rejection/acceptance engine.
-
-    Meaningful highs/lows are defined causally by multi-scale, ATR-normalized
-    topographic prominence. A boundary is observable only after the right side
-    of its pivot window has closed.
-    """
+    """Causal multi-scale boundary construction and same-leg geometry."""
 
     def __init__(self, symbol: str, config: EngineConfig) -> None:
         if not config.pivot_spans or min(config.pivot_spans) < 1:
@@ -42,13 +37,7 @@ class BoundaryState:
             self.true_ranges.append(bar.high - bar.low)
             return
         previous = self.bars[-1]
-        self.true_ranges.append(
-            max(
-                bar.high - bar.low,
-                abs(bar.high - previous.close),
-                abs(bar.low - previous.close),
-            ),
-        )
+        self.true_ranges.append(max(bar.high - bar.low, abs(bar.high - previous.close), abs(bar.low - previous.close)))
 
     def _boundary_id(self, side: str, center: int, span: int, level: float) -> str:
         return f"{self.symbol}:{side}:{center}:{span}:{level:.12g}"
@@ -69,16 +58,17 @@ class BoundaryState:
             lows = [bar.low for bar in window]
             unique_high = pivot.high == max(highs) and highs.count(pivot.high) == 1
             unique_low = pivot.low == min(lows) and lows.count(pivot.low) == 1
-
             if unique_high:
-                left_relief = pivot.high - min(bar.low for bar in window[:span])
-                right_relief = pivot.high - min(bar.low for bar in window[span + 1 :])
-                prominence = min(left_relief, right_relief) / atr
+                prominence = min(
+                    pivot.high - min(bar.low for bar in window[:span]),
+                    pivot.high - min(bar.low for bar in window[span + 1 :]),
+                ) / atr
                 self._maybe_add_boundary("HIGH", center, span, pivot.high, prominence, observed_index)
             if unique_low:
-                left_relief = max(bar.high for bar in window[:span]) - pivot.low
-                right_relief = max(bar.high for bar in window[span + 1 :]) - pivot.low
-                prominence = min(left_relief, right_relief) / atr
+                prominence = min(
+                    max(bar.high for bar in window[:span]) - pivot.low,
+                    max(bar.high for bar in window[span + 1 :]) - pivot.low,
+                ) / atr
                 self._maybe_add_boundary("LOW", center, span, pivot.low, prominence, observed_index)
 
     def _maybe_add_boundary(
@@ -121,18 +111,22 @@ class BoundaryState:
         )
         self._inc(f"boundary_{side.lower()}")
 
-    def _active(self, side: str | None = None) -> list[Boundary]:
+    def _active(self, side: str | None = None, min_span: int = 1) -> list[Boundary]:
         return [
             boundary
             for boundary in self.boundaries
-            if not boundary.consumed and (side is None or boundary.side == side)
+            if not boundary.consumed
+            and boundary.span >= min_span
+            and (side is None or boundary.side == side)
         ]
 
     def _nearest_target(self, side: Side, current: Candle, source: Boundary) -> Boundary | None:
+        # Entry, invalidation and objective must describe the same auction scale.
+        # Smaller nested pivots are geometry, not a license to terminate a larger leg.
         if side is Side.LONG:
             candidates = [
                 boundary
-                for boundary in self._active("HIGH")
+                for boundary in self._active("HIGH", source.span)
                 if boundary.boundary_id != source.boundary_id
                 and boundary.observed_time_ns < current.ts_close_ns
                 and boundary.level > current.high
@@ -140,18 +134,18 @@ class BoundaryState:
             return min(candidates, key=lambda item: item.level, default=None)
         candidates = [
             boundary
-            for boundary in self._active("LOW")
+            for boundary in self._active("LOW", source.span)
             if boundary.boundary_id != source.boundary_id
             and boundary.observed_time_ns < current.ts_close_ns
             and boundary.level < current.low
         ]
         return max(candidates, key=lambda item: item.level, default=None)
 
-    def _latest_origin(self, side: Side, before_ns: int) -> float | None:
+    def _latest_origin(self, side: Side, before_ns: int, min_span: int = 1) -> float | None:
         opposite = "LOW" if side is Side.LONG else "HIGH"
         candidates = [
             boundary
-            for boundary in self._active(opposite)
+            for boundary in self._active(opposite, min_span)
             if boundary.observed_time_ns < before_ns
         ]
         if not candidates:
