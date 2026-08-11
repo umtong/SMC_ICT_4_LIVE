@@ -103,8 +103,11 @@ class TestStructuralEpisode(unittest.TestCase):
         setup = setups[0]
         self.assertEqual(setup.family, "CHANNEL_POINT4_FAKEOUT_OB_BOS")
         self.assertEqual(setup.side, Side.LONG)
-        self.assertAlmostEqual(setup.target, 110.0)
-        self.assertGreaterEqual(setup.executable(setup.target, target_id="x").gross_rr, 1.0)
+        self.assertAlmostEqual(setup.initial_target, 110.0)
+        plan = setup.executable(setup.initial_target, target_id="x")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertGreaterEqual(plan.gross_rr, 1.0)
 
     def test_outside_close_then_next_reclaim_is_trap_episode(self):
         engine = self.engine()
