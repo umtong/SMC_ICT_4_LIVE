@@ -49,6 +49,7 @@ class EasyChartV2Strategy(EasyChartRuntimeMixin, EasyChartOrderMixin, Strategy):
         self.active_instrument_id: InstrumentId | None = None
         self.active_entry_id: ClientOrderId | None = None
         self.entry_cancel_requested = False
+        self.emergency_exit_requested = False
 
         # Buffer equal-timestamp signals before deterministic arbitration.
         self.signal_bucket_ts: int | None = None
