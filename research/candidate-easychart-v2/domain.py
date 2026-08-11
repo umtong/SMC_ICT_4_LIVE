@@ -5,14 +5,15 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 
+
 class Side(int, Enum):
     LONG = 1
     SHORT = -1
 
 
 class Family(str, Enum):
-    REJECTION_RETEST = "REJECTION_RETEST"
-    ACCEPTANCE_RETEST = "ACCEPTANCE_RETEST"
+    REJECTION_CLOSE = "REJECTION_CLOSE"
+    ACCEPTANCE_HOLD_CLOSE = "ACCEPTANCE_HOLD_CLOSE"
 
 
 @dataclass(frozen=True, slots=True)
