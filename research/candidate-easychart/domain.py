@@ -149,6 +149,8 @@ class TradePlan:
     zone_high: float
     formation_extreme: float
     body_ratio: float
+    context_bias: str = "UNRESOLVED"
+    source_timeframe_minutes: int = 0
 
     def __post_init__(self) -> None:
         if self.side is Side.LONG and not self.stop < self.entry < self.target:
@@ -231,9 +233,12 @@ def select_structural_target(
     ]
     directional.sort(key=lambda pool: abs(pool.level - entry))
     risk = abs(entry - stop)
-    if risk <= 0.0:
+    if risk <= 0.0 or not directional:
         return None
-    for pool in directional:
-        if abs(pool.level - entry) / risk >= min_gross_rr - 1e-12:
-            return pool
-    return None
+    # The source uses the first opposing liquidity/objective.  The RR rule is a
+    # trade gate, not permission to skip an exhausted first objective and aim
+    # at a farther pool.  Therefore a sub-1R nearest objective rejects the
+    # trade outright.
+    nearest = directional[0]
+    rr = abs(nearest.level - entry) / risk
+    return nearest if rr >= min_gross_rr - 1e-12 else None
