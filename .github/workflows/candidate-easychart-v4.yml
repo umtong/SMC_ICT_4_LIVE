@@ -1,0 +1,142 @@
+name: candidate-easychart-v4-structural-episode-screen
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v4.py"
+      - "research/candidate-easychart/screen_v4.py"
+      - "research/candidate-easychart/compare_v4.py"
+      - "research/candidate-easychart/tests/test_market_v4.py"
+      - ".github/workflows/candidate-easychart-v4.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v4-structural-episode-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v4-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run source-hierarchy structural episodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 160 "$ROOT/screen.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/screen.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart v4 failed::$message"; fi; exit "$status"' EXIT
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 45
+            --cache "$CACHE"
+            --cost-profile role
+          )
+
+          # Source core: three-point parallel channel, point-four fakeout/trap,
+          # meaningful EasyChart OB, sponsored BOS, first mitigation.
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 15 \
+            --output "$ROOT/channel15-bos"
+
+          # Distinguish the immediate one-wick Fake out from the delayed Trap.
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 15 --disable-trap \
+            --output "$ROOT/channel15-fakeout-bos"
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 15 --disable-fakeout \
+            --output "$ROOT/channel15-trap-bos"
+
+          # Source ablations: fourth-point bounce and the stricter expansion
+          # certificate requiring both BOS and the PDF-defined FVG.
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 15 --enable-touch \
+            --output "$ROOT/channel15-touch-bos"
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 15 --require-fvg \
+            --output "$ROOT/channel15-bos-fvg"
+
+          # Market-structure scale, not a threshold search.
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 5 \
+            --output "$ROOT/channel5-bos"
+          python research/candidate-easychart/screen_v4.py "${common[@]}" \
+            --channel-minutes 60 --channel-pivot-span 1 \
+            --output "$ROOT/channel60-bos"
+
+          # Execution-cost sensitivity only; alpha rules unchanged.
+          python research/candidate-easychart/screen_v4.py \
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 45 \
+            --cache "$CACHE" --cost-profile taker --channel-minutes 15 \
+            --output "$ROOT/channel15-bos-taker"
+
+          variants=(
+            channel15-bos
+            channel15-fakeout-bos
+            channel15-trap-bos
+            channel15-touch-bos
+            channel15-bos-fvg
+            channel5-bos
+            channel60-bos
+            channel15-bos-taker
+          )
+          python research/candidate-easychart/compare_v4.py \
+            --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          variants=(
+            channel15-bos
+            channel15-fakeout-bos
+            channel15-trap-bos
+            channel15-touch-bos
+            channel15-bos-fvg
+            channel5-bos
+            channel60-bos
+            channel15-bos-taker
+          )
+          for variant in "${variants[@]}"; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/setups.csv"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v4-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v4-development/**
+          if-no-files-found: warn
+          retention-days: 90
