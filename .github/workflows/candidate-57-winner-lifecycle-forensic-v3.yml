@@ -1,0 +1,149 @@
+name: candidate-57-winner-lifecycle-forensic-v3
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-winner-lifecycle-forensic-v3.yml"
+      - "research/candidate-57/WINNER_LIFECYCLE_FORENSIC_V3_FREEZE.md"
+      - "research/candidate-57/strategy_winner_lifecycle_forensic_v3.py"
+      - "research/candidate-57/winner_lifecycle_forensic_v3.py"
+      - "research/candidate-57/winner_source_fidelity_router.py"
+      - "research/candidate-57/winner_source_fidelity_strategy.py"
+      - "research/candidate-57/winner_source_fidelity_campaign.py"
+      - "research/candidate-57/forensic_sources/winner_strategy_external_v17.py"
+      - "research/candidate-51/router_external_v17.py"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-winner-lifecycle-forensic-v3
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble unchanged Winner source with diagnostics-only observer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_external_v17.py research/candidate-51/router_transition.py
+          cp research/candidate-57/forensic_sources/winner_strategy_external_v17.py research/candidate-51/strategy_transition.py
+          cp research/candidate-57/winner_source_fidelity_router.py research/candidate-51/router.py
+          cp research/candidate-57/winner_source_fidelity_strategy.py research/candidate-51/strategy_source.py
+          cp research/candidate-57/strategy_winner_lifecycle_forensic_v3.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_transition.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_source.py \
+            research/candidate-51/strategy_transition.py \
+            research/candidate-57/winner_source_fidelity_campaign.py \
+            research/candidate-57/winner_lifecycle_forensic_v3.py
+
+      - name: Install locked environment and prove diagnostics-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_source import Candidate35Strategy as SourceStrategy
+          from router import _winner_series
+
+          assert issubclass(Candidate35Strategy, SourceStrategy)
+          assert callable(_winner_series)
+          assert Candidate35Config().winner_source_startup_candles == 200
+          source = inspect.getsource(Candidate35Strategy)
+          assert "direct_thesis_failure" in source
+          assert "close_all_positions" not in source
+          assert "cancel_all_orders" not in source
+          assert "_manage_open_position" in source and "super()._manage_open_position" in source
+          print("Winner source policy unchanged; lifecycle observer is diagnostics-only")
+          PY
+
+      - name: Reproduce March parity and map two consumed lifecycle intervals
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-winner-lifecycle-forensic-v3-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/winner_lifecycle_forensic_v3.py \
+            2>&1 | tee .work/candidate-57-winner-lifecycle-forensic-v3-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_transition.py \
+            research/candidate-51/strategy_source.py \
+            research/candidate-51/strategy_transition.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/winner-lifecycle-forensic-v3
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist Winner lifecycle forensic evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-winner-lifecycle-forensic-v3-evidence
+          path: |
+            research/candidate-57/evidence/winner-lifecycle-forensic-v3
+            artifacts/candidate-57-winner-lifecycle-forensic-v3
+            .work/candidate-57-winner-lifecycle-forensic-v3-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "forensic or parity failed with status $status; evidence retained"
+            exit "$status"
+          fi
