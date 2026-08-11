@@ -19,25 +19,20 @@ class EasyChartStateEngine(BoundaryState):
             source = candidate.source
             if candidate.side is Side.LONG:
                 held = current.open > source.level and current.close > source.level
-                first_retest_already_spent = current.low <= source.level
                 stop = candidate.origin - self.config.tick_size
             else:
                 held = current.open < source.level and current.close < source.level
-                first_retest_already_spent = current.high >= source.level
                 stop = candidate.origin + self.config.tick_size
             if not held:
                 self._inc("acceptance_failed_hold")
                 continue
-            if first_retest_already_spent:
-                self._inc("acceptance_retest_spent_before_observable")
-                continue
             target = self._nearest_target(candidate.side, current, source)
             plan = self._plan(
-                family=Family.ACCEPTANCE_RETEST,
+                family=Family.ACCEPTANCE_HOLD_CLOSE,
                 side=candidate.side,
                 current=current,
                 source=source,
-                entry=source.level,
+                entry=current.close,
                 stop=stop,
                 target=target,
                 event_suffix=str(candidate.break_index),
@@ -83,17 +78,13 @@ class EasyChartStateEngine(BoundaryState):
         if self.config.enable_rejection:
             for source, side, excursion in strongest(rejection_candidates):
                 target = self._nearest_target(side, current, source)
-                stop = (
-                    excursion - self.config.tick_size
-                    if side is Side.LONG
-                    else excursion + self.config.tick_size
-                )
+                stop = excursion - self.config.tick_size if side is Side.LONG else excursion + self.config.tick_size
                 plan = self._plan(
-                    family=Family.REJECTION_RETEST,
+                    family=Family.REJECTION_CLOSE,
                     side=side,
                     current=current,
                     source=source,
-                    entry=source.level,
+                    entry=current.close,
                     stop=stop,
                     target=target,
                     event_suffix=str(index),
@@ -145,6 +136,7 @@ class EasyChartStateEngine(BoundaryState):
                 plan.plan_id,
             ),
         )
+
 
 __all__ = [
     "AcceptanceCandidate",
