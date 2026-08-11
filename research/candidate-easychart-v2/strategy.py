@@ -38,7 +38,10 @@ class EasyChartV2Strategy(EasyChartRuntimeMixin, EasyChartOrderMixin, Strategy):
 
         self.instruments: dict[InstrumentId, Any] = {}
         self.engines: dict[InstrumentId, EasyChartStateEngine] = {}
-        self.signal_to_instrument = dict(zip(config.signal_bar_types, config.instrument_ids, strict=True))
+        self.signal_to_instrument = {
+            bar_type.id_spec_key(): instrument_id
+            for bar_type, instrument_id in zip(config.signal_bar_types, config.instrument_ids, strict=True)
+        }
         self.execution_to_instrument = dict(zip(config.execution_bar_types, config.instrument_ids, strict=True))
 
         # One global pending entry or position across all four instruments.
