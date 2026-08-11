@@ -1,0 +1,90 @@
+        "planned_loss_cost_inclusive_bps": planned_loss_bps,
+        "cost_aware_reward_r": (
+            net_reward_bps / planned_loss_bps
+            if geometry and net_reward_bps > 0.0 and planned_loss_bps > 0.0
+            else math.nan
+        ),
+        "objective_exceeds_round_trip_cost": bool(geometry and net_reward_bps > 0.0),
+    })
+
+    for horizon in HORIZONS:
+        last_index = entry_index + horizon - 1
+        if last_index >= len(frame):
+            result[f"gross_{horizon}m_bps"] = math.nan
+            result[f"net_{horizon}m_bps"] = math.nan
+            result[f"opposite_net_{horizon}m_bps"] = math.nan
+            result[f"mfe_{horizon}m_bps"] = math.nan
+            result[f"mae_{horizon}m_bps"] = math.nan
+            result[f"objective_hit_{horizon}m"] = False
+            result[f"stop_hit_{horizon}m"] = False
+            continue
+        future = frame.iloc[entry_index : last_index + 1]
+        exit_close = float(future.iloc[-1]["close"])
+        gross = side * math.log(exit_close / entry) * 10_000.0
+        if side > 0:
+            mfe = math.log(float(future["high"].max()) / entry) * 10_000.0
+            mae = math.log(float(future["low"].min()) / entry) * 10_000.0
+            objective_hit = bool((future["high"] >= float(objective)).any())
+            stop_hit = bool((future["low"] <= float(stop)).any())
+        else:
+            mfe = math.log(entry / float(future["low"].min())) * 10_000.0
+            mae = math.log(entry / float(future["high"].max())) * 10_000.0
+            objective_hit = bool((future["low"] <= float(objective)).any())
+            stop_hit = bool((future["high"] >= float(stop)).any())
+        result.update({
+            f"gross_{horizon}m_bps": gross,
+            f"net_{horizon}m_bps": gross - ROUND_TRIP_COST_BPS,
+            f"opposite_net_{horizon}m_bps": -gross - ROUND_TRIP_COST_BPS,
+            f"mfe_{horizon}m_bps": mfe,
+            f"mae_{horizon}m_bps": mae,
+            f"objective_hit_{horizon}m": objective_hit,
+            f"stop_hit_{horizon}m": stop_hit,
+        })
+    return result
+
+
+def _event_row(
+    *,
+    family: str,
+    symbol: str,
+    event_index: int,
+    decision: router.RouteDecision,
+    frame: pd.DataFrame,
+    kind: str,
+) -> dict[str, Any]:
+    diagnostics = dict(decision.diagnostics or {})
+    proposed_side = int(decision.side) if decision.actionable else int(diagnostics.get("side", 0) or 0)
+    reason = "ACTIONABLE" if decision.actionable else (
+        str(decision.reasons[0]) if decision.reasons else "UNRESOLVED"
+    )
+    row = frame.iloc[event_index]
+    event_time = pd.Timestamp(row["close_time_dt"])
+    if event_time.tzinfo is None:
+        event_time = event_time.tz_localize("UTC")
+    else:
+        event_time = event_time.tz_convert("UTC")
+    result: dict[str, Any] = {
+        "kind": kind,
+        "family": family,
+        "symbol": symbol,
+        "event_index": int(event_index),
+        "event_time": event_time.isoformat(),
+        "event_ts_ns": int(event_time.value),
+        "state": str(decision.state),
+        "reason": reason,
+        "actionable": bool(decision.actionable),
+        "side": proposed_side,
+        "score": float(decision.score),
+        "entry_reference": float(decision.entry_reference),
+        "stop_reference": float(decision.stop_reference),
+        "objective_reference": float(decision.objective_reference),
+        "event_open": float(row["open"]),
+        "event_high": float(row["high"]),
+        "event_low": float(row["low"]),
+        "event_close": float(row["close"]),
+        "diagnostics_json": json.dumps(diagnostics, sort_keys=True, allow_nan=True),
+    }
+    if proposed_side in (-1, 1) and all(
+        _finite(value)
+        for value in (decision.objective_reference, decision.stop_reference)
+    ):
