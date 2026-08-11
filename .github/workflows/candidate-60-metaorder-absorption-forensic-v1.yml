@@ -1,0 +1,211 @@
+name: candidate-60-metaorder-absorption-forensic-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-metaorder-absorption-forensic-v1.yml"
+      - "research/candidate-60/METAORDER_ABSORPTION_FORENSIC_V1_FREEZE.md"
+      - "research/candidate-60/metaorder_absorption_forensic_v1.py.gz.b64.part*"
+      - "research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-60-metaorder-absorption-forensic-v1
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      SOURCE_COMMIT: f7787095f98b27f31fa3766bda13a94ae350269d
+      VENDOR: .work/candidate-60-metaorder-absorption-forensic-v1/vendor
+      C60_RESEARCH_ROOT: .work/candidate-60-metaorder-absorption-forensic-v1/vendor/research
+      C60_V1_SOURCE: ${{ github.workspace }}/research/candidate-60/_materialized_metaorder_lifecycle_exhaustion_v1.py
+      SCRIPT: .work/candidate-60-metaorder-absorption-forensic-v1/metaorder_absorption_forensic_v1.py
+      OUT: research/candidate-60/evidence/metaorder-absorption-forensic-v1
+      CACHE: .cache/candidate-60-metaorder-absorption-forensic-v1
+      CONSOLE: .work/candidate-60-metaorder-absorption-forensic-v1-console
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Materialize immutable feature source and frozen forensic
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_COMMIT"
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p "$VENDOR" "$(dirname "$SCRIPT")"
+          git archive "$SOURCE_COMMIT" \
+            research/candidate-05 \
+            research/candidate-16 \
+            research/candidate-51 \
+            | tar -x -C "$VENDOR"
+          cat research/candidate-60/metaorder_absorption_forensic_v1.py.gz.b64.part* \
+            | base64 -d | gzip -d > "$SCRIPT"
+          test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = \
+            "71f565fe2ca86463362c8a68a68ea6f3d45eb46c38a64b842926a791129f14ad"
+          test "$(sha256sum "$C60_V1_SOURCE" | awk '{print $1}')" = \
+            "7dc2c1da597c518bc427ec2869d03623f363cbf212cf90eb319aca127885b71a"
+
+      - name: Verify environment and diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            "$SCRIPT" \
+            "$C60_V1_SOURCE" \
+            "$C60_RESEARCH_ROOT/candidate-51/run.py" \
+            "$C60_RESEARCH_ROOT/candidate-05/features.py"
+          C60_RESEARCH_ROOT="$C60_RESEARCH_ROOT" \
+          C60_V1_SOURCE="$C60_V1_SOURCE" \
+          python - <<'PY'
+          import importlib.util
+          import os
+          import sys
+          from pathlib import Path
+          script = Path(os.environ["SCRIPT"])
+          spec = importlib.util.spec_from_file_location("c60_absorption_forensic", script)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module._self_test()
+          assert module.TRACE_MINUTES == 120
+          assert module.PRE_VALUE_WINDOWS == (15, 30, 60)
+          assert module.FIXED_OFFSETS == (0, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120)
+          freeze = Path("research/candidate-60/METAORDER_ABSORPTION_FORENSIC_V1_FREEZE.md").read_text()
+          for text in (
+              "2026-04-13",
+              "2026-04-19",
+              "2026-08-03",
+              "2026-08-09",
+              "Adaptive liquidity / asymmetric liquidity",
+              "Absorption under load",
+              "Outcome labels are attached only after",
+              "This is not a trading policy",
+          ):
+              assert text in freeze
+          print("exact V1 reuse, forensic trace and untouched reservation verified")
+          PY
+
+      - name: Run consumed-development forensic trace
+        id: study
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$OUT" "$CONSOLE"
+          set -o pipefail
+          C60_RESEARCH_ROOT="$C60_RESEARCH_ROOT" \
+          C60_V1_SOURCE="$C60_V1_SOURCE" \
+            python "$SCRIPT" \
+              --start 2026-04-13 \
+              --end 2026-04-19 \
+              --cache "$CACHE" \
+              --output "$OUT" \
+              2>&1 | tee "$CONSOLE/console.log"
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Verify causal forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="${{ steps.study.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "metaorder absorption forensic failed; status=$status"
+            exit "${status:-1}"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root = Path("research/candidate-60/evidence/metaorder-absorption-forensic-v1")
+          summary = json.loads((root / "summary.json").read_text())
+          assert summary["schema"] == "candidate-60-metaorder-absorption-forensic-v1"
+          assert summary["interval"] == {"start": "2026-04-13", "end": "2026-04-19"}
+          assert summary["events"] == 7
+          assert summary["label_counts"] == {
+              "EARLY_STOP_LATER_POSITIVE": 3,
+              "FAST_TARGET": 3,
+              "STOP_NO_LATER_POSITIVE": 1,
+          }
+          assert summary["source_reuse"]["parent_detector_called_directly"] is True
+          assert summary["source_reuse"]["parent_detector_reimplemented"] is False
+          assert summary["trace_contract"]["outcome_labels_are_not_input_to_observations"] is True
+          assert summary["interpretation_contract"]["reserved_fresh_consumed"] is False
+          for name in (
+              "path_trace.csv",
+              "fixed_offset_trace.csv",
+              "event_summary.csv",
+          ):
+              assert (root / name).is_file()
+          events = pd.read_csv(root / "event_summary.csv")
+          trace = pd.read_csv(root / "path_trace.csv")
+          assert len(events) == 7
+          assert trace["provisional_index"].nunique() >= 3
+          assert set(events["event_label"]) == {
+              "EARLY_STOP_LATER_POSITIVE",
+              "FAST_TARGET",
+              "STOP_NO_LATER_POSITIVE",
+          }
+          assert trace["offset_minute"].min() == 0
+          assert trace["offset_minute"].max() == 120
+          assert not trace[[
+              "return_z_vs_parent",
+              "impact_per_abs_flow_z_vs_parent",
+              "resilience_3m",
+          ]].isna().all().any()
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          if [[ -d "$OUT" ]]; then
+            git add -f "$OUT"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist metaorder absorption forensic"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete forensic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-metaorder-absorption-forensic-v1
+          path: |
+            research/candidate-60/evidence/metaorder-absorption-forensic-v1
+            .work/candidate-60-metaorder-absorption-forensic-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 90
