@@ -1,0 +1,154 @@
+name: candidate-51-ichiv2-claim-anatomy-v63
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichiv2-claim-anatomy-v63.yml"
+      - "research/candidate-51/ichiv2_claim_anatomy_v63.py"
+      - "research/candidate-51/forced_unwind_geometry.py"
+      - "research/candidate-51/forced_unwind_geometry_v59_fixed.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichiv2-claim-anatomy-v63
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        period:
+          - {label: dev_riskoff_2022_01, start: 2022-01-10, end: 2022-01-23, split: development}
+          - {label: dev_cascade_2022_06, start: 2022-06-06, end: 2022-06-19, split: development}
+          - {label: dev_ftx_2022_11, start: 2022-11-01, end: 2022-11-14, split: development}
+          - {label: confirm_recovery_2023_03, start: 2023-03-06, end: 2023-03-19, split: confirmation}
+          - {label: confirm_expansion_2023_10, start: 2023-10-16, end: 2023-10-29, split: confirmation}
+          - {label: untouched_bull_2024_03, start: 2024-03-04, end: 2024-03-17, split: untouched}
+          - {label: untouched_shock_2024_08, start: 2024-08-01, end: 2024-08-14, split: untouched}
+          - {label: claim_2025_q1, start: 2025-01-01, end: 2025-04-03, split: claim_reproduction}
+          - {label: untouched_cascade_2025_10, start: 2025-10-01, end: 2025-10-14, split: untouched}
+          - {label: postpub_2026_04, start: 2026-04-01, end: 2026-04-14, split: post_publication}
+          - {label: postpub_2026_07, start: 2026-07-15, end: 2026-07-28, split: post_publication}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-05
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install verified environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile \
+            research/candidate-51/forced_unwind_geometry.py \
+            research/candidate-51/forced_unwind_geometry_v59_fixed.py \
+            research/candidate-51/ichiv2_claim_anatomy_v63.py
+      - name: Reproduce report-compatible public ichiV2 mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/ichiv2-claim-anatomy-v63/${{ matrix.period.label }}"
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichiv2_claim_anatomy_v63.py run \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" \
+            --split "${{ matrix.period.split }}" \
+            --cache ".cache/candidate-51-ichiv2-v63/${{ matrix.period.label }}" \
+            --candidate05-path research/candidate-05 \
+            --candidate51-path research/candidate-51 \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichiv2-claim-anatomy-v63-${{ matrix.period.label }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/ichiv2-claim-anatomy-v63/${{ matrix.period.label }}/result.json
+
+  aggregate:
+    if: always()
+    needs: measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-ichiv2-claim-anatomy-v63-*
+          path: downloaded
+      - name: Aggregate eleven causal periods
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 11
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          output=artifacts/candidate-51/ichiv2-claim-anatomy-v63
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichiv2_claim_anatomy_v63.py aggregate \
+            --results-root downloaded \
+            --output "$output"
+          for file in ANATOMY.json ANATOMY.md EPISODES.csv SELECTED.csv REJECTED.csv; do
+            test -e "$output/$file"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichiv2-claim-anatomy-v63-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/ichiv2-claim-anatomy-v63/
+      - name: Commit compact claim anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichiv2-claim-anatomy-v63
+          destination=research/candidate-51/evidence/ichiv2-claim-anatomy-v63
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/EPISODES.csv" "$destination/EPISODES.csv"
+          cp "$source/SELECTED.csv" "$destination/SELECTED.csv"
+          cp "$source/REJECTED.csv" "$destination/REJECTED.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record causal ichiV2 claim anatomy"
+          for attempt in 1 2 3 4 5 6; do
+            git fetch origin research/candidate-51
+            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
