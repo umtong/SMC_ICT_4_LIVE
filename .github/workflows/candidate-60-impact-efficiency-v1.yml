@@ -1,0 +1,146 @@
+name: candidate-60-impact-efficiency-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-impact-efficiency-v1.yml"
+      - "research/candidate-60/IMPACT_EFFICIENCY_V1_FREEZE.md"
+      - "research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-impact-efficiency-v1
+  cancel-in-progress: true
+
+jobs:
+  impact-efficiency-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reassemble and verify frozen diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/IMPACT_EFFICIENCY_V1_FREEZE.md
+          cat research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part* \
+            > .work-impact-efficiency.b64
+          test "$(wc -c < .work-impact-efficiency.b64)" = "8872"
+          test "$(sha256sum .work-impact-efficiency.b64 | awk '{print $1}')" = \
+            "202ebd2324ad1345974a842720c97e789aaef0ace555c8c0dd87a6f74929aed1"
+          base64 -d .work-impact-efficiency.b64 > .work-impact-efficiency.py.gz
+          test "$(sha256sum .work-impact-efficiency.py.gz | awk '{print $1}')" = \
+            "ebbe15b5db3556ca8b0add0bd3b4984b65dbf808c716fe268eb71ab86198ab25"
+          gzip -dc .work-impact-efficiency.py.gz \
+            > research/candidate-60/impact_efficiency_diagnostic.py
+          test "$(sha256sum research/candidate-60/impact_efficiency_diagnostic.py | awk '{print $1}')" = \
+            "7ab7d962eb6e7817365349b10d644a6d002a158a19a57fdb25afadd8066e24e9"
+          python -m py_compile research/candidate-60/impact_efficiency_diagnostic.py
+
+      - name: Install locked environment and prove causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python - <<'PY'
+          import importlib.util
+          import inspect
+          from pathlib import Path
+          import sys
+
+          path = Path("research/candidate-60/impact_efficiency_diagnostic.py")
+          spec = importlib.util.spec_from_file_location("c60_impact", path)
+          assert spec is not None and spec.loader is not None
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          blocks = inspect.getsource(module.build_blocks)
+          assert '.shift(1).rolling(BASELINE_BLOCKS' in blocks
+          events = inspect.getsource(module.event_rows)
+          assert 'confirm_ts != parent_ts + pd.Timedelta(minutes=5)' in events
+          assert 'entry_ts = confirm_ts + pd.Timedelta(minutes=5)' in events
+          assert 'float(parent["impact_ratio"]) > 1.0' in events
+          assert 'float(parent["impact_ratio"]) < 1.0' in events
+          assert 'int(confirm["flow_direction"]) == -parent_direction' in events
+          assert module.PRIMARY_HORIZON == 15
+          assert module.ROUND_TRIP_COST_BPS == 20.0
+          main_source = inspect.getsource(module.main)
+          assert main_source.index('development, development_events = run_stage(DEVELOPMENT)') < main_source.index('if eligible_families:') < main_source.index('run_stage(POLICY_FRESH)')
+          print("prior-only impact regime, separate confirmation, next-open and untouched-data contracts verified")
+          PY
+
+      - name: Run development and conditional policy-fresh diagnostic
+        id: diagnostic
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-impact-efficiency-v1-console
+          set -o pipefail
+          uv run python research/candidate-60/impact_efficiency_diagnostic.py \
+            2>&1 | tee .work/candidate-60-impact-efficiency-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact mechanism evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .work-impact-efficiency.b64 \
+            .work-impact-efficiency.py.gz \
+            research/candidate-60/impact_efficiency_diagnostic.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/impact-efficiency-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist impact-efficiency evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-impact-efficiency-v1
+          path: |
+            research/candidate-60/evidence/impact-efficiency-v1
+            .work/candidate-60-impact-efficiency-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce diagnostic validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.diagnostic.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "impact-efficiency diagnostic failed; status=$status"
+            exit "${status:-1}"
+          fi
