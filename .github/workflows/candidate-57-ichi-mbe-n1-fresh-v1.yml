@@ -1,0 +1,186 @@
+name: candidate-57-ichi-mbe-n1-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-ichi-mbe-n1-fresh-v1.yml"
+      - "research/candidate-57/ICHI_MBE_N1_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/ichi_mbe_n1_fresh_v1.py"
+      - "research/candidate-57/router_ichi_mbe_n1_v1.py"
+      - "research/candidate-57/strategy_ichi_mbe_n1_v1.py"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/forensic_sources/mbe2_router.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/strategy_picasso.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-ichi-mbe-n1-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble frozen N-to-1 policy on reused Nautilus execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/ICHI_MBE_N1_FRESH_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py \
+            research/candidate-51/router_ichi_impl.py
+          cp research/candidate-57/forensic_sources/mbe2_router.py \
+            research/candidate-51/router_mbe_impl.py
+          cp research/candidate-57/router_ichi_mbe_n1_v1.py \
+            research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py \
+            research/candidate-51/strategy_ichi_impl.py
+          cp research/candidate-57/strategy_ichi_mbe_n1_v1.py \
+            research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_impl.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/strategy_ichi_impl.py \
+            research/candidate-51/strategy.py \
+            research/candidate-57/trade_ledger_forensics.py \
+            research/candidate-57/ichi_mbe_n1_fresh_v1.py
+
+      - name: Install locked environment and prove causal integration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from router import ICHI_STATE, MBE_STATE, ichi_route_universe, mbe_route_universe
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_ichi_impl import Candidate35Strategy as IchiStrategy
+
+          assert issubclass(Candidate35Strategy, IchiStrategy)
+          fields = set(Candidate35Config.__struct_fields__)
+          required = {
+              "integration_mode",
+              "ichi_family_max_hold_minutes",
+              "mbe_min_actionable_candidates",
+              "mbe_variant",
+              "mbe_source_leverage",
+              "mbe_roi_0",
+              "mbe_roi_420",
+          }
+          assert required.issubset(fields), required - fields
+          source = inspect.getsource(Candidate35Strategy._on_complete_universe_minute)
+          for token in (
+              'len(mbe_actionable) >= int(',
+              'if mbe_collision:',
+              'candidate_family = "mbe"',
+              'elif ichi_actionable:',
+              'candidate_family = "ichi"',
+          ):
+              assert token in source, token
+          management = inspect.getsource(Candidate35Strategy._manage_open_position)
+          assert "PUBLIC_MBE2_ROI_EXIT" in management
+          assert "PUBLIC_ICHI_FAMILY_HORIZON_EXIT" in management
+          assert callable(ichi_route_universe) and callable(mbe_route_universe)
+          assert ICHI_STATE != MBE_STATE
+          print("frozen source roles, breadth priority and one-account management verified")
+          PY
+
+      - name: Run all three frozen cells on the fresh April interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-ichi-mbe-n1-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_mbe_n1_fresh_v1.py \
+            2>&1 | tee .work/candidate-57-ichi-mbe-n1-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_impl.py \
+            research/candidate-51/router_mbe_impl.py \
+            research/candidate-51/strategy_ichi_impl.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/ichi-mbe-n1-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist fresh Ichi MBE N-to-1 evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-ichi-mbe-n1-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/ichi-mbe-n1-fresh-v1
+            .work/candidate-57-ichi-mbe-n1-fresh-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "N-to-1 campaign or account validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
