@@ -1,0 +1,56 @@
+name: candidate-60-repair-impact-source
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-repair-impact-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-repair-impact-source
+  cancel-in-progress: false
+
+jobs:
+  restore-canonical-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Restore the exact source chunks used by the successful run
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=78e9c87ba0e145f70b85e3d9de07fcd829ed818d
+          for index in 00 01 02 03 04 05 06 07 08; do
+            git checkout "$original" -- \
+              "research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part${index}"
+          done
+          git rm -f --ignore-unmatch \
+            research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part09
+          cat research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part{00,01,02,03,04,05,06,07,08} \
+            > /tmp/impact.b64
+          test "$(wc -c < /tmp/impact.b64)" = "8872"
+          test "$(sha256sum /tmp/impact.b64 | awk '{print $1}')" = \
+            "202ebd2324ad1345974a842720c97e789aaef0ace555c8c0dd87a6f74929aed1"
+          git rm .github/workflows/candidate-60-repair-impact-source.yml
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          git add research/candidate-60/impact_efficiency_diagnostic_v1c.b64.part*
+          git commit --no-gpg-sign -m \
+            "candidate60: restore canonical impact-efficiency source chunks"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-60
+            git rebase origin/research/candidate-60
+            if git push origin HEAD:research/candidate-60; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
