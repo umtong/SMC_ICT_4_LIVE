@@ -8,6 +8,11 @@ import urllib.request
 
 import pandas as pd
 
+# NautilusTrader 1.230.0 maps ``DataFrame.values`` into a writable Cython
+# memoryview.  Pandas copy-on-write exposes that array as read-only, so keep
+# the documented wrangler input mutable rather than rebuilding Nautilus bars.
+pd.options.mode.copy_on_write = False
+
 BASE = "https://data.binance.vision/data/futures/um/daily/klines"
 COLUMNS = [
     "open_time", "open", "high", "low", "close", "volume", "close_time",
@@ -74,7 +79,7 @@ def load_range(symbol: str, start: date, end: date, cache: Path) -> pd.DataFrame
         raise RuntimeError(f"duplicate one-minute bars for {symbol}")
     expected_days = (end - start).days + 1
     if len(frame) < expected_days * 1430:
-        raise RuntimeError(f"incomplete one-minute data for {symbol}: {len(frame)}")
+        raise RuntimeError(b"incomplete one-minute data for {symbol}: {len(frame)}")
     return frame
 
 
