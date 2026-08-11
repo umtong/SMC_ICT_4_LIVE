@@ -1,0 +1,160 @@
+name: candidate-60-zaratustra-v15-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-zaratustra-v15-v1.yml"
+      - "research/candidate-60/ZARATUSTRA_V15_V1_FREEZE.md"
+      - "research/candidate-60/router_zaratustra_v15_v1.py"
+      - "research/candidate-60/strategy_zaratustra_v15_v1.py"
+      - "research/candidate-60/zaratustra_v15_v1_campaign.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-zaratustra-v15-v1
+  cancel-in-progress: true
+
+jobs:
+  source-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble reused Nautilus execution and public source adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/ZARATUSTRA_V15_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_base.py
+          cp research/candidate-60/router_zaratustra_v15_v1.py research/candidate-51/router.py
+          cp research/candidate-60/strategy_zaratustra_v15_v1.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-60/zaratustra_v15_v1_campaign.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment and prove frozen source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          PYTHONPATH=research/candidate-51:research/candidate-57:research/candidate-60 uv run python - <<'PY'
+          import inspect
+          import router
+          from strategy import Candidate35Config, Candidate35Strategy
+          from strategy_picasso import Candidate35Strategy as ExecutionStrategy
+
+          assert issubclass(Candidate35Strategy, ExecutionStrategy)
+          config = router.RouteConfig()
+          assert config.z15_family == "combined"
+          assert config.z15_trigger_mode == "source"
+          assert config.z15_dmi_period == 14
+          assert config.z15_mfi_period == 14
+          assert config.z15_atr_period == 14
+          assert config.z15_bb_period == 20
+          assert config.z15_bb_stds == 2.0
+          assert config.z15_mfi_midpoint == 50.0
+          assert config.z15_atr_absolute_max == 0.2
+          assert config.z15_stop_fraction == 0.015
+          assert config.z15_emergency_objective_fraction == 0.20
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert {"c60_signal_start_ns", "c60_signal_end_ns", "c60_history_minutes"}.issubset(fields)
+          source = inspect.getsource(router._flags_at)
+          assert 'values["dx"] > values["minus_di"]' in source
+          assert 'values["adx"] > values["minus_di"]' in source
+          assert 'values["plus_di"] > values["minus_di"]' in source
+          assert 'values["mfi"] > mfi_mid' in source
+          assert 'values["atr"] < atr_max' in source
+          assert 'prior_close <= prior_upper' in source
+          assert 'prior_close >= prior_lower' in source
+          routing = inspect.getsource(router.route_symbol)
+          assert "Z15_SOURCE_DIRECTION_COLLISION" in routing
+          assert "SOURCE_LEVERAGE_NORMALIZED_TO_UNDERLYING" in routing
+          assert "for threshold" not in routing
+          wrapper = inspect.getsource(Candidate35Strategy._on_complete_universe_minute)
+          assert "c60_signal_start_ns" in wrapper and "c60_signal_end_ns" in wrapper
+          print("candidate-60 V15 source, collision, leverage and signal-window contracts verified")
+          PY
+
+      - name: Run development and conditional policy-fresh accounts
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-zaratustra-v15-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57:research/candidate-60 \
+            uv run python research/candidate-60/zaratustra_v15_v1_campaign.py \
+            2>&1 | tee .work/candidate-60-zaratustra-v15-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/router_trendrider_base.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/zaratustra-v15-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate60: persist ZaratustraV15 evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-zaratustra-v15-v1
+          path: |
+            research/candidate-60/evidence/zaratustra-v15-v1
+            artifacts/candidate-60-zaratustra-v15-v1
+            .work/candidate-60-zaratustra-v15-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "candidate-60 V15 campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
