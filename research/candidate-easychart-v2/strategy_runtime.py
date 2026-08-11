@@ -65,7 +65,7 @@ class EasyChartRuntimeMixin:
         # Every external 1m bar can terminate an unfilled plan. Signal logic is
         # evaluated only on NautilusTrader's internally aggregated 5m bars.
         self._cancel_spent_pending_plan(bar)
-        instrument_id = self.signal_to_instrument.get(bar.bar_type)
+        instrument_id = self.signal_to_instrument.get(bar.bar_type.id_spec_key())
         if instrument_id is None:
             return
 
