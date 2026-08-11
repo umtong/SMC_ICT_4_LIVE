@@ -37,7 +37,7 @@ NEW = '''    base = pd.read_csv(feature_path, compression="infer")
         for factor in (1, 1_000, 1_000_000)
         if np.array_equal(original_observed * factor, close_ns)
     ]
-    if scale_matches != [scale_matches[0]] if scale_matches else True:
+    if len(scale_matches) != 1:
         raise RuntimeError(
             "original perpetual observation clock is not a single-unit view of kline closes"
         )
