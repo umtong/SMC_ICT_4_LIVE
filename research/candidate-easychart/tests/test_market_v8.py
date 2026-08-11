@@ -141,10 +141,11 @@ class TestLiquidityPoolEpisodes(unittest.TestCase):
 
     def test_delayed_outside_close_then_reclaim_uses_deepest_extreme(self):
         engine = self.engine(enable_immediate_fakeout=False)
-        # The pool remains valid while closes stay between its outer and inner
-        # boundaries; two closes beyond the outer edge would mitigate it.
-        self.assertEqual(engine.on_candle(bar(1, 100.5, 101.0, 98.0, 99.5), 1), [])
-        self.assertEqual(engine.on_candle(bar(2, 99.5, 100.0, 97.0, 99.2), 2), [])
+        # One close beyond the outer edge starts the Trap.  A later close back
+        # inside the wick zone resets mitigation while remaining below the
+        # inner boundary; the final close reclaims that boundary.
+        self.assertEqual(engine.on_candle(bar(1, 100.5, 101.0, 98.0, 98.5), 1), [])
+        self.assertEqual(engine.on_candle(bar(2, 98.5, 100.0, 97.0, 99.2), 2), [])
         setups = engine.on_candle(bar(3, 99.2, 101.0, 97.5, 100.5), 3)
         long_setups = [setup for setup in setups if setup.side is Side.LONG]
         self.assertEqual(len(long_setups), 1)
