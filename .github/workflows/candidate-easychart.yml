@@ -26,7 +26,7 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-easychart-development
+      ROOT: artifacts/candidate-easychart-development-v2
       CACHE: .cache/candidate-easychart
     steps:
       - uses: actions/checkout@v4
@@ -49,26 +49,47 @@ jobs:
           set -euo pipefail
           mkdir -p "$ROOT" "$CACHE"
           exec > >(tee "$ROOT/ablation.log") 2>&1
-          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 80 "$ROOT/ablation.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/ablation.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart ablation failed::$message"; fi; exit "$status"' EXIT
+          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 100 "$ROOT/ablation.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/ablation.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart v2 failed::$message"; fi; exit "$status"' EXIT
           common=(
             --start 2024-02-01
             --end 2024-02-28
-            --warmup-days 7
+            --warmup-days 14
             --cache "$CACHE"
           )
-          python research/candidate-easychart/screen.py "${common[@]}" --output "$ROOT/baseline"
-          python research/candidate-easychart/screen.py "${common[@]}" --disable-break --output "$ROOT/sweep-only"
-          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --output "$ROOT/break-only"
-          python research/candidate-easychart/screen.py "${common[@]}" --min-body-ratio 2.0 --output "$ROOT/body-ratio-2"
-          python research/candidate-easychart/screen.py "${common[@]}" --allow-touch-only --output "$ROOT/touch-only"
-          python research/candidate-easychart/compare_screens.py --root "$ROOT"
+          python research/candidate-easychart/screen.py "${common[@]}" --output "$ROOT/ob-all"
+          python research/candidate-easychart/screen.py "${common[@]}" --require-htf-alignment --output "$ROOT/ob-all-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-break --require-htf-alignment --output "$ROOT/ob-sweep-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --require-htf-alignment --output "$ROOT/ob-break-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --disable-break --direct-sweep --output "$ROOT/direct-sweep"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --disable-break --direct-sweep --require-htf-alignment --output "$ROOT/direct-sweep-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --disable-break --direct-break --output "$ROOT/direct-break"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --disable-break --direct-break --require-htf-alignment --output "$ROOT/direct-break-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-sweep --disable-break --direct-sweep --direct-break --require-htf-alignment --output "$ROOT/direct-both-htf"
+          python research/candidate-easychart/screen.py "${common[@]}" --disable-break --require-htf-alignment --no-15m-liquidity --output "$ROOT/ob-sweep-5m-htf"
+          # Execution-role sensitivity only: resting limit entry/target and taker stop.
+          # It is not an alpha rule and cannot by itself justify promotion.
+          python research/candidate-easychart/screen.py "${common[@]}" \
+            --disable-sweep --disable-break --direct-sweep --require-htf-alignment \
+            --entry-fee-bps 2.0 --target-fee-bps 2.0 --stop-fee-bps 5.0 \
+            --output "$ROOT/direct-sweep-htf-role-cost"
+          variants=(
+            ob-all ob-all-htf ob-sweep-htf ob-break-htf
+            direct-sweep direct-sweep-htf direct-break direct-break-htf
+            direct-both-htf ob-sweep-5m-htf direct-sweep-htf-role-cost
+          )
+          python research/candidate-easychart/compare_screens.py --root "$ROOT" --variants "${variants[@]}"
 
       - name: Verify evidence contract
         shell: bash
         run: |
           set -euo pipefail
           python -m json.tool "$ROOT/comparison.json"
-          for variant in baseline sweep-only break-only body-ratio-2 touch-only; do
+          variants=(
+            ob-all ob-all-htf ob-sweep-htf ob-break-htf
+            direct-sweep direct-sweep-htf direct-break direct-break-htf
+            direct-both-htf ob-sweep-5m-htf direct-sweep-htf-role-cost
+          )
+          for variant in "${variants[@]}"; do
             test -s "$ROOT/$variant/metrics.json"
             test -s "$ROOT/$variant/run.json"
             test -e "$ROOT/$variant/trades.csv"
@@ -79,7 +100,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-easychart-development-${{ github.sha }}
-          path: artifacts/candidate-easychart-development/**
+          name: candidate-easychart-development-v2-${{ github.sha }}
+          path: artifacts/candidate-easychart-development-v2/**
           if-no-files-found: warn
           retention-days: 90
