@@ -1,0 +1,197 @@
+name: candidate-57-trendrider-rahtf-clean-v3-eventaware
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-trendrider-rahtf-clean-v3-eventaware.yml"
+      - "research/candidate-57/trendrider_rahtf_clean_v3_eventaware.py"
+      - "research/candidate-57/trade_ledger_forensics_v2.py"
+      - "research/candidate-57/TRENDRIDER_RAHTF_CLEAN_STATE_V3_FREEZE.md"
+      - "research/candidate-57/router_trendrider_rahtf_clean_v3.py"
+      - "research/candidate-57/router_trendrider_rahtf_runtime_v3.py"
+      - "research/candidate-57/trendrider_rahtf_clean_v3_campaign.py"
+      - "research/candidate-57/evidence/trendrider-exact-public-mtf-v2/**"
+      - "research/candidate-57/trendrider_public_mtf_context_v2.py"
+      - "research/candidate-57/router_trendrider_exact_mtf_v2.py"
+      - "research/candidate-57/router_trendrider_exact_runtime_v2.py"
+      - "research/candidate-57/strategy_trendrider_exact_mtf_v2.py"
+      - "research/candidate-57/trendrider_exact_public_mtf_v2_campaign.py"
+      - "research/candidate-57/router_trendrider_pullback_1h.py"
+      - "research/candidate-57/router_trendrider_runtime.py"
+      - "research/candidate-57/strategy_trendrider_pullback_1h.py"
+      - "research/candidate-57/strategy_trendrider_pullback_runoff_v1.py"
+      - "research/candidate-57/trendrider_pullback_long_v1_campaign.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-trendrider-rahtf-clean-v3
+  cancel-in-progress: true
+
+jobs:
+  conditional-state-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact control and frozen external state candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/TRENDRIDER_RAHTF_CLEAN_STATE_V3_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_trendrider_pullback_1h.py research/candidate-51/router_trendrider_base.py
+          cp research/candidate-57/router_trendrider_exact_mtf_v2.py research/candidate-51/router_trendrider_exact_base.py
+          cp research/candidate-57/router_trendrider_exact_mtf_v2.py research/candidate-51/router_trendrider_exact_impl.py
+          cp research/candidate-57/router_trendrider_exact_runtime_v2.py research/candidate-51/router_trendrider_exact_runtime.py
+          cp research/candidate-57/router_trendrider_rahtf_clean_v3.py research/candidate-51/router_trendrider_rahtf_impl.py
+          cp research/candidate-57/router_trendrider_rahtf_runtime_v3.py research/candidate-51/router_trendrider_rahtf_runtime.py
+          cp research/candidate-57/trendrider_public_mtf_context_v2.py research/candidate-51/trendrider_public_mtf_context_v2.py
+          cp research/candidate-57/strategy_trendrider_pullback_1h.py research/candidate-51/strategy_trendrider_base.py
+          cp research/candidate-57/strategy_trendrider_pullback_runoff_v1.py research/candidate-51/strategy_trendrider_runoff_base.py
+          cp research/candidate-57/strategy_trendrider_exact_mtf_v2.py research/candidate-51/strategy_trendrider_exact_base.py
+          cp research/candidate-51/router_trendrider_exact_impl.py research/candidate-51/router_trendrider_impl.py
+          cp research/candidate-51/router_trendrider_exact_runtime.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_trendrider_exact_base.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_exact_base.py \
+            research/candidate-51/router_trendrider_exact_impl.py \
+            research/candidate-51/router_trendrider_exact_runtime.py \
+            research/candidate-51/router_trendrider_rahtf_impl.py \
+            research/candidate-51/router_trendrider_rahtf_runtime.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_trendrider_base.py \
+            research/candidate-51/strategy_trendrider_runoff_base.py \
+            research/candidate-51/strategy_trendrider_exact_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-51/trendrider_public_mtf_context_v2.py \
+            research/candidate-57/trendrider_exact_public_mtf_v2_campaign.py \
+            research/candidate-57/trendrider_rahtf_clean_v3_campaign.py \
+            research/candidate-57/trendrider_rahtf_clean_v3_eventaware.py \
+            research/candidate-57/trade_ledger_forensics_v2.py
+
+      - name: Install locked environment and prove event-aware no-search contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python - <<'PY'
+          import inspect
+          import router_trendrider_rahtf_impl as gate
+          import trendrider_rahtf_clean_v3_campaign as campaign
+          import trendrider_rahtf_clean_v3_eventaware as wrapper
+          from trade_ledger_forensics_v2 import analyze
+
+          assert wrapper.campaign.analyze_trades is analyze
+          assert gate._HTF_MINUTES == 360
+          assert gate._CLASSIFICATION_PERIOD == 14
+          assert gate._ADX_THRESHOLD == 20.0
+          assert gate._RETURN_EFF_THRESHOLD == 0.05
+          assert gate._RANGE_EFF_THRESHOLD == 0.03
+          assert gate._EFFICIENCY_THRESHOLD == 0.5
+          assert gate._CONFIRM_BUCKETS == 2
+          assert gate._SLOW_LOOKBACK == 100
+          assert gate._TREND_DRIFT_CONFIRM == 0.10
+          assert "for threshold" not in inspect.getsource(gate)
+          assert "scenario_events.jsonl" in inspect.getsource(analyze)
+          assert campaign.ELIGIBLE_DECISIONS == {
+              "SOURCE_STATE_INFORMATIVE_BUT_STANDALONE_STILL_WEAK",
+              "EXACT_PUBLIC_MTF_HYPOTHESIS_REJECTED_NO_RETUNING",
+          }
+          print("event-aware frozen RAHTF causal contract verified")
+          PY
+
+      - name: Run conditional consumed diagnostic
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-trendrider-rahtf-clean-v3-eventaware-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/trendrider_rahtf_clean_v3_eventaware.py \
+            2>&1 | tee .work/candidate-57-trendrider-rahtf-clean-v3-eventaware-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_trendrider_base.py \
+            research/candidate-51/router_trendrider_exact_base.py \
+            research/candidate-51/router_trendrider_exact_impl.py \
+            research/candidate-51/router_trendrider_exact_runtime.py \
+            research/candidate-51/router_trendrider_rahtf_impl.py \
+            research/candidate-51/router_trendrider_rahtf_runtime.py \
+            research/candidate-51/strategy_trendrider_base.py \
+            research/candidate-51/strategy_trendrider_runoff_base.py \
+            research/candidate-51/strategy_trendrider_exact_base.py \
+            research/candidate-51/trendrider_public_mtf_context_v2.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/trendrider-rahtf-clean-v3
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist event-aware RAHTF evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete event-aware evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-trendrider-rahtf-clean-v3-eventaware
+          path: |
+            research/candidate-57/evidence/trendrider-rahtf-clean-v3
+            artifacts/candidate-57-trendrider-rahtf-clean-v3
+            .work/candidate-57-trendrider-rahtf-clean-v3-eventaware-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "RAHTF event-aware campaign failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
