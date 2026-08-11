@@ -1,0 +1,173 @@
+name: candidate-60-jump-force-release-v1
+
+on:
+  push:
+    branches: ["research/candidate-60"]
+    paths:
+      - ".github/workflows/candidate-60-jump-force-release-v1.yml"
+      - "research/candidate-60/JUMP_FORCE_RELEASE_V1_FREEZE.md"
+      - "research/candidate-60/jump_force_release_strategy.py"
+      - "research/candidate-60/jump_force_release_campaign.py"
+      - "research/candidate-57/jump_delayed_post_state_strategy.py"
+      - "research/candidate-57/jump_state_arbitration_router.py"
+      - "research/candidate-57/jump_taker_alignment_fresh_campaign.py"
+      - "research/candidate-57/download_binance_metrics_sidecar.py"
+      - "research/candidate-57/jump_episode_forensic_strategy.py"
+      - "research/candidate-57/jump_episode_forensic_analyze.py"
+      - "research/candidate-57/jump_state_arbitration_forensic_strategy.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-jump-force-release-v1
+  cancel-in-progress: true
+
+jobs:
+  causal-force-release-study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble source, delayed acceptance, force state and Nautilus execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-60/JUMP_FORCE_RELEASE_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py \
+            research/candidate-51/router_jump_base.py
+          cp research/candidate-57/jump_state_arbitration_router.py \
+            research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_transient_base.py
+          cp research/candidate-57/jump_delayed_post_state_strategy.py \
+            research/candidate-51/strategy_jump_delayed_base.py
+          cp research/candidate-60/jump_force_release_strategy.py \
+            research/candidate-51/strategy_jump_transient.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py \
+            research/candidate-51/strategy_jump_audit_base.py
+          cp research/candidate-57/jump_state_arbitration_forensic_strategy.py \
+            research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_transient_base.py \
+            research/candidate-51/strategy_jump_delayed_base.py \
+            research/candidate-51/strategy_jump_audit_base.py \
+            research/candidate-60/jump_force_release_campaign.py
+
+      - name: Install locked environment, doctor once and prove frozen contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Config as FinalConfig, Candidate35Strategy as FinalStrategy
+          from strategy_jump_transient import Candidate35Config, Candidate35Strategy
+
+          fields = set(Candidate35Config.__struct_fields__)
+          assert "jump_force_release_mode" in fields
+          assert "jump_force_event_lookback_minutes" in fields
+          assert issubclass(FinalStrategy, Candidate35Strategy)
+          assert set(FinalConfig.__struct_fields__).issuperset(fields)
+          state_source = inspect.getsource(Candidate35Strategy._force_state)
+          assert "source_oi / prior_oi - 1.0" in state_source
+          assert "source_taker < 1.0" in state_source
+          assert "current_taker > 1.0" in state_source
+          assert "source_taker > 1.0" in state_source
+          assert "current_taker < 1.0" in state_source
+          submit_source = inspect.getsource(Candidate35Strategy._submit_source_decision)
+          assert "candidate-60-force-release-v1" in submit_source
+          print("forced OI unwind and symmetric taker-flow flip contract verified")
+          PY
+
+      - name: Run development and conditional policy-fresh continuous accounts
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-60-jump-force-release-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-60/jump_force_release_campaign.py \
+            2>&1 | tee .work/candidate-60-jump-force-release-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_transient_base.py \
+            research/candidate-51/strategy_jump_delayed_base.py \
+            research/candidate-51/strategy_jump_audit_base.py
+          git config user.name "candidate-60-research-bot"
+          git config user.email "candidate-60-research-bot@users.noreply.github.com"
+          out=research/candidate-60/evidence/jump-force-release-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate60: persist forced-flow release evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-60
+                git rebase origin/research/candidate-60
+                if git push origin HEAD:research/candidate-60; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-60-jump-force-release-v1
+          path: |
+            research/candidate-60/evidence/jump-force-release-v1
+            artifacts/candidate-60-jump-force-release-v1
+            .work/candidate-60-jump-force-release-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "forced-flow release campaign failed; status=$status"
+            exit "${status:-1}"
+          fi
