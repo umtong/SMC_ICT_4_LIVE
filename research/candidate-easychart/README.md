@@ -15,6 +15,10 @@
 
 1. `SWEEP_RECLAIM_OB`: 확인된 고점·저점 유동성 이탈과 복귀 뒤 EasyChart body-engulfing OB, 첫 재접촉 진입.
 2. `BREAK_ACCEPT_RETEST_OB`: 확인된 경계 밖 body close와 EasyChart OB 뒤 첫 역할전환 재접촉 진입.
+3. `SWEEP_RECLAIM_RETEST`: 자막의 페이크아웃/트랩 원형대로 구조 안 복귀 후 첫 재접촉. OB를 추가 조건으로 강제하지 않는 독립 family.
+4. `BREAK_ACCEPT_RETEST`: 경계 밖 수용 뒤 첫 역할전환 재접촉. OB 중첩 없는 원형을 독립 진단.
+
+목표는 항상 **가장 가까운 아직 소모되지 않은 반대 유동성**이다. 그 첫 목표가 1.0R 미만이면 더 먼 목표로 건너뛰지 않고 거래 자체를 거절한다. 60분 확인 구조는 선택적 방향 router로만 쓰며 5분 trigger를 반복 확인하지 않는다.
 
 EasyChart OB는 일반 ICT의 “마지막 반대 캔들”을 그대로 쓰지 않는다. 이전 반대 캔들의 **몸통 전체**를 현재 몸통이 감싸면, 감싸진 이전 몸통이 zone이다. 구조는 현재 캔들 마감 뒤에만 알려진다.
 
