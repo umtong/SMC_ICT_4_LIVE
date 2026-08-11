@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Compare finite, pre-declared EasyChart diagnostic variants.
-
-The comparison is intentionally not a parameter optimizer.  It answers which
-causal family contributes after costs, whether a source-mentioned 2x body
-quality rule helps, and whether requiring a close-back reclaim is useful.
-"""
+"""Compare a finite, explicitly declared set of EasyChart diagnostics."""
 from __future__ import annotations
 
 import argparse
@@ -12,23 +7,14 @@ import json
 from pathlib import Path
 
 
-VARIANTS = (
-    "baseline",
-    "sweep-only",
-    "break-only",
-    "body-ratio-2",
-    "touch-only",
-)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--variants", nargs="+", required=True)
     args = parser.parse_args()
     rows: list[dict[str, object]] = []
-    for variant in VARIANTS:
-        path = args.root / variant / "metrics.json"
-        payload = json.loads(path.read_text(encoding="utf-8"))
+    for variant in args.variants:
+        payload = json.loads((args.root / variant / "metrics.json").read_text(encoding="utf-8"))
         rows.append(
             {
                 "variant": variant,
@@ -44,6 +30,7 @@ def main() -> None:
                 "target_gate_passed": payload["target_gate"]["passed"],
                 "plans_generated": payload["plans_generated"],
                 "family_metrics": payload["family_metrics"],
+                "symbol_metrics": payload["symbol_metrics"],
                 "diagnostics": payload["diagnostics"],
             },
         )
@@ -58,7 +45,7 @@ def main() -> None:
     )
     positive = [row for row in ranked if float(row["geometric_daily_growth"]) > 0.0]
     decision = {
-        "schema": "candidate-easychart-screen-comparison-v1",
+        "schema": "candidate-easychart-screen-comparison-v2",
         "authoritative": False,
         "variants": rows,
         "ranking": [row["variant"] for row in ranked],
@@ -69,7 +56,7 @@ def main() -> None:
             if any(bool(row["target_gate_passed"]) for row in rows)
             else "POSITIVE_DIAGNOSTIC_VARIANT_REQUIRES_CAUSAL_ABLATION_AND_NAUTILUS"
             if positive
-            else "ALL_DECLARED_SOURCE_FAITHFUL_VARIANTS_FAILED_THIS_DEVELOPMENT_WINDOW"
+            else "ALL_DECLARED_VARIANTS_FAILED_THIS_DEVELOPMENT_WINDOW"
         ),
     }
     destination = args.root / "comparison.json"
