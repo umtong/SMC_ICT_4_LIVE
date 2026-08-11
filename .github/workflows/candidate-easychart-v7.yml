@@ -1,0 +1,149 @@
+name: candidate-easychart-v7-session-liquidity-screen
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v7.py"
+      - "research/candidate-easychart/simulator_v7.py"
+      - "research/candidate-easychart/screen_v7.py"
+      - "research/candidate-easychart/compare_v7.py"
+      - "research/candidate-easychart/tests/test_market_v7.py"
+      - ".github/workflows/candidate-easychart-v7.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v7-session-liquidity-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v7-development
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and time-structure contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run declared session-liquidity families
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          trap 'status=$?; if [ "$status" -ne 0 ]; then tail -n 200 "$ROOT/screen.log" > "$ROOT/failure-tail.log"; message=$(tail -n 1 "$ROOT/screen.log" | sed "s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g"); echo "::error title=candidate-easychart v7 failed::$message"; fi; exit "$status"' EXIT
+          common=(
+            --start 2024-02-01
+            --end 2024-02-28
+            --warmup-days 5
+            --cache "$CACHE"
+            --signal-minutes 5
+            --accepted-break-widths 1.0
+            --cost-profile role
+          )
+
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families ASIA_LONDON --disable-fakeout \
+            --output "$ROOT/asia-london-trap"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families ASIA_LONDON --disable-trap \
+            --output "$ROOT/asia-london-fakeout"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families ASIA_NY --disable-fakeout \
+            --output "$ROOT/asia-ny-trap"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families LONDON_NY --disable-fakeout \
+            --output "$ROOT/london-ny-trap"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families PRIOR_DAY_LONDON --disable-fakeout \
+            --output "$ROOT/prior-day-london-trap"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families PRIOR_DAY_NY --disable-fakeout \
+            --output "$ROOT/prior-day-ny-trap"
+
+          core="ASIA_LONDON,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families "$core" --disable-fakeout \
+            --output "$ROOT/session-core-trap"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families "$core" \
+            --output "$ROOT/session-core-both"
+
+          funding="FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          python research/candidate-easychart/screen_v7.py "${common[@]}" \
+            --families "$funding" --disable-fakeout \
+            --output "$ROOT/funding8h-trap"
+
+          python research/candidate-easychart/screen_v7.py \
+            --start 2024-02-01 --end 2024-02-28 --warmup-days 5 \
+            --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0 \
+            --cost-profile taker --families "$core" --disable-fakeout \
+            --output "$ROOT/session-core-trap-taker"
+
+          variants=(
+            asia-london-trap
+            asia-london-fakeout
+            asia-ny-trap
+            london-ny-trap
+            prior-day-london-trap
+            prior-day-ny-trap
+            session-core-trap
+            session-core-both
+            funding8h-trap
+            session-core-trap-taker
+          )
+          python research/candidate-easychart/compare_v7.py \
+            --root "$ROOT" --variants "${variants[@]}"
+
+      - name: Verify evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          variants=(
+            asia-london-trap
+            asia-london-fakeout
+            asia-ny-trap
+            london-ny-trap
+            prior-day-london-trap
+            prior-day-ny-trap
+            session-core-trap
+            session-core-both
+            funding8h-trap
+            session-core-trap-taker
+          )
+          for variant in "${variants[@]}"; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/setups.csv"
+            test -e "$ROOT/$variant/trades.csv"
+            test -e "$ROOT/$variant/equity.csv"
+            test -e "$ROOT/$variant/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v7-development-${{ github.sha }}
+          path: artifacts/candidate-easychart-v7-development/**
+          if-no-files-found: warn
+          retention-days: 90
