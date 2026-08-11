@@ -1,0 +1,85 @@
+name: candidate-51-forced-unwind-lifecycle-v61
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-forced-unwind-lifecycle-v61.yml"
+      - "research/candidate-51/forced_unwind_lifecycle_v61.py"
+      - "research/candidate-51/evidence/forced-unwind-geometry-v59-fixed/RECORDS.csv"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-forced-unwind-lifecycle-v61
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pinned environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile research/candidate-51/forced_unwind_lifecycle_v61.py
+      - name: Reproduce v59 and audit actual lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          input=research/candidate-51/evidence/forced-unwind-geometry-v59-fixed/RECORDS.csv
+          test -s "$input"
+          output=artifacts/candidate-51/forced-unwind-lifecycle-v61
+          uv run python research/candidate-51/forced_unwind_lifecycle_v61.py \
+            --input "$input" \
+            --output "$output"
+          for file in LIFECYCLE.json LIFECYCLE.md SELECTED.csv REJECTED.csv EPISODE_CANDIDATES.csv; do
+            test -e "$output/$file"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-forced-unwind-lifecycle-v61
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/forced-unwind-lifecycle-v61/
+      - name: Commit compact lifecycle evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/forced-unwind-lifecycle-v61
+          destination=research/candidate-51/evidence/forced-unwind-lifecycle-v61
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp "$source/LIFECYCLE.json" "$destination/LIFECYCLE.json"
+          cp "$source/LIFECYCLE.md" "$destination/LIFECYCLE.md"
+          cp "$source/SELECTED.csv" "$destination/SELECTED.csv"
+          cp "$source/REJECTED.csv" "$destination/REJECTED.csv"
+          cp "$source/EPISODE_CANDIDATES.csv" "$destination/EPISODE_CANDIDATES.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record forced-unwind lifecycle anatomy"
+          for attempt in 1 2 3 4 5 6; do
+            git fetch origin research/candidate-51
+            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
