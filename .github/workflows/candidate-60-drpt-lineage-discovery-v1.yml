@@ -1,0 +1,218 @@
+name: candidate-60 DRPT lineage discovery v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/candidate-60
+    paths:
+      - .github/workflows/candidate-60-drpt-lineage-discovery-v1.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-60-drpt-lineage-discovery-v1
+  cancel-in-progress: true
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - name: Fetch complete research lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Recover DRPT paths and source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=research/candidate-60/evidence/drpt-lineage-discovery-v1
+          rm -rf "$OUT"
+          mkdir -p "$OUT/recovered"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import hashlib
+          import json
+          import re
+          import subprocess
+          from collections import defaultdict
+          from pathlib import Path
+
+          out = Path('research/candidate-60/evidence/drpt-lineage-discovery-v1')
+          recovered = out / 'recovered'
+
+          def run(*args: str, check: bool = True) -> str:
+              proc = subprocess.run(args, text=True, capture_output=True)
+              if check and proc.returncode != 0:
+                  raise RuntimeError(f"command failed {args}: {proc.stderr}")
+              return proc.stdout
+
+          refs = [
+              line.strip()
+              for line in run('git', 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin').splitlines()
+              if line.strip() and not line.endswith('/HEAD')
+          ]
+          name_pattern = re.compile(
+              r'(drpt|dump.?reclaim|daily.?low.?reclaim|source.?selector|candidate.?35)',
+              re.IGNORECASE,
+          )
+          content_needles = (
+              'strategy_drpt_source_selector',
+              'class Candidate35Config',
+              'class Candidate35Strategy',
+              'daily-low reclaim',
+              'prior seven-day low',
+              'dump high',
+              'dump_high',
+              'reclaim_candidates',
+          )
+
+          path_refs: dict[str, set[str]] = defaultdict(set)
+          for ref in refs:
+              for path in run('git', 'ls-tree', '-r', '--name-only', ref).splitlines():
+                  if name_pattern.search(path):
+                      path_refs[path].add(ref)
+
+          content_hits: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+          for ref in refs:
+              for needle in content_needles:
+                  proc = subprocess.run(
+                      ['git', 'grep', '-I', '-n', '-F', needle, ref, '--', 'research', '.github/workflows'],
+                      text=True,
+                      capture_output=True,
+                  )
+                  if proc.returncode not in (0, 1):
+                      raise RuntimeError(proc.stderr)
+                  for line in proc.stdout.splitlines():
+                      match = re.match(r'([^:]+):(.+?):(\d+):(.*)', line)
+                      if not match:
+                          continue
+                      _, path, line_no, text = match.groups()
+                      path_refs[path].add(ref)
+                      content_hits[path][needle].append(f'{ref}:{line_no}:{text[:500]}')
+
+          records = []
+          for path in sorted(path_refs):
+              refs_for_path = sorted(path_refs[path])
+              latest_commit = run('git', 'log', '--all', '-1', '--format=%H', '--', path, check=False).strip()
+              source_ref = latest_commit or refs_for_path[-1]
+              blob = subprocess.run(['git', 'show', f'{source_ref}:{path}'], capture_output=True)
+              if blob.returncode != 0:
+                  source_ref = refs_for_path[-1]
+                  blob = subprocess.run(['git', 'show', f'{source_ref}:{path}'], capture_output=True)
+              data = blob.stdout if blob.returncode == 0 else b''
+              record = {
+                  'path': path,
+                  'refs': refs_for_path,
+                  'latest_commit': latest_commit or None,
+                  'source_ref': source_ref,
+                  'bytes': len(data),
+                  'sha256': hashlib.sha256(data).hexdigest() if data else None,
+                  'content_hits': dict(content_hits.get(path, {})),
+              }
+              if data and path.endswith('.py'):
+                  try:
+                      tree = ast.parse(data.decode('utf-8'))
+                      record['definitions'] = [
+                          {'kind': type(node).__name__, 'name': node.name, 'line': node.lineno}
+                          for node in ast.walk(tree)
+                          if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                      ]
+                  except Exception as exc:
+                      record['parse_error'] = repr(exc)
+
+              should_recover = (
+                  path.endswith(('strategy_drpt_source_selector.py', 'strategy_base.py', 'run_candidate35.py'))
+                  or 'drpt' in path.lower()
+                  or ('dump' in path.lower() and 'reclaim' in path.lower())
+                  or (bool(content_hits.get(path)) and path.endswith('.py'))
+              )
+              if data and should_recover:
+                  target = recovered / path.replace('/', '__')
+                  target.write_bytes(data)
+                  record['recovered_as'] = str(target)
+              records.append(record)
+
+          exact = [r for r in records if r['path'].endswith('strategy_drpt_source_selector.py')]
+          candidate35_defs = [
+              r for r in records
+              if any(d.get('name') in {'Candidate35Config', 'Candidate35Strategy'} for d in r.get('definitions', []))
+          ]
+          inventory = {
+              'schema': 'candidate-60-drpt-lineage-discovery-v1',
+              'remote_refs_scanned': len(refs),
+              'matching_paths': len(records),
+              'exact_source_selector_matches': len(exact),
+              'candidate35_definition_files': len(candidate35_defs),
+              'records': records,
+          }
+          (out / 'inventory.json').write_text(json.dumps(inventory, indent=2, sort_keys=True), encoding='utf-8')
+          lines = [
+              f"remote_refs_scanned={len(refs)}",
+              f"matching_paths={len(records)}",
+              f"exact_source_selector_matches={len(exact)}",
+              f"candidate35_definition_files={len(candidate35_defs)}",
+              '',
+          ]
+          for record in records:
+              lines.append(
+                  f"{record['path']} | refs={len(record['refs'])} | bytes={record['bytes']} | "
+                  f"sha256={record['sha256']} | source_ref={record['source_ref']}"
+              )
+              for definition in record.get('definitions', []):
+                  if definition['name'] in {'Candidate35Config', 'Candidate35Strategy', '_reclaim_candidates', 'main', 'run'}:
+                      lines.append(f"  DEF {definition['kind']} {definition['name']} line={definition['line']}")
+              for needle, hits in record.get('content_hits', {}).items():
+                  lines.append(f"  HIT {needle}: {len(hits)}")
+          (out / 'inventory.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(json.dumps({k: inventory[k] for k in ('remote_refs_scanned','matching_paths','exact_source_selector_matches','candidate35_definition_files')}, indent=2))
+          PY
+
+      - name: Verify discovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('research/candidate-60/evidence/drpt-lineage-discovery-v1')
+          data = json.loads((root / 'inventory.json').read_text())
+          assert data['schema'] == 'candidate-60-drpt-lineage-discovery-v1'
+          assert data['remote_refs_scanned'] >= 1
+          assert (root / 'inventory.txt').is_file()
+          print((root / 'inventory.txt').read_text()[:12000])
+          PY
+
+      - name: Commit recovered lineage evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name candidate-60-research-bot
+          git config user.email candidate-60-research-bot@users.noreply.github.com
+          git add -f research/candidate-60/evidence/drpt-lineage-discovery-v1
+          if git diff --cached --quiet; then
+            echo 'No lineage evidence changes'
+            exit 0
+          fi
+          git commit --no-gpg-sign -m 'candidate60: recover DRPT source lineage'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-60
+            git rebase origin/research/candidate-60
+            if git push origin HEAD:research/candidate-60; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
