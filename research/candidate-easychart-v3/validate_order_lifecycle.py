@@ -32,7 +32,7 @@ def validate_lifecycle(
     """
     event_list = list(events)
     submitted_by_plan: dict[str, dict[str, Any]] = {}
-    entry_to_plan_id: dict[str, str] = {}
+    entry_to_plan: dict[str, str] = {}
     for event in event_list:
         if event.get("kind") != "submitted":
             continue
