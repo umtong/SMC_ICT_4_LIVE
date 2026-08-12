@@ -4,6 +4,12 @@ NautilusTrader 1.230 initializes a process-global Rust logger, so control and
 funded engines are intentionally executed in separate Python processes by the
 workflow. This module emits one isolated account result per invocation and
 records the data/cache/position state visible when the funding update arrives.
+
+The pinned engine schedules a funding boundary on its clock after processing the
+funding update. A boundary equal to that update timestamp can be missed because
+the clock has already advanced to it. The test therefore settles one nanosecond
+after the rate becomes observable. This preserves causality and makes the cash
+flow effectively contemporaneous without exposing the rate early.
 """
 from __future__ import annotations
 
@@ -23,6 +29,7 @@ from instruments import make_instrument
 
 
 FUNDING_TS_NS = 1_704_096_000_000_000_000  # 2024-01-01 08:00:00 UTC
+SETTLEMENT_TS_NS = FUNDING_TS_NS + 1
 MARK_TS_NS = FUNDING_TS_NS - 1_000_000
 RATE = Decimal("0.001")
 PRICE = Decimal("100.0")
@@ -39,6 +46,7 @@ class HoldAcrossFunding(Strategy):
         self.mark_callbacks = 0
         self.funding_callbacks = 0
         self.funding_observations: list[dict[str, Any]] = []
+        self.bar_observations: list[dict[str, Any]] = []
 
     def _account_total(self) -> float | None:
         account = self.portfolio.account(Venue("BINANCE"))
@@ -46,6 +54,21 @@ class HoldAcrossFunding(Strategy):
             return None
         money = account.balance_total(Currency.from_str("USDT"))
         return None if money is None else float(money.as_double())
+
+    def _position_snapshot(self) -> dict[str, Any]:
+        positions = self.cache.positions_open(
+            instrument_id=self.instrument_id,
+            strategy_id=self.id,
+        )
+        return {
+            "open_positions": len(positions),
+            "position_signed_qty": None if not positions else float(positions[0].signed_qty),
+            "position_realized_pnl": (
+                None
+                if not positions or positions[0].realized_pnl is None
+                else str(positions[0].realized_pnl)
+            ),
+        }
 
     def on_start(self) -> None:
         self.subscribe_bars(self.bar_type)
@@ -59,33 +82,30 @@ class HoldAcrossFunding(Strategy):
         self.funding_callbacks += 1
         cached_mark = self.cache.mark_price(self.instrument_id)
         cached_funding = self.cache.funding_rate(self.instrument_id)
-        positions = self.cache.positions_open(
-            instrument_id=self.instrument_id,
-            strategy_id=self.id,
-        )
         self.funding_observations.append(
             {
                 "event_ts_ns": update.ts_event,
+                "next_funding_ns": update.next_funding_ns,
                 "rate": str(update.rate),
                 "interval": update.interval,
                 "cached_mark": None if cached_mark is None else str(cached_mark.value),
                 "cached_funding": (
                     None if cached_funding is None else str(cached_funding.rate)
                 ),
-                "open_positions": len(positions),
-                "position_signed_qty": (
-                    None if not positions else float(positions[0].signed_qty)
-                ),
-                "position_realized_pnl": (
-                    None
-                    if not positions or positions[0].realized_pnl is None
-                    else str(positions[0].realized_pnl)
-                ),
                 "account_total_after_exchange_route": self._account_total(),
+                **self._position_snapshot(),
             },
         )
 
     def on_bar(self, bar: Bar) -> None:
+        self.bar_observations.append(
+            {
+                "bar_ts_ns": bar.ts_event,
+                "bars_seen_before": self.bars_seen,
+                "account_total": self._account_total(),
+                **self._position_snapshot(),
+            },
+        )
         instrument = self.cache.instrument(self.instrument_id)
         if instrument is None:
             raise RuntimeError("smoke-test instrument unavailable")
@@ -157,7 +177,7 @@ def run_smoke(include_funding: bool) -> dict[str, Any]:
                     instrument_id=instrument.id,
                     rate=RATE,
                     interval=480,
-                    next_funding_ns=None,
+                    next_funding_ns=SETTLEMENT_TS_NS,
                     ts_event=FUNDING_TS_NS,
                     ts_init=FUNDING_TS_NS,
                 ),
@@ -178,6 +198,7 @@ def run_smoke(include_funding: bool) -> dict[str, Any]:
             "mark_callbacks": strategy.mark_callbacks,
             "funding_callbacks": strategy.funding_callbacks,
             "funding_observations": strategy.funding_observations,
+            "bar_observations": strategy.bar_observations,
             "positions_report_rows": int(len(positions.index)),
             "account_report_rows": int(len(account.index)),
             "closed_position_realized_pnl": (
@@ -205,6 +226,7 @@ def main() -> None:
             "mode": args.mode,
             "include_funding": include_funding,
             "expected_funding_delta": EXPECTED_FUNDING_DELTA,
+            "settlement_delay_ns": SETTLEMENT_TS_NS - FUNDING_TS_NS,
         },
     )
     print(json.dumps(result, indent=2, sort_keys=True))
