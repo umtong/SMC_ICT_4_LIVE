@@ -1,15 +1,15 @@
-"""First source-faithful EasyChart scenario family.
+"""First source-explicit EasyChart scenario family.
 
 The scenario separates roles rather than stacking synonymous filters:
 
-    60m context zone
+    60m context OB/FVG with at least one OB in the context pair
     -> 15m overlapping decision zone
     -> first interaction
-    -> later 5m same-direction engulfing order block
-    -> entry / trigger invalidation / pre-existing opposite-zone target
+    -> later, size-confirmed 5m engulfing order block
+    -> entry / trigger invalidation / fresh opposite-zone target
 
-It is a pure state engine. NautilusTrader wiring is added only after the
-geometry and temporal ordering are testable in isolation.
+This is still a partial EasyChart family: trendline, channel, explicit external
+liquidity sweep and 4h directional routing are intentionally not claimed here.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ class SetupState(str, Enum):
     WAITING_TRIGGER = "WAITING_TRIGGER"
     PLANNED = "PLANNED"
     INVALIDATED = "INVALIDATED"
+    MISSED_WITHOUT_TRIGGER = "MISSED_WITHOUT_TRIGGER"
     TARGET_SPENT = "TARGET_SPENT"
     TRIGGER_FAILED_GEOMETRY = "TRIGGER_FAILED_GEOMETRY"
 
@@ -130,6 +131,16 @@ class MTFOverlapScenarioEngine:
             return bar.low <= zone.invalidation
         return bar.high >= zone.invalidation
 
+    @staticmethod
+    def _departed_favorably_without_entry(setup: MTFSetup, bar: Candle) -> bool:
+        # Once the first-return episode leaves the decision overlap without the
+        # chosen 5m confirmation, entering on a later revisit would be chasing a
+        # different causal episode. The source repeatedly says not to enter if
+        # the planned place is missed.
+        if setup.overlap.side is ZoneSide.SUPPORT:
+            return bar.close > setup.overlap.upper
+        return bar.close < setup.overlap.lower
+
     def _setup_id(self, overlap: ZoneOverlap) -> str:
         return f"SETUP:{overlap.overlap_id}"
 
@@ -139,9 +150,15 @@ class MTFOverlapScenarioEngine:
         existing = {setup.setup_id for setup in self.setups}
         for higher in higher_detector.active_zones():
             for lower in lower_detector.active_zones():
+                # FVG is not treated as a standalone trade reason in the source.
+                # At least one member of the context/decision pair must be an OB.
+                if higher.kind is not ZoneKind.ORDER_BLOCK and lower.kind is not ZoneKind.ORDER_BLOCK:
+                    self._inc("setup_rejected_fvg_only_context")
+                    continue
                 # A source-explicit 2x expansion on at least one member prevents
-                # an overlap of two marginal engulfing candles being called strong.
+                # two marginal engulfing candles being called strong confluence.
                 if not (higher.high_quality_by_size or lower.high_quality_by_size):
+                    self._inc("setup_rejected_no_size_confirmed_member")
                     continue
                 # The first return is the auditable opportunity. Already touched
                 # zones are memory, not fresh pending orders.
@@ -178,6 +195,11 @@ class MTFOverlapScenarioEngine:
         for timeframe in (self.higher_minutes, self.decision_minutes):
             for zone in self.detectors[timeframe].active_zones(side=opposite):
                 if zone.observed_time_ns >= observed_time_ns:
+                    continue
+                # A previously mitigated OB/FVG is not an unspent objective. It
+                # may remain chart memory, but this family needs untouched future
+                # space to define the trade before entry.
+                if zone.first_touch_index is not None:
                     continue
                 # Confirmation is observed only at the close. A target already
                 # touched earlier inside that same candle is not available space.
@@ -231,6 +253,8 @@ class MTFOverlapScenarioEngine:
                 # Zone contact and reversal confirmation must be two separately
                 # observable closed-bar events, not one candle confirming itself.
                 continue
+
+            selected_trigger: PriceZone | None = None
             for trigger in created:
                 if trigger.kind is not ZoneKind.ORDER_BLOCK or trigger.side is not setup.overlap.side:
                     continue
@@ -238,70 +262,90 @@ class MTFOverlapScenarioEngine:
                     continue
                 if not self._trigger_formation_touched_setup(trigger, setup):
                     continue
-                entry = bar.close
-                stop = trigger.invalidation
-                if setup.overlap.side is ZoneSide.SUPPORT and not stop < entry:
-                    setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
-                    self._inc("trigger_invalid_long_geometry")
-                    break
-                if setup.overlap.side is ZoneSide.RESISTANCE and not entry < stop:
-                    setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
-                    self._inc("trigger_invalid_short_geometry")
-                    break
-                target_result = self._opposite_target(setup.overlap.side, entry, bar, bar.ts_close_ns)
-                if target_result is None:
-                    self._inc("trigger_without_unspent_preexisting_target")
+                # The OB chapter explicitly calls a >=2x body difference the
+                # reliable form. The first diagnostic showed that accepting weak
+                # engulfing candles doubled the trigger set, so this is restoring
+                # the source definition rather than tuning a result threshold.
+                if not trigger.high_quality_by_size:
+                    self._inc("trigger_order_block_below_two_x")
                     continue
-                target_zone, target = target_result
-                risk = abs(entry - stop)
-                reward = abs(target - entry)
-                if risk <= 0.0 or reward <= 0.0:
-                    setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
-                    self._inc("trigger_nonpositive_geometry")
-                    break
-                gross_rr = reward / risk
-                if gross_rr + 1e-12 < self.minimum_gross_rr:
-                    self._inc("trigger_rr_below_minimum")
-                    continue
-                self.sequence += 1
-                side = Side.LONG if setup.overlap.side is ZoneSide.SUPPORT else Side.SHORT
-                causal_event_id = f"{self.FAMILY}:{setup.setup_id}:{trigger.zone_id}"
-                plan = MTFTradePlan(
-                    plan_id=f"ecv2-mtf-{self.symbol}-{self.sequence:08d}",
-                    causal_event_id=causal_event_id,
-                    symbol=self.symbol,
-                    family=self.FAMILY,
-                    side=side,
-                    observed_time_ns=bar.ts_close_ns,
-                    entry=entry,
-                    stop=stop,
-                    target=target,
-                    gross_rr=gross_rr,
-                    setup_id=setup.setup_id,
-                    higher_zone_id=setup.higher_zone.zone_id,
-                    higher_zone_kind=setup.higher_zone.kind,
-                    higher_strength_ratio=setup.higher_zone.strength_ratio,
-                    lower_zone_id=setup.lower_zone.zone_id,
-                    lower_zone_kind=setup.lower_zone.kind,
-                    lower_strength_ratio=setup.lower_zone.strength_ratio,
-                    trigger_zone_id=trigger.zone_id,
-                    trigger_strength_ratio=trigger.strength_ratio,
-                    target_zone_id=target_zone.zone_id,
-                    target_zone_kind=target_zone.kind,
-                    overlap_lower=setup.overlap.lower,
-                    overlap_upper=setup.overlap.upper,
-                    interaction_time_ns=setup.interaction_time_ns or bar.ts_close_ns,
-                    trigger_time_ns=bar.ts_close_ns,
-                )
-                setup.state = SetupState.PLANNED
-                setup.trigger_zone_id = trigger.zone_id
-                setup.higher_zone.consumed = True
-                setup.lower_zone.consumed = True
-                trigger.consumed = True
-                self.plans.append(plan)
-                plans.append(plan)
-                self._inc("plan_created")
+                selected_trigger = trigger
                 break
+
+            if selected_trigger is None:
+                if self._departed_favorably_without_entry(setup, bar):
+                    setup.state = SetupState.MISSED_WITHOUT_TRIGGER
+                    self._inc("setup_missed_without_trigger")
+                continue
+
+            trigger = selected_trigger
+            entry = bar.close
+            stop = trigger.invalidation
+            if setup.overlap.side is ZoneSide.SUPPORT and not stop < entry:
+                setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
+                self._inc("trigger_invalid_long_geometry")
+                continue
+            if setup.overlap.side is ZoneSide.RESISTANCE and not entry < stop:
+                setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
+                self._inc("trigger_invalid_short_geometry")
+                continue
+            target_result = self._opposite_target(setup.overlap.side, entry, bar, bar.ts_close_ns)
+            if target_result is None:
+                self._inc("trigger_without_fresh_preexisting_target")
+                if self._departed_favorably_without_entry(setup, bar):
+                    setup.state = SetupState.TARGET_SPENT
+                continue
+            target_zone, target = target_result
+            risk = abs(entry - stop)
+            reward = abs(target - entry)
+            if risk <= 0.0 or reward <= 0.0:
+                setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
+                self._inc("trigger_nonpositive_geometry")
+                continue
+            gross_rr = reward / risk
+            if gross_rr + 1e-12 < self.minimum_gross_rr:
+                self._inc("trigger_rr_below_minimum")
+                if self._departed_favorably_without_entry(setup, bar):
+                    setup.state = SetupState.MISSED_WITHOUT_TRIGGER
+                continue
+            self.sequence += 1
+            side = Side.LONG if setup.overlap.side is ZoneSide.SUPPORT else Side.SHORT
+            causal_event_id = f"{self.FAMILY}:{setup.setup_id}:{trigger.zone_id}"
+            plan = MTFTradePlan(
+                plan_id=f"ecv2-mtf-{self.symbol}-{self.sequence:08d}",
+                causal_event_id=causal_event_id,
+                symbol=self.symbol,
+                family=self.FAMILY,
+                side=side,
+                observed_time_ns=bar.ts_close_ns,
+                entry=entry,
+                stop=stop,
+                target=target,
+                gross_rr=gross_rr,
+                setup_id=setup.setup_id,
+                higher_zone_id=setup.higher_zone.zone_id,
+                higher_zone_kind=setup.higher_zone.kind,
+                higher_strength_ratio=setup.higher_zone.strength_ratio,
+                lower_zone_id=setup.lower_zone.zone_id,
+                lower_zone_kind=setup.lower_zone.kind,
+                lower_strength_ratio=setup.lower_zone.strength_ratio,
+                trigger_zone_id=trigger.zone_id,
+                trigger_strength_ratio=trigger.strength_ratio,
+                target_zone_id=target_zone.zone_id,
+                target_zone_kind=target_zone.kind,
+                overlap_lower=setup.overlap.lower,
+                overlap_upper=setup.overlap.upper,
+                interaction_time_ns=setup.interaction_time_ns or bar.ts_close_ns,
+                trigger_time_ns=bar.ts_close_ns,
+            )
+            setup.state = SetupState.PLANNED
+            setup.trigger_zone_id = trigger.zone_id
+            setup.higher_zone.consumed = True
+            setup.lower_zone.consumed = True
+            trigger.consumed = True
+            self.plans.append(plan)
+            plans.append(plan)
+            self._inc("plan_created")
         return plans
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[MTFTradePlan]:
