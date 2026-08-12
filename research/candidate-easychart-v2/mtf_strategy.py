@@ -1,4 +1,4 @@
-"""NautilusTrader strategy for the source-faithful MTF overlap scenario."""
+"""NautilusTrader strategy for the source-explicit MTF overlap scenario."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -36,6 +36,7 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
     HIGHER_MINUTES = 60
     DECISION_MINUTES = 15
     TRIGGER_MINUTES = 5
+    NS_PER_MINUTE = 60_000_000_000
 
     def __init__(self, config: EasyChartMTFConfig) -> None:
         super().__init__(config)
@@ -72,11 +73,12 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
         self.entry_cancel_requested = False
         self.emergency_exit_requested = False
 
-        # Composite bars with the same close timestamp are processed together in
-        # descending timeframe order. This prevents event-delivery order from
-        # deciding whether a 5m trigger could see a just-closed 15m/60m zone.
+        # Same-close composite bars are processed together in descending
+        # timeframe order. Expected-count flushing removes callback-order bias
+        # without waiting for the following minute and adding artificial latency.
         self.bar_bucket_ts: int | None = None
         self.bar_bucket: list[tuple[InstrumentId, int, Bar]] = []
+        self.bar_bucket_seen: set[tuple[InstrumentId, int]] = set()
         self.event_log: list[dict[str, Any]] = []
         self.plan_log: dict[str, MTFTradePlan] = {}
 
@@ -107,6 +109,17 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
         values["context_kind_diversity"] = len({plan.higher_zone_kind, plan.lower_zone_kind})
         return values
 
+    @classmethod
+    def expected_composite_count(cls, ts_event: int, symbol_count: int) -> int:
+        """Return 5m + coincident 15m/1h bars expected at this UTC close."""
+        minute = ts_event // cls.NS_PER_MINUTE
+        count = symbol_count  # every bucket is created by a 5m close
+        if minute % cls.DECISION_MINUTES == 0:
+            count += symbol_count
+        if minute % cls.HIGHER_MINUTES == 0:
+            count += symbol_count
+        return count
+
     def on_start(self) -> None:
         for instrument_id, higher, decision, trigger, execution in zip(
             self.config.instrument_ids,
@@ -134,11 +147,19 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
 
     def on_bar(self, bar: Bar) -> None:
         key = bar.bar_type.id_spec_key()
-        # The first later 1m bar is a causal flush boundary: every composite bar
-        # with the previous timestamp has already arrived, regardless of engine
-        # callback order at that timestamp.
         if key in self.execution_keys:
+            # Fallback only. A complete bucket normally flushes on its final
+            # composite callback at the same close timestamp.
             if self.bar_bucket_ts is not None and bar.ts_event > self.bar_bucket_ts:
+                self._record(
+                    "incomplete_bucket_fallback",
+                    bucket_ts=self.bar_bucket_ts,
+                    received=len(self.bar_bucket),
+                    expected=self.expected_composite_count(
+                        self.bar_bucket_ts,
+                        len(self.config.instrument_ids),
+                    ),
+                )
                 self._flush_bar_bucket()
             return
 
@@ -149,9 +170,31 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
         if self.bar_bucket_ts is None:
             self.bar_bucket_ts = bar.ts_event
         elif bar.ts_event != self.bar_bucket_ts:
+            self._record(
+                "incomplete_bucket_timestamp_change",
+                bucket_ts=self.bar_bucket_ts,
+                next_ts=bar.ts_event,
+                received=len(self.bar_bucket),
+                expected=self.expected_composite_count(
+                    self.bar_bucket_ts,
+                    len(self.config.instrument_ids),
+                ),
+            )
             self._flush_bar_bucket()
             self.bar_bucket_ts = bar.ts_event
+
+        identity = (instrument_id, timeframe)
+        if identity in self.bar_bucket_seen:
+            raise RuntimeError(f"duplicate composite bar in bucket: {identity} @ {bar.ts_event}")
+        self.bar_bucket_seen.add(identity)
         self.bar_bucket.append((instrument_id, timeframe, bar))
+        expected = self.expected_composite_count(bar.ts_event, len(self.config.instrument_ids))
+        if len(self.bar_bucket) == expected:
+            self._flush_bar_bucket()
+        elif len(self.bar_bucket) > expected:
+            raise RuntimeError(
+                f"too many composite bars at {bar.ts_event}: {len(self.bar_bucket)} > {expected}",
+            )
 
     def _flush_bar_bucket(self) -> None:
         if self.bar_bucket_ts is None:
@@ -218,6 +261,7 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
                             selected_plan_id=selected_plan_id,
                         )
         self.bar_bucket.clear()
+        self.bar_bucket_seen.clear()
         self.bar_bucket_ts = None
 
     def on_stop(self) -> None:
@@ -230,6 +274,7 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
                 bars=len(self.bar_bucket),
             )
         self.bar_bucket.clear()
+        self.bar_bucket_seen.clear()
         self.bar_bucket_ts = None
         for instrument_id, higher, decision, trigger, execution in zip(
             self.config.instrument_ids,
