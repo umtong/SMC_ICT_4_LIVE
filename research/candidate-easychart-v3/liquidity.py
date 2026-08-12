@@ -61,8 +61,9 @@ class ObjectiveZone:
 class CausalLiquidityDetector:
     """Confirmed wick pivots with first-touch lifecycle.
 
-    No future bar is read before its close.  Multiple spans are retained because
+    No future bar is read before its close. Multiple spans are retained because
     a local swing and a larger auction objective solve different decisions.
+    Only currently unspent objectives are scanned on each price observation.
     """
 
     def __init__(
@@ -83,6 +84,7 @@ class CausalLiquidityDetector:
         self.pivot_spans = tuple(sorted(set(pivot_spans)))
         self.bars: list[Candle] = []
         self.zones: list[ObjectiveZone] = []
+        self._active: dict[str, ObjectiveZone] = {}
         self.diagnostics: dict[str, int] = {}
         self._last_observed_price_time_ns = -1
 
@@ -94,13 +96,14 @@ class CausalLiquidityDetector:
         if bar.ts_close_ns < self._last_observed_price_time_ns:
             raise ValueError("price observations must be nondecreasing")
         self._last_observed_price_time_ns = bar.ts_close_ns
-        for zone in self.zones:
-            if not zone.active or bar.ts_close_ns <= zone.observed_time_ns:
+        for zone_id, zone in list(self._active.items()):
+            if bar.ts_close_ns <= zone.observed_time_ns:
                 continue
             hit = bar.high >= zone.lower if zone.side is ZoneSide.RESISTANCE else bar.low <= zone.upper
             if hit:
                 zone.consumed = True
                 zone.consumed_time_ns = bar.ts_close_ns
+                self._active.pop(zone_id, None)
                 self._inc(f"{zone.kind.value.lower()}_consumed")
 
     def _zone_id(self, kind: ObjectiveKind, center: int, span: int) -> str:
@@ -135,24 +138,24 @@ class CausalLiquidityDetector:
             )
         avg_range = sum(bar.high - bar.low for bar in left + right) / max(len(left) + len(right), 1)
         strength = prominence / max(avg_range, self.tick_size)
-        self.zones.append(
-            ObjectiveZone(
-                zone_id=zone_id,
-                kind=kind,
-                side=side,
-                timeframe_minutes=self.timeframe_minutes,
-                lower=lower,
-                upper=upper,
-                invalidation=invalidation,
-                impulse_extreme=level,
-                formed_index=center,
-                formed_time_ns=pivot.ts_close_ns,
-                observed_time_ns=observed.ts_close_ns,
-                formation_indices=(center,),
-                strength_ratio=strength,
-                pivot_span=span,
-            ),
+        zone = ObjectiveZone(
+            zone_id=zone_id,
+            kind=kind,
+            side=side,
+            timeframe_minutes=self.timeframe_minutes,
+            lower=lower,
+            upper=upper,
+            invalidation=invalidation,
+            impulse_extreme=level,
+            formed_index=center,
+            formed_time_ns=pivot.ts_close_ns,
+            observed_time_ns=observed.ts_close_ns,
+            formation_indices=(center,),
+            strength_ratio=strength,
+            pivot_span=span,
         )
+        self.zones.append(zone)
+        self._active[zone.zone_id] = zone
         self._inc(f"{kind.value.lower()}_confirmed")
 
     def on_bar(self, bar: Candle) -> list[ObjectiveZone]:
@@ -179,4 +182,4 @@ class CausalLiquidityDetector:
         return self.zones[created_before:]
 
     def active_zones(self, *, side: ZoneSide | None = None) -> list[ObjectiveZone]:
-        return [zone for zone in self.zones if zone.active and (side is None or zone.side is side)]
+        return [zone for zone in self._active.values() if side is None or zone.side is side]
