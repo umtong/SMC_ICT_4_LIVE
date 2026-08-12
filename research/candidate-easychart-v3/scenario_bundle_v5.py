@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from domain import Candle, Side
-from contracts_v5 import ScenarioSetup, V5TradePlan
+from contracts_v5 import V5TradePlan
+from learned_horizontal_v7 import LearnedHorizontalScenarioEngine
 from scenario_engine_v5 import StructureScenarioEngine
 
 
@@ -47,12 +48,14 @@ class AuditFrame:
 
 
 class ResearchScenarioBundleV5:
-    """One symbol, two causal structure scales, one plan stream.
+    """One symbol, four causal scales of one market-structure policy.
 
-    The 60-minute and 15-minute candles own the structures drawn on them.
-    Their respective 15/5-minute intermediate frames cannot resolve a fakeout
-    or acceptance before the owner candle closes; 5/1-minute data are reserved
-    for event-local execution evidence.
+    The original 60/15/5 and 15/5/1 engines retain trend-line, channel and
+    single-pivot structure. The learned-horizontal engines do not add a bag of
+    indicators. They solve one missing human inference: after repeated wick
+    defenses share an exact price interval, the crowd has learned a visible
+    support/resistance boundary. Fakeout and Trap are then opposite outcomes
+    of that boundary's state, routed through the same global account slot.
     """
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
@@ -78,18 +81,51 @@ class ResearchScenarioBundleV5:
             interaction_minutes=15,
             minimum_gross_rr=minimum_gross_rr,
         )
+        self.learned_macro = LearnedHorizontalScenarioEngine(
+            symbol,
+            tick_size,
+            scale_name="MACRO",
+            context_minutes=60,
+            trigger_minutes=5,
+            objective_book=self.macro.structure,
+            minimum_gross_rr=minimum_gross_rr,
+        )
+        self.learned_micro = LearnedHorizontalScenarioEngine(
+            symbol,
+            tick_size,
+            scale_name="MICRO",
+            context_minutes=15,
+            trigger_minutes=1,
+            objective_book=self.micro.structure,
+            minimum_gross_rr=minimum_gross_rr,
+        )
         self.detectors = {60: AuditFrame(60), 15: AuditFrame(15), 5: AuditFrame(5), 1: AuditFrame(1)}
         self._claimed_episodes: list[tuple[Side, int, int, float, float]] = []
         self._bundle_trace: list[dict[str, Any]] = []
-        self._audit_offsets = {"macro": 0, "micro": 0}
+        self._audit_offsets = {
+            "macro": 0,
+            "micro": 0,
+            "learned_macro": 0,
+            "learned_micro": 0,
+        }
 
     @property
-    def setups(self) -> list[ScenarioSetup]:
-        return self.macro.setups + self.micro.setups
+    def setups(self) -> list[Any]:
+        return (
+            self.macro.setups
+            + self.micro.setups
+            + self.learned_macro.setups
+            + self.learned_micro.setups
+        )
 
     @property
     def plans(self) -> list[V5TradePlan]:
-        return self.macro.plans + self.micro.plans
+        return (
+            self.macro.plans
+            + self.micro.plans
+            + self.learned_macro.plans
+            + self.learned_micro.plans
+        )
 
     @property
     def diagnostics(self) -> dict[str, Any]:
@@ -98,13 +134,17 @@ class ResearchScenarioBundleV5:
             "macro_structure": self.macro.structure.diagnostics,
             "micro": self.micro.diagnostics,
             "micro_structure": self.micro.structure.diagnostics,
+            "learned_macro": self.learned_macro.diagnostics,
+            "learned_macro_detector": self.learned_macro.detector.diagnostics,
+            "learned_micro": self.learned_micro.diagnostics,
+            "learned_micro_detector": self.learned_micro.detector.diagnostics,
         }
 
-    def _sync_audit(self, key: str, engine: StructureScenarioEngine) -> None:
+    def _sync_audit(self, key: str, engine: Any) -> None:
         start = self._audit_offsets[key]
         for zone in engine.audit_zones[start:]:
             timeframe = getattr(zone, "timeframe_minutes", engine.trigger_minutes)
-            destination = timeframe if timeframe in self.detectors else 5
+            destination = timeframe if timeframe in self.detectors else engine.trigger_minutes
             self.detectors[destination].register(zone)
         self._audit_offsets[key] = len(engine.audit_zones)
 
@@ -130,12 +170,24 @@ class ResearchScenarioBundleV5:
         if timeframe_minutes in self.detectors:
             self.detectors[timeframe_minutes].on_bar(bar)
         plans: list[V5TradePlan] = []
+
+        # Generic structure is processed first so its objective book includes
+        # every pivot causally observable at this close. Learned-horizontal
+        # target selection still requires objective.observed_time < interaction,
+        # so same-close targets cannot leak into the plan.
         if timeframe_minutes in {60, 15, 5}:
             plans.extend(self.macro.on_bar(timeframe_minutes, bar))
         if timeframe_minutes in {15, 5, 1}:
             plans.extend(self.micro.on_bar(timeframe_minutes, bar))
+        if timeframe_minutes in {60, 5}:
+            plans.extend(self.learned_macro.on_bar(timeframe_minutes, bar))
+        if timeframe_minutes in {15, 1}:
+            plans.extend(self.learned_micro.on_bar(timeframe_minutes, bar))
+
         self._sync_audit("macro", self.macro)
         self._sync_audit("micro", self.micro)
+        self._sync_audit("learned_macro", self.learned_macro)
+        self._sync_audit("learned_micro", self.learned_micro)
         ranked = sorted(
             plans,
             key=lambda plan: (
@@ -167,7 +219,13 @@ class ResearchScenarioBundleV5:
         return independent
 
     def drain_trace(self) -> list[dict[str, Any]]:
-        output = self.macro.drain_trace() + self.micro.drain_trace() + self._bundle_trace
+        output = (
+            self.macro.drain_trace()
+            + self.micro.drain_trace()
+            + self.learned_macro.drain_trace()
+            + self.learned_micro.drain_trace()
+            + self._bundle_trace
+        )
         self._bundle_trace = []
         return output
 
@@ -176,7 +234,12 @@ class ResearchScenarioBundleV5:
             for zone in detector.zones:
                 if zone.zone_id == zone_id:
                     return zone
-        return self.macro.find_zone(zone_id) or self.micro.find_zone(zone_id)
+        return (
+            self.macro.find_zone(zone_id)
+            or self.micro.find_zone(zone_id)
+            or self.learned_macro.find_zone(zone_id)
+            or self.learned_micro.find_zone(zone_id)
+        )
 
 
 MultiScaleScenarioBundle = ResearchScenarioBundleV5
