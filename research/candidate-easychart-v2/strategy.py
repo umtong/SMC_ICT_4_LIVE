@@ -24,6 +24,11 @@ class EasyChartV2Config(StrategyConfig, frozen=True):
     estimated_entry_fee_rate: float = 0.00075
     estimated_stop_fee_rate: float = 0.00075
     estimated_funding_rate: float = 0.00010
+    # The bar execution diagnostic produced aggregate entry and stop fills up to
+    # about two price increments away from the signal/trigger. These reserves are
+    # execution-cost estimates inside the 3% loss budget, not risk multipliers.
+    estimated_entry_slippage_ticks: int = 2
+    estimated_stop_slippage_ticks: int = 2
     enable_rejection: bool = True
     enable_acceptance: bool = True
     trading_start_ns: int = 0
@@ -35,6 +40,8 @@ class EasyChartV2Strategy(EasyChartRuntimeMixin, EasyChartOrderMixin, Strategy):
         count = len(config.instrument_ids)
         if len(config.signal_bar_types) != count or len(config.execution_bar_types) != count:
             raise ValueError("instrument_ids and both bar type tuples must have equal length")
+        if config.estimated_entry_slippage_ticks < 0 or config.estimated_stop_slippage_ticks < 0:
+            raise ValueError("estimated slippage ticks cannot be negative")
 
         self.instruments: dict[InstrumentId, Any] = {}
         self.engines: dict[InstrumentId, EasyChartStateEngine] = {}
