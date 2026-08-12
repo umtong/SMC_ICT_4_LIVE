@@ -23,6 +23,7 @@ class StructuralScenarioV4Tests(unittest.TestCase):
             trigger_minutes=5,
             minimum_gross_rr=1.0,
         )
+        # Use span=1 only to keep the fixture small. Production keeps spans 2/6.
         engine.structure.pivot_spans = (1,)
         seed = [
             bar(0, 12.0, 13.0, 11.8, 12.5),
@@ -33,15 +34,8 @@ class StructuralScenarioV4Tests(unittest.TestCase):
         ]
         for candle in seed:
             engine.on_bar(60, candle)
-        interaction = Candle(
-            ts_close_ns=seed[-1].ts_close_ns + 5 * NS,
-            open=12.0,
-            high=13.0,
-            low=11.5,
-            close=12.2,
-            volume=1.0,
-        )
-        events = engine.structure.observe_lower_bar(interaction)
+        interaction = bar(5, 13.0, 14.0, 12.0, 13.2)
+        events = engine.structure.on_bar(interaction)
         self.assertEqual(len(events), 1)
         engine._create_setups(events)
         return engine, interaction
