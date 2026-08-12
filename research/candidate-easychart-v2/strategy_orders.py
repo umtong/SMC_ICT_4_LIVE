@@ -30,10 +30,18 @@ class EasyChartOrderMixin:
             raise RuntimeError("USDT balance unavailable")
         return Decimal(str(money.as_double()))
 
+    def _execution_reserves(self, instrument: Any) -> tuple[Decimal, Decimal]:
+        tick = Decimal(str(instrument.price_increment))
+        entry = tick * Decimal(self.config.estimated_entry_slippage_ticks)
+        stop = tick * Decimal(self.config.estimated_stop_slippage_ticks)
+        return entry, stop
+
     def _quantity(self, instrument: Any, plan: TradePlan, nav: Decimal) -> Any | None:
         entry = Decimal(str(plan.entry))
         stop = Decimal(str(plan.stop))
+        entry_slippage, stop_slippage = self._execution_reserves(instrument)
         per_unit = abs(entry - stop)
+        per_unit += entry_slippage + stop_slippage
         per_unit += entry * Decimal(str(self.config.estimated_entry_fee_rate))
         per_unit += stop * Decimal(str(self.config.estimated_stop_fee_rate))
         per_unit += entry * Decimal(str(self.config.estimated_funding_rate))
@@ -53,6 +61,7 @@ class EasyChartOrderMixin:
     def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> bool:
         instrument = self.instruments[instrument_id]
         nav = self._current_nav()
+        entry_slippage, stop_slippage = self._execution_reserves(instrument)
         quantity = self._quantity(instrument, plan, nav)
         if quantity is None:
             self._record(
@@ -60,6 +69,8 @@ class EasyChartOrderMixin:
                 plan_id=plan.plan_id,
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
+                estimated_entry_slippage=float(entry_slippage),
+                estimated_stop_slippage=float(stop_slippage),
             )
             return False
         plan_tag = f"PLAN:{plan.plan_id}"
@@ -95,6 +106,8 @@ class EasyChartOrderMixin:
             entry_client_order_id=str(self.active_entry_id),
             nav_at_submission=float(nav),
             risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
+            estimated_entry_slippage=float(entry_slippage),
+            estimated_stop_slippage=float(stop_slippage),
         )
         return True
 
