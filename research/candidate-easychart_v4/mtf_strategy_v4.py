@@ -1,11 +1,25 @@
 """Bind the audited Nautilus strategy shell to the EasyChart v4 scene router."""
 from __future__ import annotations
 
+from typing import Any
+
 import mtf_strategy as _base
 from scenario_runtime_v4 import ResearchScenarioBundleV4
 
 _base.MultiScaleScenarioBundle = ResearchScenarioBundleV4
 EasyChartMTFConfig = _base.EasyChartMTFConfig
+
+
+def is_executable_easychart_plan(plan: Any) -> bool:
+    """Only the lower-timeframe execution layer may submit an entry.
+
+    EasyChart's source hierarchy assigns 12h/4h/1h to the medium scene
+    (direction, pattern and support/resistance) and 15m/5m/1m to actual entry.
+    The existing ``MACRO`` 1h->5m plan is still generated and audited as
+    higher-scene evidence, but it is not a second parallel trading bot.
+    """
+
+    return getattr(plan, "scale_name", None) == "MICRO"
 
 
 class EasyChartMTFStrategy(_base.EasyChartMTFStrategy):
@@ -32,6 +46,21 @@ class EasyChartMTFStrategy(_base.EasyChartMTFStrategy):
             if bar.ts_event < self.config.trading_start_ns:
                 continue
             for plan in emitted:
+                if not is_executable_easychart_plan(plan):
+                    self._record(
+                        "plan_retained_as_higher_context_evidence",
+                        plan_id=plan.plan_id,
+                        instrument_id=str(instrument_id),
+                        scale_name=plan.scale_name,
+                        family=plan.family,
+                        side=plan.side.name,
+                        interaction_time_ns=plan.interaction_time_ns,
+                        observed_time_ns=plan.observed_time_ns,
+                        higher_timeframe_minutes=plan.higher_timeframe_minutes,
+                        decision_timeframe_minutes=plan.decision_timeframe_minutes,
+                        trigger_timeframe_minutes=plan.trigger_timeframe_minutes,
+                    )
+                    continue
                 self.plan_log[plan.plan_id] = plan
                 plans.append((instrument_id, plan))
                 self._record("plan", **self._plan_event_values(plan))
