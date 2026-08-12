@@ -1,8 +1,8 @@
 """One NautilusTrader strategy routing the current EasyChart scenario families.
 
-The strategy does not average standalone backtests.  Every family submits into
-one four-symbol account, one global pending-entry/position slot and one fixed
-3% loss budget.  Arbitration is deterministic and not a learned setup score.
+The strategy does not average standalone backtests. Every enabled family submits
+into one four-symbol account, one global pending-entry/position slot and one
+fixed 3% loss budget. Arbitration is deterministic and not a learned score.
 """
 from __future__ import annotations
 
@@ -37,6 +37,12 @@ class EasyChartIntegratedConfig(StrategyConfig, frozen=True):
     estimated_entry_slippage_ticks: int = 2
     estimated_stop_slippage_ticks: int = 2
     trading_start_ns: int = 0
+    # Only source-case-derived families are enabled in the primary diagnostic.
+    # The older zone-sweep-first-OB hypothesis remains available for controlled
+    # comparison but is not silently treated as a universal EasyChart rule.
+    enable_mtf_sweep_family: bool = False
+    enable_mtf_touch_family: bool = True
+    enable_trendline_family: bool = True
 
 
 class EasyChartIntegratedStrategy(EasyChartOrderMixin, Strategy):
@@ -64,7 +70,10 @@ class EasyChartIntegratedStrategy(EasyChartOrderMixin, Strategy):
         self.instruments: dict[InstrumentId, Any] = {}
         self.mtf_sweep_engines: dict[InstrumentId, MTFOverlapScenarioEngine] = {}
         self.mtf_touch_engines: dict[InstrumentId, MTFZoneFirstTouchScenarioEngine] = {}
-        self.trendline_engines: dict[InstrumentId, TrendlineFirstRetestScenarioEngine] = {}
+        self.trendline_engines: dict[
+            tuple[InstrumentId, int],
+            TrendlineFirstRetestScenarioEngine,
+        ] = {}
         self.route_by_key: dict[str, tuple[InstrumentId, int]] = {}
         self.execution_route: dict[str, InstrumentId] = {}
         for instrument_id, higher, decision, trigger, execution in zip(
@@ -172,22 +181,28 @@ class EasyChartIntegratedStrategy(EasyChartOrderMixin, Strategy):
             self.instruments[instrument_id] = instrument
             symbol = instrument.raw_symbol.value
             tick = float(instrument.price_increment)
-            self.mtf_sweep_engines[instrument_id] = MTFOverlapScenarioEngine(
-                symbol=symbol,
-                tick_size=tick,
-                minimum_gross_rr=self.config.min_gross_rr,
-            )
-            self.mtf_touch_engines[instrument_id] = MTFZoneFirstTouchScenarioEngine(
-                symbol=symbol,
-                tick_size=tick,
-                minimum_gross_rr=self.config.min_gross_rr,
-            )
-            self.trendline_engines[instrument_id] = TrendlineFirstRetestScenarioEngine(
-                symbol=symbol,
-                timeframe_minutes=self.DECISION_MINUTES,
-                tick_size=tick,
-                minimum_gross_rr=self.config.min_gross_rr,
-            )
+            if self.config.enable_mtf_sweep_family:
+                self.mtf_sweep_engines[instrument_id] = MTFOverlapScenarioEngine(
+                    symbol=symbol,
+                    tick_size=tick,
+                    minimum_gross_rr=self.config.min_gross_rr,
+                )
+            if self.config.enable_mtf_touch_family:
+                self.mtf_touch_engines[instrument_id] = MTFZoneFirstTouchScenarioEngine(
+                    symbol=symbol,
+                    tick_size=tick,
+                    minimum_gross_rr=self.config.min_gross_rr,
+                )
+            if self.config.enable_trendline_family:
+                for timeframe in (self.TRIGGER_MINUTES, self.DECISION_MINUTES):
+                    self.trendline_engines[(instrument_id, timeframe)] = (
+                        TrendlineFirstRetestScenarioEngine(
+                            symbol=symbol,
+                            timeframe_minutes=timeframe,
+                            tick_size=tick,
+                            minimum_gross_rr=self.config.min_gross_rr,
+                        )
+                    )
             self.subscribe_bars(execution)
             self.subscribe_bars(trigger)
             self.subscribe_bars(decision)
@@ -272,11 +287,20 @@ class EasyChartIntegratedStrategy(EasyChartOrderMixin, Strategy):
 
     def _plans_from_bar(self, instrument_id: InstrumentId, timeframe: int, candle: Candle) -> list[Any]:
         plans: list[Any] = []
-        plans.extend(self.mtf_sweep_engines[instrument_id].on_bar(timeframe, candle))
-        if timeframe in (self.HIGHER_MINUTES, self.DECISION_MINUTES):
-            plans.extend(self.mtf_touch_engines[instrument_id].on_bar(timeframe, candle))
-        if timeframe == self.DECISION_MINUTES:
-            plans.extend(self.trendline_engines[instrument_id].on_bar(candle))
+        sweep_engine = self.mtf_sweep_engines.get(instrument_id)
+        if sweep_engine is not None:
+            plans.extend(sweep_engine.on_bar(timeframe, candle))
+
+        touch_engine = self.mtf_touch_engines.get(instrument_id)
+        if touch_engine is not None and timeframe in (
+            self.HIGHER_MINUTES,
+            self.DECISION_MINUTES,
+        ):
+            plans.extend(touch_engine.on_bar(timeframe, candle))
+
+        trendline_engine = self.trendline_engines.get((instrument_id, timeframe))
+        if trendline_engine is not None:
+            plans.extend(trendline_engine.on_bar(candle))
         return plans
 
     def _flush_bar_bucket(self) -> None:
@@ -341,11 +365,23 @@ class EasyChartIntegratedStrategy(EasyChartOrderMixin, Strategy):
         result: dict[str, Any] = {}
         for instrument_id in self.config.instrument_ids:
             symbol = self.instruments[instrument_id].raw_symbol.value
-            result[symbol] = {
-                "mtf_sweep_first_ob": self.mtf_sweep_engines[instrument_id].diagnostics,
-                "mtf_ob_first_touch": self.mtf_touch_engines[instrument_id].diagnostics,
-                "trendline_first_retest_ob": self.trendline_engines[instrument_id].diagnostics,
-            }
+            values: dict[str, Any] = {}
+            sweep = self.mtf_sweep_engines.get(instrument_id)
+            if sweep is not None:
+                values["mtf_sweep_first_ob"] = sweep.diagnostics
+            touch = self.mtf_touch_engines.get(instrument_id)
+            if touch is not None:
+                values["mtf_ob_first_touch"] = touch.diagnostics
+            for timeframe in (self.TRIGGER_MINUTES, self.DECISION_MINUTES):
+                line = self.trendline_engines.get((instrument_id, timeframe))
+                if line is not None:
+                    values[f"trendline_first_retest_ob_{timeframe}m"] = {
+                        "scenario": line.diagnostics,
+                        "lines": len(line.line_tracker.lines),
+                        "setups": len(line.setups),
+                        "plans": len(line.plans),
+                    }
+            result[symbol] = values
         return result
 
     def on_stop(self) -> None:
