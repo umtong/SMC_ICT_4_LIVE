@@ -1,16 +1,16 @@
 """Source-faithful horizontal structures for EasyChart v3.
 
 A generic local pivot is not automatically the major support/resistance line
-used by EasyChart Fakeout/Trap examples.  This module forms a machine-auditable
+used by EasyChart Fakeout/Trap examples. This module forms a machine-auditable
 horizontal structure only after two distinct confirmed wick pivots have
 *overlapping rejection areas*:
 
 support pivot rejection area = [wick low, lower body edge]
 resistance pivot rejection area = [upper body edge, wick high]
 
-The exact intersection becomes the shared level.  This translates a human's
+The exact intersection becomes the shared level. This translates a human's
 "the same price area was defended twice" without an arbitrary percentage or
-ATR tolerance.  The second pivot must be confirmed before the structure exists.
+ATR tolerance. The second pivot must be confirmed before the structure exists.
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ class HorizontalStructureDetector:
                 self._inc("horizontal_structure_swept")
 
     def _candidate_prior_pivots(self, pivot: ObjectiveZone) -> list[tuple[ObjectiveZone, float, float, float]]:
-        lower, upper = self._rejection_areas[pivot]
+        lower, upper = self._rejection_areas[pivot.zone_id]
         candidates: list[tuple[ObjectiveZone, float, float, float]] = []
         for prior in self.pivots.zones:
             if prior.zone_id == pivot.zone_id or prior.side is not pivot.side:
@@ -132,7 +132,7 @@ class HorizontalStructureDetector:
             return None
         # Geometry decides which prior defense belongs to this second touch:
         # first maximize the shared rejection area, then favor the more
-        # structurally confirmed and more separated pivot.  No outcome data is
+        # structurally confirmed and more separated pivot. No outcome data is
         # used.
         prior, lower, upper, _ = max(
             candidates,
