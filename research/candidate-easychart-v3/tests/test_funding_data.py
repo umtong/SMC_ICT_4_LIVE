@@ -46,7 +46,7 @@ class FundingProbeStrategy(Strategy):
         }
         self.instruments = {}
         self.submitted: set[InstrumentId] = set()
-        self.balances: dict[int, float] = {}
+        self.snapshots: dict[int, dict[str, object]] = {}
 
     def on_start(self) -> None:
         for instrument_id, bar_type in zip(
@@ -60,14 +60,39 @@ class FundingProbeStrategy(Strategy):
             self.instruments[instrument_id] = instrument
             self.subscribe_bars(bar_type)
 
-    def _balance(self) -> float:
-        account = self.portfolio.account(self.instruments[self.config.clock_instrument_id].venue)
-        if account is None:
-            raise RuntimeError("probe account unavailable")
+    def _account_balance(self, account: object) -> float:
         value = account.balance_total(Currency.from_str("USDT"))
         if value is None:
             raise RuntimeError("probe USDT balance unavailable")
         return float(value.as_double())
+
+    def _snapshot(self, time_ns: int) -> dict[str, object]:
+        venue = self.instruments[self.config.clock_instrument_id].venue
+        portfolio_account = self.portfolio.account(venue)
+        cache_account = self.cache.account_for_venue(venue)
+        if portfolio_account is None or cache_account is None:
+            raise RuntimeError("probe account unavailable")
+        positions: dict[str, dict[str, object]] = {}
+        for instrument_id in self.config.instrument_ids:
+            open_positions = self.cache.positions_open(instrument_id=instrument_id)
+            if len(open_positions) != 1:
+                raise RuntimeError(
+                    f"expected one open probe position for {instrument_id}, got {len(open_positions)}",
+                )
+            position = open_positions[0]
+            realized = None if position.realized_pnl is None else float(position.realized_pnl.as_double())
+            positions[str(instrument_id)] = {
+                "realized_pnl": realized,
+                "signed_qty": float(position.signed_qty),
+                "account_id": str(position.account_id),
+            }
+        return {
+            "portfolio_balance": self._account_balance(portfolio_account),
+            "cache_balance": self._account_balance(cache_account),
+            "portfolio_event_count": int(portfolio_account.event_count),
+            "cache_event_count": int(cache_account.event_count),
+            "positions": positions,
+        }
 
     def on_bar(self, bar: Bar) -> None:
         route = self.route.get(bar.bar_type.id_spec_key())
@@ -89,11 +114,11 @@ class FundingProbeStrategy(Strategy):
         ):
             if any(self.portfolio.is_flat(item) for item in self.config.instrument_ids):
                 raise RuntimeError("probe funding capture occurred before both entries filled")
-            self.balances[bar.ts_event] = self._balance()
+            self.snapshots[bar.ts_event] = self._snapshot(bar.ts_event)
 
     def on_stop(self) -> None:
-        # Leave constant-price positions open so balance differences between
-        # captures are funding only, not exit commissions.
+        # Leave constant-price positions open so snapshot differences are
+        # funding only, not exit commissions.
         for bar_type in self.config.bar_types:
             self.unsubscribe_bars(bar_type)
 
@@ -250,11 +275,31 @@ class FundingHistoryTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-        before = strategy.balances[3 * NS_PER_MINUTE]
-        after_long = strategy.balances[5 * NS_PER_MINUTE]
-        after_short = strategy.balances[7 * NS_PER_MINUTE]
-        self.assertAlmostEqual(after_long - before, -1.0, places=6)
-        self.assertAlmostEqual(after_short - after_long, 2.0, places=6)
+        before = strategy.snapshots[3 * NS_PER_MINUTE]
+        after_long = strategy.snapshots[5 * NS_PER_MINUTE]
+        after_short = strategy.snapshots[7 * NS_PER_MINUTE]
+        print("FUNDING_PROBE_SNAPSHOTS", strategy.snapshots)
+
+        btc_key = str(btc.id)
+        eth_key = str(eth.id)
+        btc_before = before["positions"][btc_key]["realized_pnl"]
+        btc_after = after_long["positions"][btc_key]["realized_pnl"]
+        eth_before = after_long["positions"][eth_key]["realized_pnl"]
+        eth_after = after_short["positions"][eth_key]["realized_pnl"]
+        self.assertAlmostEqual(btc_after - btc_before, -1.0, places=6)
+        self.assertAlmostEqual(eth_after - eth_before, 2.0, places=6)
+        self.assertAlmostEqual(
+            after_long["cache_balance"] - before["cache_balance"],
+            -1.0,
+            places=6,
+            msg=str(strategy.snapshots),
+        )
+        self.assertAlmostEqual(
+            after_short["cache_balance"] - after_long["cache_balance"],
+            2.0,
+            places=6,
+            msg=str(strategy.snapshots),
+        )
 
 
 if __name__ == "__main__":
