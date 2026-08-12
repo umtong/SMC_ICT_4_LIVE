@@ -1,4 +1,4 @@
-"""NautilusTrader strategy for the EasyChart v3 causal MTF scenarios."""
+"""NautilusTrader strategy for the EasyChart v3 multi-scale scenarios."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -10,7 +10,7 @@ from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
 from domain import Candle
-from easychart_mtf_scenario import MTFOverlapScenarioEngine, MTFTradePlan
+from easychart_mtf_scenario import MTFTradePlan, MultiScaleScenarioBundle
 from strategy_orders import EasyChartOrderMixin
 
 
@@ -31,11 +31,12 @@ class EasyChartMTFConfig(StrategyConfig, frozen=True):
 
 
 class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
-    """One integrated four-symbol account with deterministic arbitration."""
+    """One continuous four-symbol account with causal, deterministic routing."""
 
     HIGHER_MINUTES = 60
     DECISION_MINUTES = 15
     TRIGGER_MINUTES = 5
+    EXECUTION_MINUTES = 1
     NS_PER_MINUTE = 60_000_000_000
 
     def __init__(self, config: EasyChartMTFConfig) -> None:
@@ -53,29 +54,26 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
             raise ValueError("estimated slippage ticks cannot be negative")
 
         self.instruments: dict[InstrumentId, Any] = {}
-        self.scenario_engines: dict[InstrumentId, MTFOverlapScenarioEngine] = {}
+        self.scenario_engines: dict[InstrumentId, MultiScaleScenarioBundle] = {}
         self.route_by_key: dict[str, tuple[InstrumentId, int]] = {}
-        self.execution_keys = {bar_type.id_spec_key() for bar_type in config.execution_bar_types}
-        for instrument_id, higher, decision, trigger in zip(
+        for instrument_id, higher, decision, trigger, execution in zip(
             config.instrument_ids,
             config.higher_bar_types,
             config.decision_bar_types,
             config.trigger_bar_types,
+            config.execution_bar_types,
             strict=True,
         ):
             self.route_by_key[higher.id_spec_key()] = (instrument_id, self.HIGHER_MINUTES)
             self.route_by_key[decision.id_spec_key()] = (instrument_id, self.DECISION_MINUTES)
             self.route_by_key[trigger.id_spec_key()] = (instrument_id, self.TRIGGER_MINUTES)
+            self.route_by_key[execution.id_spec_key()] = (instrument_id, self.EXECUTION_MINUTES)
 
         self.active_plan: MTFTradePlan | None = None
         self.active_instrument_id: InstrumentId | None = None
         self.active_entry_id: ClientOrderId | None = None
         self.entry_cancel_requested = False
         self.emergency_exit_requested = False
-
-        # Same-close composite bars are processed together in descending
-        # timeframe order. Expected-count flushing removes callback-order bias
-        # without waiting for the following minute and adding artificial latency.
         self.bar_bucket_ts: int | None = None
         self.bar_bucket: list[tuple[InstrumentId, int, Bar]] = []
         self.bar_bucket_seen: set[tuple[InstrumentId, int]] = set()
@@ -111,14 +109,16 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
 
     @classmethod
     def expected_composite_count(cls, ts_event: int, symbol_count: int) -> int:
-        """Return 5m + coincident 15m/1h bars expected at this UTC close."""
+        """Return 1m plus coincident 5m/15m/60m bars expected at a UTC close."""
         minute = ts_event // cls.NS_PER_MINUTE
-        count = symbol_count
+        per_symbol = 1
+        if minute % cls.TRIGGER_MINUTES == 0:
+            per_symbol += 1
         if minute % cls.DECISION_MINUTES == 0:
-            count += symbol_count
+            per_symbol += 1
         if minute % cls.HIGHER_MINUTES == 0:
-            count += symbol_count
-        return count
+            per_symbol += 1
+        return per_symbol * symbol_count
 
     def on_start(self) -> None:
         for instrument_id, higher, decision, trigger, execution in zip(
@@ -135,7 +135,7 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
                 self.stop()
                 return
             self.instruments[instrument_id] = instrument
-            self.scenario_engines[instrument_id] = MTFOverlapScenarioEngine(
+            self.scenario_engines[instrument_id] = MultiScaleScenarioBundle(
                 symbol=instrument.raw_symbol.value,
                 tick_size=float(instrument.price_increment),
                 minimum_gross_rr=self.config.min_gross_rr,
@@ -146,22 +146,7 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
             self.subscribe_bars(higher)
 
     def on_bar(self, bar: Bar) -> None:
-        key = bar.bar_type.id_spec_key()
-        if key in self.execution_keys:
-            if self.bar_bucket_ts is not None and bar.ts_event > self.bar_bucket_ts:
-                self._record(
-                    "incomplete_bucket_fallback",
-                    bucket_ts=self.bar_bucket_ts,
-                    received=len(self.bar_bucket),
-                    expected=self.expected_composite_count(
-                        self.bar_bucket_ts,
-                        len(self.config.instrument_ids),
-                    ),
-                )
-                self._flush_bar_bucket()
-            return
-
-        route = self.route_by_key.get(key)
+        route = self.route_by_key.get(bar.bar_type.id_spec_key())
         if route is None:
             return
         instrument_id, timeframe = route
@@ -219,13 +204,11 @@ class EasyChartMTFStrategy(EasyChartOrderMixin, Strategy):
                 plans.append((instrument_id, plan))
                 self._record("plan", **self._plan_event_values(plan))
 
-        # Routing is intentionally not a synthetic alpha score. At a shared
-        # close, serve the causally older resolved episode first, then prefer
-        # explicit cross-kind context, and finally use stable identifiers.
         ranked = sorted(
             plans,
             key=lambda item: (
                 item[1].interaction_time_ns,
+                -item[1].higher_timeframe_minutes,
                 -len({item[1].higher_zone_kind, item[1].lower_zone_kind}),
                 item[1].setup_observed_time_ns,
                 item[1].symbol,

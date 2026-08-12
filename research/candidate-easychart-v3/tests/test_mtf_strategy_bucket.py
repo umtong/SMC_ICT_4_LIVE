@@ -10,9 +10,10 @@ class EasyChartMTFBucketTest(unittest.TestCase):
         return minute * EasyChartMTFStrategy.NS_PER_MINUTE
 
     def test_expected_composite_count_for_four_symbols(self) -> None:
-        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(5), 4), 4)
-        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(15), 4), 8)
-        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(60), 4), 12)
+        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(1), 4), 4)
+        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(5), 4), 8)
+        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(15), 4), 12)
+        self.assertEqual(EasyChartMTFStrategy.expected_composite_count(self.ts(60), 4), 16)
 
 
 if __name__ == "__main__":
