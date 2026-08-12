@@ -10,9 +10,10 @@ import pandas as pd
 
 from funded_engine import make_funded_engine
 from funding_data import build_symbol_funding_boundaries
+from funding_evidence_v2 import correct_run_metadata, write_funding_evidence
 from funding_module import HistoricalPerpetualFundingModule
 from instruments import CONTRACTS, make_instrument
-from mtf_backtest_support_structure_v3 import preserve_structure_results
+import mtf_backtest_support_structure_v3 as result_support
 from mtf_data import add_symbol_mtf_data
 from mtf_strategy_structure_v3 import EasyChartMTFConfig, EasyChartMTFStrategy
 
@@ -102,7 +103,11 @@ def main() -> None:
     engine.add_strategy(strategy)
     try:
         engine.run()
-        metrics = preserve_structure_results(
+        # The legacy Nautilus engine reuses live NETTING position IDs. Replace
+        # the old ID-only funding audit before result preservation so every
+        # settlement is attributed to the unique completed trade episode.
+        result_support._write_funding_evidence = write_funding_evidence
+        metrics = result_support.preserve_structure_results(
             engine,
             strategy,
             args.output,
@@ -112,6 +117,7 @@ def main() -> None:
             funding_summaries=funding_summaries,
             funding_module=funding_module,
         )
+        correct_run_metadata(args.output)
         print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
     finally:
         engine.dispose()

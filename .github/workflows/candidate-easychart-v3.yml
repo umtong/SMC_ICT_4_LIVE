@@ -7,6 +7,16 @@ on:
       - "research/candidate-easychart-v3/**"
       - ".github/workflows/candidate-easychart-v3.yml"
   workflow_dispatch:
+    inputs:
+      scope:
+        description: "Evidence scope"
+        required: true
+        default: short
+        type: choice
+        options:
+          - semantic
+          - short
+          - full
 
 concurrency:
   group: candidate-easychart-v3-nautilus-research
@@ -17,7 +27,7 @@ permissions:
   packages: read
 
 jobs:
-  short-diagnostic:
+  diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
@@ -35,8 +45,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CACHE }}
-          # Bump only when the immutable data contract or diagnostic window changes.
+          # The source archives are immutable and checksum verified. Retain a
+          # partially populated cache even when a new research hypothesis fails.
           key: ecv3-binance-vision-v2-${{ runner.os }}-20240102-20240215
+          save-always: true
 
       - name: Environment and causal semantic tests
         shell: bash
@@ -47,27 +59,45 @@ jobs:
           python -m compileall -q research/candidate-easychart-v3
           python research/candidate-easychart-v3/run_tests_v3.py
 
-      - name: Four-symbol structure-first short diagnostic
+      - name: BTC structure-first short diagnostic
+        if: github.event_name == 'push' || inputs.scope == 'short' || inputs.scope == 'full'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$ROOT/mtf"
-          exec > >(tee "$ROOT/run.log") 2>&1
+          mkdir -p "$ROOT/short"
+          exec > >(tee "$ROOT/short-run.log") 2>&1
+          python research/candidate-easychart-v3/run_mtf_backtest.py \
+            --start 2024-02-01 \
+            --end 2024-02-07 \
+            --warmup-days 14 \
+            --symbols BTCUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT/short"
+          python research/candidate-easychart-v3/validate_order_lifecycle.py \
+            --output "$ROOT/short"
+
+      - name: Four-symbol integrated diagnostic
+        if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/full"
+          exec > >(tee "$ROOT/full-run.log") 2>&1
           python research/candidate-easychart-v3/run_mtf_backtest.py \
             --start 2024-02-01 \
             --end 2024-02-14 \
             --warmup-days 30 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
-            --output "$ROOT/mtf"
+            --output "$ROOT/full"
           python research/candidate-easychart-v3/validate_order_lifecycle.py \
-            --output "$ROOT/mtf"
+            --output "$ROOT/full"
 
       - name: Preserve research evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-v3-${{ github.sha }}
+          name: candidate-easychart-v3-${{ github.sha }}-${{ github.run_attempt }}
           path: artifacts/candidate-easychart-v3/**
           if-no-files-found: warn
           retention-days: 90
