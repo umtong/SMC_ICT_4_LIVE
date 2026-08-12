@@ -39,3 +39,5 @@ class CancelableExpiringSimulator(ExpiringContinuousAccountSimulator):
 
 
 __all__ = ["CancelableExpiringSimulator"]
+
+# Contract-only trigger: rerun accepted-break diagnostics after causal origin repair.
