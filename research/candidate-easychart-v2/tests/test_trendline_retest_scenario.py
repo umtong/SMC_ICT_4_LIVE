@@ -48,9 +48,10 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         for bar in self.pre_break_bars():
             self.assertEqual(engine.on_bar(bar), [])
 
-        # The break consumes the nearer 11.0 swing high, leaving 12.0 as the
-        # nearest still-unspent pre-existing objective.
-        self.assertEqual(engine.on_bar(self.bar(7, 10.0, 11.3, 9.9, 11.2)), [])
+        # The break consumes the nearer old 11.0 high. Its own 11.8 impulse high
+        # becomes observable on the retest and is the nearest pre-entry target;
+        # the engine must not jump past it to the older 12.0 high.
+        self.assertEqual(engine.on_bar(self.bar(7, 10.0, 11.8, 9.9, 11.2)), [])
         # First later retest closes on the breakout side; it is not yet an OB.
         self.assertEqual(engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9)), [])
         self.assertEqual(len(engine.setups), 1)
@@ -67,7 +68,7 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         self.assertEqual(plan.family, "TRENDLINE_BREAK_FIRST_RETEST_OB")
         self.assertAlmostEqual(plan.entry, 10.5)
         self.assertAlmostEqual(plan.stop, 9.4)
-        self.assertAlmostEqual(plan.target, 12.0)
+        self.assertAlmostEqual(plan.target, 11.8)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
         self.assertEqual(plan.target_kind, "SWING_HIGH")
         self.assertGreaterEqual(plan.trigger_strength_ratio, 2.0)
@@ -78,7 +79,7 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
     def test_sweep_is_not_a_universal_prerequisite_for_this_family(self) -> None:
         engine = self.engine()
         bars = self.pre_break_bars() + [
-            self.bar(7, 10.0, 11.3, 9.9, 11.2),
+            self.bar(7, 10.0, 11.8, 9.9, 11.2),
             self.bar(8, 10.2, 10.3, 9.6, 9.9),
             self.bar(9, 9.8, 10.6, 9.5, 10.5),
         ]
@@ -90,24 +91,26 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         # trendline break -> first retest -> OB confirmation.
         self.assertNotIn("sweep", plans[0].causal_event_id.lower())
 
-    def test_already_spent_objectives_do_not_create_future_reward_space(self) -> None:
+    def test_nearest_low_rr_objective_blocks_skipping_to_farther_high(self) -> None:
         engine = self.engine()
         for bar in self.pre_break_bars():
             engine.on_bar(bar)
-        # This break trades through both prior swing highs, so neither may later
-        # be selected as if it were untouched target space.
-        engine.on_bar(self.bar(7, 10.0, 12.2, 9.9, 12.1))
+        # The close breaks the trendline and trades through the old 11.0 high.
+        # The new 11.0 impulse high is causally known before entry but offers
+        # less than 1R. The fixed contract rejects the trade instead of choosing
+        # the farther 12.0 high to manufacture acceptable RR.
+        engine.on_bar(self.bar(7, 10.0, 11.0, 9.9, 10.9))
         engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9))
         plans = engine.on_bar(self.bar(9, 9.8, 10.6, 9.5, 10.5))
         self.assertEqual(plans, [])
-        self.assertIs(engine.setups[0].state, TrendlineRetestState.NO_OBJECTIVE)
-        self.assertEqual(engine.diagnostics.get("trigger_without_preexisting_objective"), 1)
+        self.assertIs(engine.setups[0].state, TrendlineRetestState.RR_BELOW_MINIMUM)
+        self.assertEqual(engine.diagnostics.get("trigger_rr_below_minimum"), 1)
 
     def test_weak_engulfing_at_retest_is_not_relabelled_as_strong_ob(self) -> None:
         engine = self.engine()
         for bar in self.pre_break_bars():
             engine.on_bar(bar)
-        engine.on_bar(self.bar(7, 10.0, 11.3, 9.9, 11.2))
+        engine.on_bar(self.bar(7, 10.0, 11.8, 9.9, 11.2))
         engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9))
         # Bullish engulfing, but body 0.45 versus prior 0.30 is below 2x.
         plans = engine.on_bar(self.bar(9, 9.85, 10.4, 9.5, 10.3))
