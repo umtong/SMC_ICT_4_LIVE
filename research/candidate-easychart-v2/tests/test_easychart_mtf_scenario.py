@@ -45,6 +45,7 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         *,
         target_observed_minute: int = 20,
         target_lower: float = 106.0,
+        target_touched: bool = False,
     ) -> MTFOverlapScenarioEngine:
         engine = MTFOverlapScenarioEngine("BTCUSDT", 0.1)
         higher = self.zone(
@@ -74,6 +75,9 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
             target_lower + 2.0,
             target_observed_minute,
         )
+        if target_touched:
+            target.first_touch_index = 2
+            target.first_touch_time_ns = 25 * 60_000_000_000
         engine.detectors[60].zones.extend([higher, target])
         engine.detectors[15].zones.append(lower)
         engine._refresh_setups()
@@ -108,16 +112,21 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
         plans = engine.on_bar(5, self.bar(65, 99.0, 101.5, 98.7, 101.0))
         self.assertEqual(plans, [])
-        self.assertEqual(engine.diagnostics.get("trigger_without_unspent_preexisting_target"), 1)
+        self.assertEqual(engine.diagnostics.get("trigger_without_fresh_preexisting_target"), 1)
+
+    def test_previously_mitigated_target_is_not_called_unspent(self) -> None:
+        engine = self.seeded_engine(target_touched=True)
+        engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
+        plans = engine.on_bar(5, self.bar(65, 99.0, 101.5, 98.7, 101.0))
+        self.assertEqual(plans, [])
+        self.assertEqual(engine.diagnostics.get("trigger_without_fresh_preexisting_target"), 1)
 
     def test_target_touched_inside_confirmation_bar_is_not_future_space(self) -> None:
         engine = self.seeded_engine(target_lower=101.4)
         engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
-        # The high reaches the target before this candle closes. A close-based
-        # strategy cannot enter afterward and count the already printed target.
         plans = engine.on_bar(5, self.bar(65, 99.0, 101.5, 98.7, 101.0))
         self.assertEqual(plans, [])
-        self.assertEqual(engine.diagnostics.get("trigger_without_unspent_preexisting_target"), 1)
+        self.assertEqual(engine.diagnostics.get("trigger_without_fresh_preexisting_target"), 1)
 
     def test_source_zone_exact_invalidation_touch_ends_setup_before_trigger(self) -> None:
         engine = self.seeded_engine()
@@ -126,6 +135,17 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         plans = engine.on_bar(5, self.bar(65, 99.2, 100.0, 97.0, 97.5))
         self.assertEqual(plans, [])
         self.assertIs(setup.state, SetupState.INVALIDATED)
+
+    def test_weak_trigger_departure_is_missed_not_reused_days_later(self) -> None:
+        engine = self.seeded_engine()
+        setup = engine.setups[0]
+        engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
+        # Bullish engulfing body is weaker than 2x; price has already left the
+        # overlap, so this causal opportunity is missed rather than kept alive.
+        plans = engine.on_bar(5, self.bar(65, 99.1, 101.0, 98.9, 100.3))
+        self.assertEqual(plans, [])
+        self.assertIs(setup.state, SetupState.MISSED_WITHOUT_TRIGGER)
+        self.assertEqual(engine.diagnostics.get("trigger_order_block_below_two_x"), 1)
 
     def test_two_marginal_engulfing_zones_do_not_become_strong_by_overlap_alone(self) -> None:
         engine = MTFOverlapScenarioEngine("BTCUSDT", 0.1)
@@ -153,6 +173,36 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         engine.detectors[15].zones.append(lower)
         engine._refresh_setups()
         self.assertEqual(engine.setups, [])
+
+    def test_fvg_only_overlap_is_not_a_complete_trade_reason(self) -> None:
+        engine = MTFOverlapScenarioEngine("BTCUSDT", 0.1)
+        higher = self.zone(
+            "higher-fvg",
+            ZoneSide.SUPPORT,
+            60,
+            98.5,
+            100.0,
+            96.0,
+            30,
+            kind=ZoneKind.FVG,
+            strength=3.0,
+        )
+        lower = self.zone(
+            "lower-fvg",
+            ZoneSide.SUPPORT,
+            15,
+            99.0,
+            100.5,
+            98.0,
+            50,
+            kind=ZoneKind.FVG,
+            strength=3.0,
+        )
+        engine.detectors[60].zones.append(higher)
+        engine.detectors[15].zones.append(lower)
+        engine._refresh_setups()
+        self.assertEqual(engine.setups, [])
+        self.assertEqual(engine.diagnostics.get("setup_rejected_fvg_only_context"), 1)
 
     def test_fvg_and_order_block_can_supply_different_roles_in_one_overlap(self) -> None:
         engine = MTFOverlapScenarioEngine("BTCUSDT", 0.1)
