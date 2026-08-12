@@ -1,0 +1,237 @@
+name: candidate-easychart-v18-trendline-role-flip
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v18_trendline.py"
+      - "research/candidate-easychart/screen_v18_trendline.py"
+      - "research/candidate-easychart/tests/test_market_v18_trendline.py"
+      - "research/candidate-easychart/tests/test_screen_v18_trendline.py"
+      - ".github/workflows/candidate-easychart-v18-trendline-role-flip.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v18-trendline-role-flip
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  trendline-role-flip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v18-trendline
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify source and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run one development microscope and three predeclared diagnostic weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --signal-minutes 5
+            --response-minutes 5
+            --structure-minutes 15
+            --dc-atr-period 14
+            --dc-atr-multiple 1.0
+            --cost-profile role
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v18_trendline.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          predeclared-2024-10-07:2024-10-07:2024-10-13
+          predeclared-2025-09-08:2025-09-08:2025-09-14
+          predeclared-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Audit recorded trades under both one-minute OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/semantic-audit.log") 2>&1
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/trade_semantic_audit.py \
+              --run-dir "$ROOT/$name" \
+              --start "$start" --end "$end" \
+              --cache "$CACHE" \
+              --output "$ROOT/$name/semantic-audit"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          predeclared-2024-10-07:2024-10-07:2024-10-13
+          predeclared-2025-09-08:2025-09-08:2025-09-14
+          predeclared-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Build source-role bottleneck summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import csv
+          import json
+
+          root = Path("artifacts/candidate-easychart-v18-trendline")
+          names = [
+              "dev-2024-02-19",
+              "predeclared-2024-10-07",
+              "predeclared-2025-09-08",
+              "predeclared-2026-04-06",
+          ]
+
+          def csv_rows(path):
+              if not path.exists() or path.stat().st_size == 0:
+                  return []
+              with path.open(newline="", encoding="utf-8") as handle:
+                  return list(csv.DictReader(handle))
+
+          def sum_sections(source, section):
+              total = Counter()
+              for symbol_data in source.values():
+                  for key, value in symbol_data.get(section, {}).items():
+                      if isinstance(value, (int, float)) and not isinstance(value, bool):
+                          total[key] += value
+              return dict(sorted(total.items()))
+
+          rows = []
+          for name in names:
+              run_dir = root / name
+              metrics = json.loads((run_dir / "metrics.json").read_text())
+              audit = json.loads(
+                  (run_dir / "semantic-audit" / "audit_summary.json").read_text()
+              )
+              setups = csv_rows(run_dir / "setups.csv")
+              setup_audit = csv_rows(run_dir / "trendline_setup_audit.csv")
+              lines = csv_rows(run_dir / "trendline_versions.csv")
+              families = Counter(row.get("family", "") for row in setups)
+              symbols = Counter(row.get("symbol", "") for row in setups)
+              dispositions = Counter(row.get("disposition", "") for row in setup_audit)
+              invalid_slope = []
+              for item in lines:
+                  side = item.get("anchor_side")
+                  low = float(item["slope_low_per_ns"])
+                  high = float(item["slope_high_per_ns"])
+                  if side == "HIGH" and not high < 0.0:
+                      invalid_slope.append(item.get("version_id"))
+                  if side == "LOW" and not low > 0.0:
+                      invalid_slope.append(item.get("version_id"))
+              source = metrics["source_diagnostics"]
+              rows.append(
+                  {
+                      "window": name,
+                      "calendar_days": metrics["calendar_days"],
+                      "raw_setups": metrics["raw_setups_generated"],
+                      "setups": metrics["setups_generated"],
+                      "trades": metrics["trades"],
+                      "ending_nav": metrics["ending_nav"],
+                      "geometric_daily_growth": metrics["geometric_daily_growth"],
+                      "profit_factor": metrics["profit_factor"],
+                      "max_drawdown": metrics["max_drawdown"],
+                      "open_position_at_end": metrics["open_position_at_end"],
+                      "target_gate_passed": metrics["target_gate"]["passed"],
+                      "trendline_totals": sum_sections(source, "trendline"),
+                      "engine_totals": sum_sections(source, "engine"),
+                      "setup_families": dict(sorted(families.items())),
+                      "setups_by_symbol": dict(sorted(symbols.items())),
+                      "setup_audit_dispositions": dict(sorted(dispositions.items())),
+                      "invalid_directional_slope_versions": invalid_slope,
+                      "recorded_trade_replay_matches": audit["recorded_trade_replay_matches"],
+                      "path_ambiguous_recorded_trades": audit["path_ambiguous_recorded_trades"],
+                      "unexplained_missing_setups": audit["unexplained_missing_trades"],
+                      "simulator_diagnostics": metrics["diagnostics"],
+                  }
+              )
+
+          predeclared = [row for row in rows if row["window"].startswith("predeclared-")]
+          summary = {
+              "candidate": "candidate-easychart-v18-set-membership-trendline-role-flip",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "research_question": "Can the source-explicit trendline break-first-retest-OB scenario add independent role-complete opportunities without inventing angle or distance thresholds?",
+              "windows": rows,
+              "all_line_versions_have_unambiguous_direction": all(
+                  not row["invalid_directional_slope_versions"] for row in rows
+              ),
+              "all_setups_are_source_family": all(
+                  all(family == "TRENDLINE_ACCEPTED_BREAK_FIRST_RETEST_OVERLAPPING_OB" for family in row["setup_families"])
+                  for row in rows
+              ),
+              "all_closed_trades_robust_under_both_minute_paths": all(
+                  row["recorded_trade_replay_matches"] == row["trades"]
+                  and row["path_ambiguous_recorded_trades"] == 0
+                  for row in rows
+              ),
+              "predeclared_positive_windows": sum(
+                  row["geometric_daily_growth"] > 0.0 for row in predeclared
+              ),
+              "predeclared_total_setups": sum(row["setups"] for row in predeclared),
+              "predeclared_total_completed_trades": sum(row["trades"] for row in predeclared),
+              "predeclared_all_meet_target": all(
+                  row["target_gate_passed"] for row in predeclared
+              ),
+              "note_on_unexplained_missing_setups": "The current audit reconstructs closed trade occupancy but does not encode a still-open position at window end; simulator busy-slot diagnostics remain the source of truth for that specific disposition.",
+          }
+          (root / "source_role_bottleneck_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/source_role_bottleneck_summary.json" >/dev/null
+          for name in \
+            dev-2024-02-19 \
+            predeclared-2024-10-07 \
+            predeclared-2025-09-08 \
+            predeclared-2026-04-06; do
+            test -s "$ROOT/$name/metrics.json"
+            test -s "$ROOT/$name/run.json"
+            test -e "$ROOT/$name/raw_setups.csv"
+            test -e "$ROOT/$name/setups.csv"
+            test -e "$ROOT/$name/trendline_setup_audit.csv"
+            test -e "$ROOT/$name/trendline_versions.csv"
+            test -e "$ROOT/$name/pivots.csv"
+            test -e "$ROOT/$name/cancellations.csv"
+            test -e "$ROOT/$name/trades.csv"
+            test -e "$ROOT/$name/equity.csv"
+            test -s "$ROOT/$name/semantic-audit/audit_summary.json"
+            test -e "$ROOT/$name/semantic-audit/trade_path_audit.csv"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v18-trendline-${{ github.sha }}
+          path: artifacts/candidate-easychart-v18-trendline/**
+          if-no-files-found: warn
+          retention-days: 90
