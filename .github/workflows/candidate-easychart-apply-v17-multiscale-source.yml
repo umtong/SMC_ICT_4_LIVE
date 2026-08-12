@@ -1,0 +1,40 @@
+name: candidate-easychart-apply-v17-multiscale-source
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-apply-v17-multiscale-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Apply multiscale trendline integration source
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=/tmp/easychart-v17-multiscale-source.tar.gz
+          curl --fail --location --retry 4 \
+            https://filebin.net/easychart-v17-multiscale-20260813-oai/easychart-v17-multiscale-source.tar.gz \
+            --output "$payload"
+          tar -tzf "$payload"
+          tar -xzf "$payload" -C .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/screen_v17_integrated.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "source already present"
+            exit 0
+          fi
+          git commit -m "candidate-easychart: run trendline family across source scales"
+          git push origin HEAD:research/candidate-easychart
