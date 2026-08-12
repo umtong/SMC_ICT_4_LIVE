@@ -1,14 +1,14 @@
 """Alternating-swing horizontal structure for the integrated EasyChart policy.
 
 A double top/bottom or contraction level is an alternating swing sequence, not
-an arbitrary pair of any two historic pivots at a similar price.  For each new
+an arbitrary pair of any two historic pivots at a similar price. For each new
 physical pivot this module considers only the immediately preceding physical
 pivot on the same side and requires at least one opposite pivot between them.
 Their wick-to-body rejection areas must still overlap exactly and the shared
 area must remain unaccepted through the second pivot's confirmation bars.
 
 This corrects the overproduction discovered in v17 while retaining individual
-pivots as objectives.  No execution, risk, management, time or daily rule is
+pivots as objectives. No execution, risk, management, time or daily rule is
 changed.
 """
 from __future__ import annotations
@@ -34,7 +34,11 @@ if ALTERNATING_HORIZONTAL_RULE not in _contracts.TRANSLATION_RULES:
 
 
 class AlternatingRepeatedDefenseStructureBook(RepeatedDefenseStructureBook):
-    """Build at most one horizontal candidate from each new physical swing."""
+    """Build at most one horizontal candidate from each physical swing."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._processed_horizontal_physical_swings: set[tuple[str, int]] = set()
 
     def _held_between(
         self,
@@ -98,19 +102,19 @@ class AlternatingRepeatedDefenseStructureBook(RepeatedDefenseStructureBook):
         return [(prior, shared_lower, shared_upper, shared_upper - shared_lower)]
 
     def on_bar(self, bar):  # type: ignore[no-untyped-def]
-        # Bypass the v17 all-history pairing loop.  Preserve the same causal
+        # Bypass the v17 all-history pairing loop. Preserve the same causal
         # pivot, line, channel and lifecycle implementation underneath it.
         pivots, lines, channels = NearestAnyPivotStructureBook.on_bar(self, bar)
-        strongest_by_physical_swing: dict[tuple[str, int], Pivot] = {}
+        earliest_by_physical_swing: dict[tuple[str, int], Pivot] = {}
         for pivot in pivots:
             key = (pivot.side, pivot.index)
-            current = strongest_by_physical_swing.get(key)
-            if current is None or (pivot.span, pivot.strength_ratio) > (
-                current.span,
-                current.strength_ratio,
-            ):
-                strongest_by_physical_swing[key] = pivot
-        for pivot in strongest_by_physical_swing.values():
+            if key in self._processed_horizontal_physical_swings:
+                continue
+            current = earliest_by_physical_swing.get(key)
+            if current is None or pivot.observed_time_ns < current.observed_time_ns:
+                earliest_by_physical_swing[key] = pivot
+        for key, pivot in earliest_by_physical_swing.items():
+            self._processed_horizontal_physical_swings.add(key)
             self._create_horizontal_structure(pivot)
         return pivots, lines, channels
 
