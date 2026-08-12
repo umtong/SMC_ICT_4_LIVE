@@ -9,6 +9,9 @@ on:
       - "research/candidate-easychart/screen_v13.py"
       - "research/candidate-easychart/trade_semantic_audit_safe.py"
       - "research/candidate-easychart/compare_v14.py"
+      - "research/candidate-easychart/source_footprints.py"
+      - "research/candidate-easychart/footprint_episode_audit.py"
+      - "research/candidate-easychart/tests/test_source_footprints.py"
       - "research/candidate-easychart/EXPERIMENT_COVERAGE.json"
       - ".github/workflows/candidate-easychart-v14.yml"
   workflow_dispatch:
@@ -55,6 +58,15 @@ jobs:
           python research/candidate-easychart/screen_v14.py "${common[@]}" --output "$ROOT/v14-integrated"
           python research/candidate-easychart/trade_semantic_audit_safe.py --run-dir "$ROOT/v10-generic" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v10" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
           python research/candidate-easychart/trade_semantic_audit_safe.py --run-dir "$ROOT/v14-integrated" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v14" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+      - name: Audit OB and FVG evidence inside every W/M event
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/footprint-audit.log") 2>&1
+          python research/candidate-easychart/footprint_episode_audit.py \
+            --run-dir "$ROOT/v14-integrated" \
+            --start 2024-02-19 --end 2024-02-25 \
+            --cache "$CACHE" --output "$ROOT/footprint-audit"
       - name: Compare opportunity survival and concentration
         shell: bash
         run: |
@@ -66,6 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m json.tool "$ROOT/comparison.json" >/dev/null
+          python -m json.tool "$ROOT/footprint-audit/footprint_summary.json" >/dev/null
           for variant in v10-generic v14-integrated; do
             test -s "$ROOT/$variant/metrics.json"
             test -s "$ROOT/$variant/run.json"
@@ -74,6 +87,10 @@ jobs:
           done
           test -s "$ROOT/v14-integrated/target_router_audit.csv"
           test -s "$ROOT/v14-integrated/target_router_audit.jsonl"
+          test -s "$ROOT/footprint-audit/episode_footprint_audit.csv"
+          test -s "$ROOT/footprint-audit/relevant_footprints.csv"
+          test -s "$ROOT/footprint-audit/episode_footprint_casebook.jsonl"
+          test -s "$ROOT/footprint-audit/relevant_footprints.jsonl"
           for audit in audit-v10 audit-v14; do
             test -s "$ROOT/$audit/audit_summary.json"
             test -s "$ROOT/$audit/setup_semantic_audit.csv"
