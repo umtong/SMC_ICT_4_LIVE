@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain import Candle
-from easychart_zones import EasyChartZoneDetector
+from event_footprints_v5 import EventLocalZoneDetector
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
@@ -38,7 +38,7 @@ class StructureScenarioEngine(
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
         self.structure = CausalStructureBook(symbol, higher_minutes, tick_size)
-        self.trigger_detector = EasyChartZoneDetector(symbol, trigger_minutes, tick_size)
+        self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
         self.decision_bars: list[Candle] = []
         self.setups: list[ScenarioSetup] = []
         self._active: dict[str, ScenarioSetup] = {}
