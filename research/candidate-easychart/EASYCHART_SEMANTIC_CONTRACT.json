@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "candidate": "candidate-easychart",
   "purpose": "Provide a stable source-derived comparison standard so new ideas cannot silently become the research criterion.",
   "evidence_hierarchy": [
@@ -8,6 +8,12 @@
     "EXPLICITLY_LABELED_ADAPTATIONS_OR_EXTERNAL_HYPOTHESES",
     "EMPIRICAL_RESULTS_AFTER_SEMANTIC_AND_EXECUTION_AUDIT"
   ],
+  "confluence_policy": {
+    "source_statement": "The VTT examples explicitly use at least two overlapping grounds before entry and demonstrate combinations such as FVG, OB and trendline.",
+    "machine_interpretation": "Confluence is not a count score. Each observation must solve a distinct scenario question such as context, liquidity interaction, sponsored response, entry zone, invalidation or objective.",
+    "minimum_source_observations_for_complete_trade_hypothesis": 2,
+    "prohibited_shortcut": "A repeated observation of the same price fact cannot confirm itself under several indicator names."
+  },
   "complete_scenario": [
     {
       "role": "CONTEXT",
@@ -47,9 +53,9 @@
     },
     {
       "role": "TARGET",
-      "question": "What is the first opposing structure known before entry?",
-      "source_examples": ["impulse terminal", "nearest meaningful swing", "opposing OB/FVG", "trendline/channel boundary"],
-      "required_state": "UNCONSUMED_AND_PRE_ENTRY_KNOWN"
+      "question": "What is the first still-active opposing structure known before entry?",
+      "source_examples": ["impulse terminal", "nearest meaningful unswept swing", "opposing OB/FVG", "trendline/channel boundary"],
+      "required_state": "ACTIVE_UNCONSUMED_AND_PRE_ENTRY_KNOWN"
     },
     {
       "role": "MANAGEMENT_EXIT",
@@ -66,22 +72,32 @@
       "rule": "OB, FVG and Fake out/Trap are institutional-footprint observations; trendline and channel are market-structure observations. They are not interchangeable confirmations."
     },
     {
+      "rule_id": "DISTINCT_ROLE_CONFLUENCE",
+      "source": "HiH15zxEDnk.ko.vtt and related EasyChart VTT",
+      "rule": "The examples require at least two overlapping grounds and combine FVG, OB and trendline. The machine must record which different problem each ground solves rather than treating the number of indicators as a score."
+    },
+    {
       "rule_id": "OB_MEANINGFUL_LOCATION",
       "source": "01_오더블럭_Order_Block(2).pdf",
       "pages": [3, 4, 5],
-      "rule": "An OB is meaningful when formed at liquidity absorption or a valid structure; the previous candle body is the zone, and all formation-candle wick extremes define invalidation."
+      "rule": "An OB is meaningful when formed at liquidity absorption or a valid structure; the engulfed candle body is the zone, and all formation-candle wick extremes define invalidation."
     },
     {
       "rule_id": "OB_TWO_OR_THREE_CANDLE_FORMATION",
-      "source": "01_오더블럭_Order_Block(2).pdf",
+      "source": "01_오더블럭_Order_Block(2).pdf and HiH15zxEDnk.ko.vtt",
       "pages": [4],
-      "rule": "The source explicitly gives both two-candle and three-candle OB formations. A two-candle-only detector is incomplete."
+      "rule": "The source gives both two-candle and three-candle OB formations. In a three-candle double engulf, the middle candle body is the zone. A two-candle-only detector is incomplete."
     },
     {
       "rule_id": "OB_DOJI_EXCEPTION",
       "source": "01_오더블럭_Order_Block(2).pdf",
       "pages": [4],
       "rule": "The roughly two-times body-size heuristic does not apply mechanically when the first candle is an abnormally small doji; this ambiguity must be labeled, not silently replaced by an arbitrary threshold."
+    },
+    {
+      "rule_id": "OB_MULTI_TIMEFRAME_OVERLAP",
+      "source": "V3kCjvJy3bg.ko.vtt, cZqgERyz8wc.ko.vtt, UmEPMyzjQS8.ko.vtt and -Tp2fhvVVGM.ko.vtt",
+      "rule": "The examples use overlapping OBs across timeframes and require the closing candle before an OB becomes known. Multi-timeframe overlap is descriptive context, not permission to backdate the zone."
     },
     {
       "rule_id": "FVG_STRICT_GEOMETRY_AND_LOCATION",
@@ -129,15 +145,16 @@
       "rule_id": "CONFIRMATION_RETEST_AND_FIRST_OPPOSING_TARGET",
       "source": "05_거짓돌파_Fakeout_함정_Trap(2).pdf",
       "pages": [6, 7, 10, 11],
-      "rule": "The confirmation scenario enters after reclaim, preferably on the retest, invalidates beyond the excursion extreme, and targets the first opposing structure rather than an arbitrary far objective."
+      "rule": "The confirmation scenario enters after reclaim, preferably on the retest, invalidates beyond the excursion extreme, and targets the first active opposing structure rather than an arbitrary far objective. A previously swept micro pivot is not a current objective merely because its old price lies ahead."
     }
   ],
   "explicit_ambiguities": [
     "Numerical definition of meaningful trendline angle and pivot spacing",
-    "How to mechanize the OB doji exception without hindsight",
-    "Exact classification of every three-candle OB variant",
+    "How to mechanize the OB near-doji exception without hindsight",
+    "Exact classification of every three-candle OB variant beyond the explicit double-engulf example",
     "How multi-timeframe overlaps are prioritized when several structures coexist",
     "Whether a source example implies a mandatory condition or a quality-improving context",
+    "How the forming wave and first-retracement lifecycle of an FVG are delimited",
     "Intrabar event order when only OHLC bars are available"
   ],
   "failure_classification": [
@@ -168,6 +185,8 @@
     "Do not call a generic delayed reclaim a source-faithful Trap unless a prior W/M path was causally observed.",
     "Do not accept a profitable run when a material share of entries or exits depends on one-minute OHLC path assumptions.",
     "Do not label a strategy family failed until implementation, source interpretation, data availability and execution ambiguity have been separated.",
-    "Do not promote an experiment whose profit is dominated by one symbol, one family or a small number of extreme-R trades without explaining that concentration."
+    "Do not promote an experiment whose profit is dominated by one symbol, one family or a small number of extreme-R trades without explaining that concentration.",
+    "Do not reject a trade because an already-consumed historical micro pivot lies between entry and a far target; objective activity must be checked before selection.",
+    "Do not count multiple indicators derived from the same price event as independent confluence."
   ]
 }
