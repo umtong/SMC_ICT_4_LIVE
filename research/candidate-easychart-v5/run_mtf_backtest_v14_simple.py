@@ -1,8 +1,9 @@
 """Run the canonical simplified EasyChart contract.
 
-Signal research remains replaceable.  Execution management is intentionally
-fixed: one full entry, one full stop, one full target, three-percent account
-risk, no daily governor, no time exit, and no trade-count limit.
+Execution management is fixed: one full entry, one full stop, one full target,
+three-percent account risk, no daily governor, no time exit, and no trade-count
+limit.  The selected signal policy requires a distinct departure from a
+structure or footprint before its first later return can be called a retest.
 """
 from __future__ import annotations
 
@@ -20,7 +21,10 @@ from mtf_backtest_support_v5 import preserve_mtf_results_v5
 from mtf_data import add_symbol_mtf_data
 import mtf_strategy as _base_strategy
 from mtf_strategy_v5 import EasyChartMTFConfig, EasyChartMTFStrategy
-from scenario_micro_nearest_target_v5 import MicroNearestAnyTargetResearchScenarioBundleV5
+from scenario_close_detached_v14 import (
+    CLOSE_DETACHED_RETEST_RULE,
+    MicroCloseDetachedRetestBundleV14,
+)
 from simple_contract_v14 import (
     FIXED_RISK_FRACTION,
     MINIMUM_GROSS_RR,
@@ -60,9 +64,7 @@ def main() -> None:
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
 
-    # This is the currently selected signal family, not an execution-management
-    # option.  The contract below stays unchanged when signal families change.
-    _base_strategy.MultiScaleScenarioBundle = MicroNearestAnyTargetResearchScenarioBundleV5
+    _base_strategy.MultiScaleScenarioBundle = MicroCloseDetachedRetestBundleV14
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -121,6 +123,8 @@ def main() -> None:
                 "candidate": "candidate-easychart-v14-simple-contract",
                 "scale_policy": "micro_only",
                 "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
+                "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
+                "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
                 "fee_profile": profile.name,
                 "maker_fee_rate": float(profile.maker_rate),
                 "taker_fee_rate": float(profile.taker_rate),
@@ -138,6 +142,8 @@ def main() -> None:
                 "candidate": "candidate-easychart-v14-simple-contract",
                 "scale_policy": "micro_only",
                 "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
+                "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
+                "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
                 "fee_profile": profile.name,
                 "maker_fee_rate": float(profile.maker_rate),
                 "taker_fee_rate": float(profile.taker_rate),
