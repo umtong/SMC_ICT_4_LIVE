@@ -220,14 +220,21 @@ class StructureScenarioEngine(
         if plan is not None:
             snapshot = self.auction_context_snapshot()
             if snapshot is None:
-                raise RuntimeError("plan emitted without an observable decision context")
-            self._trace(
-                "plan_auction_context",
-                bar.ts_close_ns,
-                setup,
-                plan_id=plan.plan_id,
-                auction_context=snapshot.to_dict(),
-            )
+                # Pure geometry/unit diagnostics may construct a setup and
+                # call _make_plan directly without replaying the market feed.
+                # A real event-driven path necessarily has decision bars; in
+                # that case absence of context remains a hard invariant error.
+                if self.decision_bars:
+                    raise RuntimeError("plan emitted without an observable decision context")
+                self._inc("plan_context_unavailable_in_direct_diagnostic")
+            else:
+                self._trace(
+                    "plan_auction_context",
+                    bar.ts_close_ns,
+                    setup,
+                    plan_id=plan.plan_id,
+                    auction_context=snapshot.to_dict(),
+                )
         return plan
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
