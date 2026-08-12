@@ -1,0 +1,131 @@
+name: candidate-easychart-fix-v18-slope
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-fix-v18-slope.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Replace epsilon intersection with exact rational projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path("research/candidate-easychart/market_v18_trendline.py")
+          text = source.read_text()
+          text = text.replace(
+              "from enum import Enum\nimport math\n",
+              "from enum import Enum\nfrom fractions import Fraction\nimport math\n",
+          )
+          old = '''def feasible_slope_interval(
+              anchors: Sequence[ReactionInterval],
+          ) -> tuple[float, float] | None:
+              if len(anchors) < 2:
+                  return None
+              ordered = sorted(anchors, key=lambda item: item.pivot.event_time_ns)
+              low = -math.inf
+              high = math.inf
+              for i, first in enumerate(ordered):
+                  for second in ordered[i + 1 :]:
+                      elapsed = second.pivot.event_time_ns - first.pivot.event_time_ns
+                      if elapsed <= 0:
+                          return None
+                      pair_low = (second.low - first.high) / elapsed
+                      pair_high = (second.high - first.low) / elapsed
+                      low = max(low, pair_low)
+                      high = min(high, pair_high)
+                      if high + 1e-18 < low:
+                          return None
+              return float(low), float(high)
+          '''
+          new = '''def feasible_slope_interval(
+              anchors: Sequence[ReactionInterval],
+          ) -> tuple[float, float] | None:
+              """Return the exact feasible slope projection of all interval anchors.
+
+              Prices arrive as binary floats. Converting each endpoint through
+              ``as_integer_ratio`` preserves that observed value exactly, while integer
+              nanosecond deltas make every pair constraint rational. Intersecting those
+              rational intervals avoids an absolute epsilon which can otherwise return a
+              numerically reversed interval at crypto price/time scales.
+              """
+              if len(anchors) < 2:
+                  return None
+              ordered = sorted(anchors, key=lambda item: item.pivot.event_time_ns)
+              low: Fraction | None = None
+              high: Fraction | None = None
+              for i, first in enumerate(ordered):
+                  first_low = Fraction(*float(first.low).as_integer_ratio())
+                  first_high = Fraction(*float(first.high).as_integer_ratio())
+                  for second in ordered[i + 1 :]:
+                      elapsed = second.pivot.event_time_ns - first.pivot.event_time_ns
+                      if elapsed <= 0:
+                          return None
+                      second_low = Fraction(*float(second.low).as_integer_ratio())
+                      second_high = Fraction(*float(second.high).as_integer_ratio())
+                      pair_low = (second_low - first_high) / elapsed
+                      pair_high = (second_high - first_low) / elapsed
+                      low = pair_low if low is None else max(low, pair_low)
+                      high = pair_high if high is None else min(high, pair_high)
+                      if high < low:
+                          return None
+              assert low is not None and high is not None
+              output = float(low), float(high)
+              if output[1] < output[0]:
+                  raise AssertionError("exact ordered slope interval became reversed as floats")
+              return output
+          '''
+          old = "\n".join(line[10:] if line.startswith("          ") else line for line in old.splitlines()) + "\n"
+          new = "\n".join(line[10:] if line.startswith("          ") else line for line in new.splitlines()) + "\n"
+          if old not in text:
+              raise SystemExit("feasible_slope_interval block not found")
+          source.write_text(text.replace(old, new))
+
+          tests = Path("research/candidate-easychart/tests/test_market_v18_trendline.py")
+          text = tests.read_text()
+          needle = '''    def test_ambiguous_flat_or_sloped_family_is_not_directional(self) -> None:
+          '''
+          addition = '''    def test_exact_intersection_never_returns_epsilon_reversed_interval(self) -> None:
+              anchors = (
+                  interval(0, 1, "HIGH", -5e-18, 2e-18),
+                  interval(1, 2, "HIGH", -5e-18, -1e-18),
+                  interval(2, 3, "HIGH", 4e-18, 4e-18),
+              )
+              # The former absolute-epsilon intersection returned (5e-18, 4e-18),
+              # which later crashed FeasibleTrendlineVersion. These exact binary
+              # endpoint constraints have an empty intersection and must return None.
+              self.assertIsNone(feasible_slope_interval(anchors))
+
+          '''
+          needle = "\n".join(line[10:] if line.startswith("          ") else line for line in needle.splitlines()) + "\n"
+          addition = "\n".join(line[10:] if line.startswith("          ") else line for line in addition.splitlines()) + "\n"
+          if needle not in text:
+              raise SystemExit("test insertion point not found")
+          tests.write_text(text.replace(needle, addition + needle))
+          PY
+          PYTHONPATH=research/candidate-easychart \
+            python -m unittest \
+              research/candidate-easychart/tests/test_market_v18_trendline.py \
+              research/candidate-easychart/tests/test_market_v19_trendline.py -v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-easychart/market_v18_trendline.py \
+            research/candidate-easychart/tests/test_market_v18_trendline.py
+          git diff --cached --check
+          git commit -m "candidate-easychart: make trendline feasible set numerically exact"
+          git push origin HEAD:research/candidate-easychart
