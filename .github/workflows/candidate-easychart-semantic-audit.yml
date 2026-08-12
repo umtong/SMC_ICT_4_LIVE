@@ -1,0 +1,86 @@
+name: candidate-easychart-trade-semantic-audit
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/trade_semantic_audit.py"
+      - "research/candidate-easychart/tests/test_trade_semantic_audit.py"
+      - "research/candidate-easychart/EASYCHART_SEMANTIC_CONTRACT.json"
+      - "research/candidate-easychart/EXPERIMENT_COVERAGE.json"
+      - "research/candidate-easychart/market_v11.py"
+      - ".github/workflows/candidate-easychart-semantic-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-trade-semantic-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  audit-development-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-semantic-audit
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify causal and semantic contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+          python -m json.tool research/candidate-easychart/EASYCHART_SEMANTIC_CONTRACT.json >/dev/null
+          python -m json.tool research/candidate-easychart/EXPERIMENT_COVERAGE.json >/dev/null
+      - name: Reproduce the concentrated v10 week
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          leader="PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16,LONDON_NY"
+          python research/candidate-easychart/screen_v10.py \
+            --start 2024-02-19 --end 2024-02-25 --warmup-days 5 \
+            --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0 \
+            --cost-profile role --disable-fakeout --families "$leader" \
+            --cross-state isolated --output "$ROOT/run"
+      - name: Audit every setup and completed trade under both OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/audit.log") 2>&1
+          python research/candidate-easychart/trade_semantic_audit.py \
+            --run-dir "$ROOT/run" --start 2024-02-19 --end 2024-02-25 \
+            --cache "$CACHE" --output "$ROOT/audit" \
+            --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+      - name: Verify audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$ROOT/run/metrics.json"
+          test -s "$ROOT/run/setups.csv"
+          test -s "$ROOT/run/trades.csv"
+          test -s "$ROOT/audit/audit_summary.json"
+          test -s "$ROOT/audit/setup_semantic_audit.csv"
+          test -s "$ROOT/audit/trade_path_audit.csv"
+          test -s "$ROOT/audit/trade_casebook.jsonl"
+          python -m json.tool "$ROOT/audit/audit_summary.json" >/dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-semantic-audit-${{ github.sha }}
+          path: artifacts/candidate-easychart-semantic-audit/**
+          if-no-files-found: warn
+          retention-days: 90
