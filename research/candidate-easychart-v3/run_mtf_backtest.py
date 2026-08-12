@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from backtest_support import make_engine
-from funding_data import add_symbol_funding_data
+from funded_engine import make_funded_engine
+from funding_data import build_symbol_funding_boundaries
+from funding_module import HistoricalPerpetualFundingModule
 from instruments import CONTRACTS, make_instrument
 from mtf_backtest_support_structure_v3 import preserve_structure_results
 from mtf_data import add_symbol_mtf_data
@@ -48,25 +49,30 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     args.cache.mkdir(parents=True, exist_ok=True)
 
-    engine = make_engine()
     instruments = [make_instrument(symbol) for symbol in symbols]
-    source_types = []
-    trigger_types = []
-    decision_types = []
-    higher_types = []
-    funding_summaries: dict[str, dict[str, object]] = {}
     load_start = args.start - timedelta(days=args.warmup_days)
+    funding_summaries: dict[str, dict[str, object]] = {}
+    all_boundaries = []
     for symbol, instrument in zip(symbols, instruments, strict=True):
-        engine.add_instrument(instrument)
-        source_type, trigger_type, decision_type, higher_type = add_symbol_mtf_data(
-            engine,
+        boundaries, summary = build_symbol_funding_boundaries(
             symbol,
             instrument,
             load_start,
             args.end,
             args.cache,
         )
-        funding_summaries[symbol] = add_symbol_funding_data(
+        all_boundaries.extend(boundaries)
+        funding_summaries[symbol] = summary
+
+    funding_module = HistoricalPerpetualFundingModule(all_boundaries)
+    engine = make_funded_engine(funding_module)
+    source_types = []
+    trigger_types = []
+    decision_types = []
+    higher_types = []
+    for symbol, instrument in zip(symbols, instruments, strict=True):
+        engine.add_instrument(instrument)
+        source_type, trigger_type, decision_type, higher_type = add_symbol_mtf_data(
             engine,
             symbol,
             instrument,
@@ -104,6 +110,7 @@ def main() -> None:
             start=args.start,
             end=args.end,
             funding_summaries=funding_summaries,
+            funding_module=funding_module,
         )
         print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
     finally:
