@@ -5,11 +5,10 @@ funded engines are intentionally executed in separate Python processes by the
 workflow. This module emits one isolated account result per invocation and
 records the data/cache/position state visible when the funding update arrives.
 
-The pinned engine schedules a funding boundary on its clock after processing the
-funding update. A boundary equal to that update timestamp can be missed because
-the clock has already advanced to it. The test therefore settles one nanosecond
-after the rate becomes observable. This preserves causality and makes the cash
-flow effectively contemporaneous without exposing the rate early.
+The Binance archive publishes the realized rate at the settlement timestamp.
+The pinned engine settles immediately when ``next_funding_ns`` is equal to the
+current event time. This adapter translation therefore exposes no rate early and
+avoids relying on a later timer for an already-completed historical boundary.
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ from instruments import make_instrument
 
 
 FUNDING_TS_NS = 1_704_096_000_000_000_000  # 2024-01-01 08:00:00 UTC
-SETTLEMENT_TS_NS = FUNDING_TS_NS + 1
+SETTLEMENT_TS_NS = FUNDING_TS_NS
 MARK_TS_NS = FUNDING_TS_NS - 1_000_000
 RATE = Decimal("0.001")
 PRICE = Decimal("100.0")
