@@ -6,6 +6,7 @@ from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from contracts_v5 import (
     Channel,
     ObjectKind,
+    Pivot,
     ScenarioPath,
     ScenarioSetup,
     SetupState,
@@ -20,6 +21,31 @@ NS = 60_000_000_000
 
 def candle(index: int, open_: float, high: float, low: float, close: float) -> Candle:
     return Candle(index * NS, open_, high, low, close, 1.0)
+
+
+def pivot(
+    pivot_id: str,
+    side: str,
+    price: float,
+    *,
+    span: int,
+    event_index: int,
+    observed_index: int,
+    consumed_time_ns: int | None = None,
+) -> Pivot:
+    return Pivot(
+        pivot_id=pivot_id,
+        side=side,
+        price=price,
+        index=event_index,
+        event_time_ns=event_index * NS,
+        observed_index=observed_index,
+        observed_time_ns=observed_index * NS,
+        span=span,
+        strength_ratio=2.0,
+        consumed=consumed_time_ns is not None,
+        consumed_time_ns=consumed_time_ns,
+    )
 
 
 def make_engine() -> StructureScenarioEngine:
@@ -157,6 +183,107 @@ class CausalDiagonalLifecycleTests(unittest.TestCase):
             engine.diagnostics.get("acceptance_stop_extended_beyond_entry_bar"),
             1,
         )
+
+    def test_nearest_smaller_span_resistance_caps_larger_scale_long(self) -> None:
+        book = LifecycleAwareStructureBook("TEST", 60, 0.1)
+        near = pivot(
+            "NEAR_HIGH_S2",
+            "HIGH",
+            105.0,
+            span=2,
+            event_index=2,
+            observed_index=4,
+        )
+        far = pivot(
+            "FAR_HIGH_S6",
+            "HIGH",
+            120.0,
+            span=6,
+            event_index=1,
+            observed_index=7,
+        )
+        book.pivots.extend([far, near])
+        target = book.target_for(
+            Side.LONG,
+            interaction_time_ns=10 * NS,
+            source_span=6,
+            current_high=101.0,
+            current_low=99.0,
+        )
+        self.assertIsNotNone(target)
+        assert target is not None
+        zone, price = target
+        self.assertEqual(price, 105.0)
+        self.assertEqual(zone.source_structure_id, near.pivot_id)
+        self.assertEqual(
+            book.diagnostics.get("nearest_target_uses_smaller_confirmed_span"),
+            1,
+        )
+
+    def test_consumed_near_target_cannot_hide_live_far_target(self) -> None:
+        book = LifecycleAwareStructureBook("TEST", 60, 0.1)
+        consumed_near = pivot(
+            "CONSUMED_HIGH_S2",
+            "HIGH",
+            105.0,
+            span=2,
+            event_index=2,
+            observed_index=4,
+            consumed_time_ns=8 * NS,
+        )
+        live_far = pivot(
+            "LIVE_HIGH_S6",
+            "HIGH",
+            120.0,
+            span=6,
+            event_index=1,
+            observed_index=7,
+        )
+        book.pivots.extend([consumed_near, live_far])
+        target = book.target_for(
+            Side.LONG,
+            interaction_time_ns=10 * NS,
+            source_span=6,
+            current_high=101.0,
+            current_low=99.0,
+        )
+        self.assertIsNotNone(target)
+        assert target is not None
+        zone, price = target
+        self.assertEqual(price, 120.0)
+        self.assertEqual(zone.source_structure_id, live_far.pivot_id)
+
+    def test_nearest_support_is_symmetric_for_short(self) -> None:
+        book = LifecycleAwareStructureBook("TEST", 60, 0.1)
+        near = pivot(
+            "NEAR_LOW_S2",
+            "LOW",
+            95.0,
+            span=2,
+            event_index=2,
+            observed_index=4,
+        )
+        far = pivot(
+            "FAR_LOW_S6",
+            "LOW",
+            80.0,
+            span=6,
+            event_index=1,
+            observed_index=7,
+        )
+        book.pivots.extend([far, near])
+        target = book.target_for(
+            Side.SHORT,
+            interaction_time_ns=10 * NS,
+            source_span=6,
+            current_high=101.0,
+            current_low=99.0,
+        )
+        self.assertIsNotNone(target)
+        assert target is not None
+        zone, price = target
+        self.assertEqual(price, 95.0)
+        self.assertEqual(zone.source_structure_id, near.pivot_id)
 
 
 if __name__ == "__main__":
