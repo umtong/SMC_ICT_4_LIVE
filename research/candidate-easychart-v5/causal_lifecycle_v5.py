@@ -1,12 +1,12 @@
-"""Causal lifecycle translations for EasyChart v5 structures.
+"""Causal lifecycle and human-to-program translations for EasyChart v5.
 
 The source repeatedly uses trend lines and channels as structures which may
 survive a successful touch, but cease to support the original interpretation
-when price closes through the projected boundary.  A charting human updates
-that state naturally.  Software must do it explicitly or a broken diagonal can
-remain a fresh candidate for days.
+when price closes through the projected boundary. It also distinguishes a fast
+fakeout from an ordinary close-back-inside by the conspicuous rejection tail.
+A charting human updates those states naturally; software must state them.
 
-This module changes semantic state only.  NautilusTrader remains responsible
+This module changes semantic state only. NautilusTrader remains responsible
 for orders, fills, positions, fees and NAV.
 """
 from __future__ import annotations
@@ -28,8 +28,16 @@ ACCEPTANCE_STOP_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "ACCEPTANCE_HARD_STOP_MUST_BE_BEYOND_THE_COMPLETED_RETEST_EXTREME"
 )
+FAST_FAKEOUT_WICK_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:"
+    "FAST_FAKEOUT_EXCURSION_WICK_EXCEEDS_REAL_BODY"
+)
 
-for _rule in (DIAGONAL_INVALIDATION_RULE, ACCEPTANCE_STOP_RULE):
+for _rule in (
+    DIAGONAL_INVALIDATION_RULE,
+    ACCEPTANCE_STOP_RULE,
+    FAST_FAKEOUT_WICK_RULE,
+):
     if _rule not in _contracts.TRANSLATION_RULES:
         _contracts.TRANSLATION_RULES += (_rule,)
 
@@ -38,8 +46,8 @@ class LifecycleAwareStructureBook(CausalStructureBook):
     """Remove broken projected boundaries without expiring valid bounces.
 
     The prior diagnostic translation retired a line or channel edge on any
-    touch.  That was too strong: the material explicitly depicts structures
-    surviving bounces.  The executable lifecycle is now narrower:
+    touch. That was too strong: the material explicitly depicts structures
+    surviving bounces. The executable lifecycle is now narrower:
 
     * a support diagonal retires only after a completed bar closes below it;
     * a resistance diagonal retires only after a completed bar closes above it;
@@ -112,9 +120,9 @@ class LifecycleAwareStructureBook(CausalStructureBook):
         """Apply body-close invalidation after the current interaction is read.
 
         The scenario engine invokes this after classifying the completed
-        decision bar.  An accepted break can therefore arm one retest episode,
+        decision bar. An accepted break can therefore arm one retest episode,
         but the broken diagonal is removed from the future fresh-opportunity
-        set.  A wick excursion which closes back on the valid side remains a
+        set. A wick excursion which closes back on the valid side remains a
         rejection/fakeout rather than a structural deletion.
         """
         for line in CausalStructureBook.active_trend_lines(self, bar.ts_close_ns):
