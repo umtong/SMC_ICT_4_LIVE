@@ -1,0 +1,46 @@
+name: candidate-easychart-apply-v17-source
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-apply-v17-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Reconstruct, verify and apply v17 source-only bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=/tmp/easychart-v17-source.tar.gz
+          cat research/candidate-easychart/.v17_source_payload_* | base64 --decode > "$payload"
+          echo "66127f228b23a7f0b7683cf270afc431deabdfc41a909dee3639e93056b22065  $payload" | sha256sum -c -
+          tar -xzf "$payload" -C .
+          rm -f research/candidate-easychart/.v17_source_payload_*
+          python -m compileall -q \
+            research/candidate-easychart/market_v17_structure.py \
+            research/candidate-easychart/screen_v17_structure.py \
+            research/candidate-easychart/tests/test_market_v17_structure.py
+          PYTHONPATH=research/candidate-easychart \
+            python -m unittest \
+              research/candidate-easychart/tests/test_market_v17_structure.py -v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-easychart/market_v17_structure.py \
+            research/candidate-easychart/screen_v17_structure.py \
+            research/candidate-easychart/tests/test_market_v17_structure.py \
+            research/candidate-easychart/.v17_source_payload_*
+          git diff --cached --check
+          git commit -m "candidate-easychart: add common-core structure lifecycle"
+          git push origin HEAD:research/candidate-easychart
