@@ -1,15 +1,15 @@
-"""Use higher-timeframe structure to decide whether a micro break is acceptance.
+"""Use higher-timeframe structure to decide the role of a micro acceptance.
 
 EasyChart uses the larger structure for direction and the smaller structure for
-entry.  A 5m acceptance/retest against a firmly opposite 60m structure is more
-naturally a pullback inside that larger auction than a completed trend change.
-When the 60m structure is already aligned, or its high/low sequence is in
-transition, the micro acceptance can resolve into continuation.  Rejection,
-rotation and bounce paths are left untouched because they solve a different
-problem: a failed break can itself be the reversal event.
+entry.  A confirmed 5m break/retest against an intact opposite 60m auction is
+usually a pullback, while a completed 60m close through the latest confirmed
+swing is already a directional transition even though a lagging HH/HL or LH/LL
+label has not yet changed.
 
-Only confirmed, completed 60m wick pivots are used.  No return threshold,
-moving average, score, risk multiplier, time exit or post-entry rule is added.
+Rejection, rotation and bounce paths are left untouched because a failed break
+can itself be the reversal event.  Only completed 60m bars and confirmed wick
+pivots are used.  No return threshold, moving average, score, risk multiplier,
+time exit or post-entry rule is added.
 """
 from __future__ import annotations
 
@@ -25,17 +25,20 @@ from scenario_close_detached_v14 import MicroCloseDetachedRetestBundleV14
 HIGHER_TIMEFRAME_ACCEPTANCE_RULE = (
     "SOURCE_EXPLICIT:LARGER_TIMEFRAME_STRUCTURE_GIVES_DIRECTION_AND_SMALLER_"
     "TIMEFRAME_SUPPLIES_ENTRY;ACCEPTANCE_RETEST_REQUIRES_ALIGNED_OR_"
-    "TRANSITIONING_60M_STRUCTURE"
+    "DIRECTIONALLY_TRANSITIONING_60M_STRUCTURE"
 )
 HIGHER_TIMEFRAME_STATE_TRANSLATION = (
-    "RESEARCH_HYPOTHESIS:CONFIRMED_60M_SPAN2_WICK_PIVOT_SEQUENCE_"
-    "REPRESENTS_CURRENT_HIGHER_TIMEFRAME_DIRECTION"
+    "RESEARCH_HYPOTHESIS:CONFIRMED_60M_WICK_PIVOT_SEQUENCE_DEFINES_THE_"
+    "INTACT_AUCTION_AND_A_COMPLETED_CLOSE_THROUGH_ITS_LATEST_SWING_DEFINES_"
+    "DIRECTIONAL_TRANSITION"
 )
 
 
 class DirectionState(str, Enum):
     UP = "UP"
     DOWN = "DOWN"
+    TRANSITION_UP = "TRANSITION_UP"
+    TRANSITION_DOWN = "TRANSITION_DOWN"
     TRANSITION = "TRANSITION"
     UNRESOLVED = "UNRESOLVED"
 
@@ -49,7 +52,7 @@ class DirectionPivot:
 
 
 class CausalHigherTimeframeDirection:
-    """Online HH/HL or LH/LL state from completed 60m bars."""
+    """Online 60m structure plus current completed-close structural break."""
 
     PIVOT_SPAN = 2
 
@@ -92,9 +95,11 @@ class CausalHigherTimeframeDirection:
             ),
         )
 
-    def state(self) -> DirectionState:
-        highs = [pivot for pivot in self.pivots if pivot.side == "HIGH"]
-        lows = [pivot for pivot in self.pivots if pivot.side == "LOW"]
+    def _base_state(
+        self,
+        highs: list[DirectionPivot],
+        lows: list[DirectionPivot],
+    ) -> DirectionState:
         if len(highs) < 2 or len(lows) < 2:
             return DirectionState.UNRESOLVED
         previous_high, last_high = highs[-2:]
@@ -105,9 +110,36 @@ class CausalHigherTimeframeDirection:
             return DirectionState.DOWN
         return DirectionState.TRANSITION
 
+    def state(self) -> DirectionState:
+        if not self.bars:
+            return DirectionState.UNRESOLVED
+        highs = [pivot for pivot in self.pivots if pivot.side == "HIGH"]
+        lows = [pivot for pivot in self.pivots if pivot.side == "LOW"]
+        base = self._base_state(highs, lows)
+        close = self.bars[-1].close
+
+        # A completed close through the latest confirmed swing means that the
+        # old directional label is no longer intact.  Give this current event
+        # precedence over the necessarily lagging two-pivot sequence.
+        if lows and close < lows[-1].price and base is not DirectionState.DOWN:
+            return DirectionState.TRANSITION_DOWN
+        if highs and close > highs[-1].price and base is not DirectionState.UP:
+            return DirectionState.TRANSITION_UP
+        return base
+
     @property
     def observed_time_ns(self) -> int | None:
         return None if not self.bars else self.bars[-1].ts_close_ns
+
+    @property
+    def latest_high(self) -> float | None:
+        highs = [pivot.price for pivot in self.pivots if pivot.side == "HIGH"]
+        return None if not highs else highs[-1]
+
+    @property
+    def latest_low(self) -> float | None:
+        lows = [pivot.price for pivot in self.pivots if pivot.side == "LOW"]
+        return None if not lows else lows[-1]
 
 
 class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
@@ -123,9 +155,9 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
             return True
         if state is DirectionState.TRANSITION:
             return True
-        if state is DirectionState.UP:
+        if state in {DirectionState.UP, DirectionState.TRANSITION_UP}:
             return plan.side is Side.LONG
-        if state is DirectionState.DOWN:
+        if state in {DirectionState.DOWN, DirectionState.TRANSITION_DOWN}:
             return plan.side is Side.SHORT
         return False
 
@@ -138,6 +170,17 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
 
         state = self.higher_direction.state()
         context_time = self.higher_direction.observed_time_ns
+        context_values = {
+            "higher_timeframe_state": state.value,
+            "higher_timeframe_observed_ns": context_time,
+            "higher_timeframe_close": (
+                None if not self.higher_direction.bars else self.higher_direction.bars[-1].close
+            ),
+            "higher_timeframe_latest_high": self.higher_direction.latest_high,
+            "higher_timeframe_latest_low": self.higher_direction.latest_low,
+            "rule_provenance": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
+            "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+        }
         output: list[V5TradePlan] = []
         for plan in plans:
             if context_time is not None and context_time > plan.observed_time_ns:
@@ -151,10 +194,7 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
                         "plan_id": plan.plan_id,
                         "scenario_path": plan.scenario_path,
                         "side": plan.side.name,
-                        "higher_timeframe_state": state.value,
-                        "higher_timeframe_observed_ns": context_time,
-                        "rule_provenance": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
-                        "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+                        **context_values,
                     },
                 )
             else:
@@ -165,10 +205,7 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
                         "plan_id": plan.plan_id,
                         "scenario_path": plan.scenario_path,
                         "side": plan.side.name,
-                        "higher_timeframe_state": state.value,
-                        "higher_timeframe_observed_ns": context_time,
-                        "rule_provenance": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
-                        "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+                        **context_values,
                     },
                 )
         return output
@@ -180,6 +217,8 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
             "timeframe_minutes": 60,
             "pivot_span": self.higher_direction.PIVOT_SPAN,
             "state": self.higher_direction.state().value,
+            "latest_high": self.higher_direction.latest_high,
+            "latest_low": self.higher_direction.latest_low,
             "acceptance_rule": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
             "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
         }
