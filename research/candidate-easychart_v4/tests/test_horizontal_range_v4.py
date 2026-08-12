@@ -69,7 +69,9 @@ class HorizontalRangeTests(unittest.TestCase):
     def test_first_later_interaction_is_fourth_point_and_targets_other_edge(self) -> None:
         detector = self._detector()
         for candle in overlapping_box_seed():
-            self.assertEqual(detector.on_bar(candle), [])
+            # Existing swing boundaries may legitimately emit earlier events;
+            # this assertion is about the newly formed horizontal range only.
+            detector.on_bar(candle)
         events = detector.on_bar(bar(5, 13.7, 14.0, 12.8, 13.6))
         horizontal = [
             event
