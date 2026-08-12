@@ -161,6 +161,19 @@ class StructureScenarioEngine(
             )
         return executable_stop
 
+    def _advance_acceptance_retests(self, bar: Candle, index: int) -> list[V5TradePlan]:
+        """Keep direct diagnostic calls causally bound to their supplied bar."""
+        previous = self._current_trigger_bar
+        if previous is None:
+            self._current_trigger_bar = bar
+        elif previous.ts_close_ns != bar.ts_close_ns:
+            raise RuntimeError("acceptance retest bar differs from active trigger bar")
+        try:
+            return super()._advance_acceptance_retests(bar, index)
+        finally:
+            if previous is None:
+                self._current_trigger_bar = None
+
     def _make_plan(
         self,
         setup: ScenarioSetup,
