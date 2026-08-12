@@ -17,7 +17,7 @@ from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, Venue
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.orders.list import OrderList
 
-from model import Side, TradePlan
+from model import Side
 
 
 class EasyChartOrderMixin:
@@ -30,9 +30,20 @@ class EasyChartOrderMixin:
             raise RuntimeError("USDT balance unavailable")
         return Decimal(str(money.as_double()))
 
-    def _execution_reserves(self, instrument: Any) -> tuple[Decimal, Decimal]:
+    @staticmethod
+    def _entry_order_kind(plan: Any) -> str:
+        kind = str(getattr(plan, "entry_order_kind", "MARKET")).upper()
+        if kind not in {"MARKET", "LIMIT"}:
+            raise ValueError(f"unsupported entry_order_kind: {kind}")
+        return kind
+
+    def _execution_reserves(self, instrument: Any, plan: Any) -> tuple[Decimal, Decimal]:
         tick = Decimal(str(instrument.price_increment))
-        entry = tick * Decimal(self.config.estimated_entry_slippage_ticks)
+        # A resting limit cannot fill at a worse price than its limit. We still
+        # reserve the configured entry fee, while market entries keep the
+        # calibrated adverse-slippage reserve.
+        entry_ticks = 0 if self._entry_order_kind(plan) == "LIMIT" else self.config.estimated_entry_slippage_ticks
+        entry = tick * Decimal(entry_ticks)
         stop = tick * Decimal(self.config.estimated_stop_slippage_ticks)
         return entry, stop
 
@@ -42,7 +53,7 @@ class EasyChartOrderMixin:
         stop = Decimal(str(plan.stop))
         target = Decimal(str(plan.target))
         direction = Decimal(int(plan.side.value))
-        entry_slippage, stop_slippage = self._execution_reserves(instrument)
+        entry_slippage, stop_slippage = self._execution_reserves(instrument, plan)
         expected_entry = entry + direction * entry_slippage
         expected_stop = stop - direction * stop_slippage
         entry_fee_rate = Decimal(str(self.config.estimated_entry_fee_rate))
@@ -101,6 +112,7 @@ class EasyChartOrderMixin:
     def _submit_plan(self, instrument_id: InstrumentId, plan: Any) -> bool:
         instrument = self.instruments[instrument_id]
         nav = self._current_nav()
+        entry_kind = self._entry_order_kind(plan)
         geometry = self._estimated_geometry(instrument, plan)
         if geometry["gross_reward_per_unit"] <= 0 or geometry["net_reward_per_unit"] <= 0:
             self._record(
@@ -108,6 +120,7 @@ class EasyChartOrderMixin:
                 plan_id=plan.plan_id,
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
+                entry_order_kind=entry_kind,
                 gross_reward_per_unit=float(geometry["gross_reward_per_unit"]),
                 estimated_net_reward_per_unit=float(geometry["net_reward_per_unit"]),
                 estimated_cost_after_rr=float(geometry["cost_after_rr"]),
@@ -120,6 +133,7 @@ class EasyChartOrderMixin:
                 plan_id=plan.plan_id,
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
+                entry_order_kind=entry_kind,
                 estimated_entry_slippage=float(geometry["entry_slippage"]),
                 estimated_stop_slippage=float(geometry["stop_slippage"]),
                 estimated_cost_after_rr=float(geometry["cost_after_rr"]),
@@ -133,14 +147,12 @@ class EasyChartOrderMixin:
             time_in_force=TimeInForce.GTC,
             sl_trigger_price=instrument.make_price(plan.stop),
             tp_price=instrument.make_price(plan.target),
-            # The scenario is confirmed on a closed 5m bar, so the next executable
-            # action is one market entry. NautilusTrader owns the native bracket,
-            # fills, stop, target, fees, position and account state.
-            entry_order_type=OrderType.MARKET,
+            entry_order_type=OrderType.LIMIT if entry_kind == "LIMIT" else OrderType.MARKET,
+            entry_price=instrument.make_price(plan.entry) if entry_kind == "LIMIT" else None,
             entry_post_only=False,
             tp_post_only=False,
             emulation_trigger=TriggerType.NO_TRIGGER,
-            entry_tags=[plan_tag, "ROLE:ENTRY"],
+            entry_tags=[plan_tag, "ROLE:ENTRY", f"ENTRY_KIND:{entry_kind}"],
             sl_tags=[plan_tag, "ROLE:STOP_LOSS"],
             tp_tags=[plan_tag, "ROLE:TAKE_PROFIT"],
         )
@@ -156,6 +168,8 @@ class EasyChartOrderMixin:
             instrument_id=str(instrument_id),
             quantity=str(quantity),
             entry_client_order_id=str(self.active_entry_id),
+            entry_order_kind=entry_kind,
+            planned_entry=float(plan.entry),
             nav_at_submission=float(nav),
             risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
             estimated_entry_price=float(geometry["expected_entry"]),
@@ -244,6 +258,8 @@ class EasyChartOrderMixin:
         self.emergency_exit_requested = False
 
     def on_stop(self) -> None:
+        # Concrete strategies own bar subscriptions; this fallback remains only
+        # for the original two-bar strategy shape.
         for instrument_id, signal_type, execution_type in zip(
             self.config.instrument_ids,
             self.config.signal_bar_types,
