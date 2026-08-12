@@ -1,0 +1,173 @@
+name: candidate-60 source DRPT introspection v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/candidate-60
+    paths:
+      - .github/workflows/candidate-60-source-drpt-introspection-v1.yml
+      - research/candidate-60/strategy_drpt_absorption_gate_v1.py.gz.b64.part*
+
+permissions:
+  contents: write
+
+jobs:
+  introspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-60
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Decode and verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_DIR=research/candidate-60
+          OUT_DIR="$SRC_DIR/evidence/source-drpt-absorption-gate-v1-introspection"
+          mkdir -p "$OUT_DIR"
+          cat "$SRC_DIR"/strategy_drpt_absorption_gate_v1.py.gz.b64.part* | tr -d '\r\n ' > /tmp/drpt.b64
+          base64 -d /tmp/drpt.b64 > /tmp/drpt.py.gz
+          printf '%s  %s\n' 'd577d901da024de91960a9ac94cc3e0db8575363599238c2552fbb10b8bf5f73' /tmp/drpt.py.gz | sha256sum -c -
+          gzip -dc /tmp/drpt.py.gz > "$OUT_DIR/source.py"
+          printf '%s  %s\n' 'f2ce94c252255d17da5047a1e16876f54fc64ff6a52ebde47120db283ae72c6e' "$OUT_DIR/source.py" | sha256sum -c -
+          python -m py_compile "$OUT_DIR/source.py"
+          sha256sum /tmp/drpt.py.gz "$OUT_DIR/source.py" > "$OUT_DIR/sha256.txt"
+
+      - name: Produce source outline and contract inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          import hashlib
+          import json
+          from pathlib import Path
+
+          out = Path('research/candidate-60/evidence/source-drpt-absorption-gate-v1-introspection')
+          src_path = out / 'source.py'
+          raw = src_path.read_bytes()
+          text = raw.decode('utf-8')
+          tree = ast.parse(text)
+
+          imports = []
+          definitions = []
+          string_constants = []
+          assigned_constants = {}
+          argparse_calls = []
+
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  imports.extend(alias.name for alias in node.names)
+              elif isinstance(node, ast.ImportFrom):
+                  imports.append((node.module or '') + ':' + ','.join(alias.name for alias in node.names))
+              elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                  definitions.append({
+                      'kind': type(node).__name__,
+                      'name': node.name,
+                      'lineno': node.lineno,
+                      'end_lineno': getattr(node, 'end_lineno', None),
+                      'docstring': ast.get_docstring(node),
+                  })
+              elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                  value = node.value
+                  if 2 <= len(value) <= 500:
+                      string_constants.append(value)
+              elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                  targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                  value_node = node.value
+                  try:
+                      value = ast.literal_eval(value_node)
+                  except Exception:
+                      continue
+                  for target in targets:
+                      if isinstance(target, ast.Name) and target.id.isupper():
+                          assigned_constants[target.id] = value
+              elif isinstance(node, ast.Call):
+                  func = node.func
+                  name = None
+                  if isinstance(func, ast.Attribute):
+                      name = func.attr
+                  elif isinstance(func, ast.Name):
+                      name = func.id
+                  if name in {'add_argument', 'ArgumentParser'}:
+                      args = []
+                      for a in node.args:
+                          try:
+                              args.append(ast.literal_eval(a))
+                          except Exception:
+                              args.append(ast.unparse(a))
+                      kwargs = {}
+                      for kw in node.keywords:
+                          try:
+                              kwargs[kw.arg or '**'] = ast.literal_eval(kw.value)
+                          except Exception:
+                              kwargs[kw.arg or '**'] = ast.unparse(kw.value)
+                      argparse_calls.append({'line': node.lineno, 'name': name, 'args': args, 'kwargs': kwargs})
+
+          keywords = [
+              'DRPT', 'dump', 'reversal', 'reclaim', 'absorption', 'state', 'entry', 'stop',
+              'target', 'trail', 'peak', 'risk', 'fee', 'slippage', 'symbol', 'window',
+              'development', 'fresh', 'Nautilus', 'source', 'output', 'evidence', 'date'
+          ]
+          keyword_lines = {}
+          lines = text.splitlines()
+          for keyword in keywords:
+              hits = []
+              for i, line in enumerate(lines, 1):
+                  if keyword.lower() in line.lower():
+                      hits.append({'line': i, 'text': line[:500]})
+              keyword_lines[keyword] = hits[:200]
+
+          inventory = {
+              'source_sha256': hashlib.sha256(raw).hexdigest(),
+              'line_count': len(lines),
+              'byte_count': len(raw),
+              'module_docstring': ast.get_docstring(tree),
+              'imports': sorted(set(imports)),
+              'definitions': sorted(definitions, key=lambda x: x['lineno']),
+              'assigned_constants': assigned_constants,
+              'argparse_calls': argparse_calls,
+              'keyword_lines': keyword_lines,
+              'main_guard_present': "if __name__ == '__main__'" in text or 'if __name__ == "__main__"' in text,
+          }
+          (out / 'inventory.json').write_text(json.dumps(inventory, indent=2, sort_keys=True, default=str), encoding='utf-8')
+
+          outline = []
+          outline.append(f"source_sha256={inventory['source_sha256']}")
+          outline.append(f"line_count={inventory['line_count']}")
+          outline.append(f"byte_count={inventory['byte_count']}")
+          outline.append('')
+          outline.append('DEFINITIONS')
+          for d in inventory['definitions']:
+              outline.append(f"{d['lineno']}-{d['end_lineno']} {d['kind']} {d['name']}")
+          outline.append('')
+          outline.append('ARGPARSE')
+          for a in argparse_calls:
+              outline.append(json.dumps(a, sort_keys=True, default=str))
+          outline.append('')
+          outline.append('UPPERCASE CONSTANTS')
+          for k, v in sorted(assigned_constants.items()):
+              outline.append(f"{k}={v!r}")
+          (out / 'outline.txt').write_text('\n'.join(outline) + '\n', encoding='utf-8')
+          PY
+
+      - name: Commit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name candidate-60-research-bot
+          git config user.email candidate-60-research-bot@users.noreply.github.com
+          git add research/candidate-60/evidence/source-drpt-absorption-gate-v1-introspection
+          if git diff --cached --quiet; then
+            echo 'No evidence changes'
+            exit 0
+          fi
+          git commit -m 'candidate60: materialize and introspect source DRPT adapter'
+          git push origin HEAD:research/candidate-60
