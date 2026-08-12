@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 import json
@@ -27,6 +27,7 @@ from data import load_range, wrangler_frame
 STARTING_NAV = 100_000.0
 VENUE = Venue("BINANCE")
 USDT = Currency.from_str("USDT")
+RISK_TOLERANCE = 1.0005
 
 
 def _jsonable(value: Any) -> Any:
@@ -209,6 +210,7 @@ def _build_trade_audit(
     strategy: Any,
     orders_export: pd.DataFrame,
     positions_export: pd.DataFrame,
+    evaluation_end: date,
 ) -> pd.DataFrame:
     if "client_order_id" not in orders_export.columns:
         raise RuntimeError("orders report lost client_order_id index")
@@ -220,6 +222,11 @@ def _build_trade_audit(
         for event in strategy.event_log
         if event.get("kind") == "submitted" and event.get("plan_id")
     }
+    instruments_by_symbol = {
+        instrument.raw_symbol.value: instrument
+        for instrument in strategy.instruments.values()
+    }
+    evaluation_flatten_ts = pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC")
     rows: list[dict[str, Any]] = []
     for _, position in positions_export.iterrows():
         opening_id = str(position.get("opening_order_id"))
@@ -239,6 +246,10 @@ def _build_trade_audit(
         actual_entry = float(position.get("avg_px_open"))
         actual_exit = float(position.get("avg_px_close"))
         quantity = float(position.get("peak_qty"))
+        close_ts = pd.to_datetime(position.get("ts_closed"), utc=True, errors="coerce")
+        exit_role = None if closing_order is None else _tag_value(closing_order.get("tags"), "ROLE:")
+        if exit_role is None and close_ts == evaluation_flatten_ts:
+            exit_role = "EVALUATION_END_FLATTEN"
         row: dict[str, Any] = {
             "position_id": str(position.get("position_id")),
             "plan_id": plan_id,
@@ -264,22 +275,38 @@ def _build_trade_audit(
             "entry_order_type": None if opening_order is None else opening_order.get("type"),
             "entry_liquidity_side": None if opening_order is None else opening_order.get("liquidity_side"),
             "entry_slippage_reported": None if opening_order is None else opening_order.get("slippage"),
-            "exit_role": None if closing_order is None else _tag_value(closing_order.get("tags"), "ROLE:"),
+            "exit_role": exit_role,
             "exit_order_type": None if closing_order is None else closing_order.get("type"),
             "exit_liquidity_side": None if closing_order is None else closing_order.get("liquidity_side"),
             "exit_slippage_reported": None if closing_order is None else closing_order.get("slippage"),
         }
         if plan is not None:
-            adverse_entry_slippage = float(plan.side.value) * (actual_entry - plan.entry)
-            actual_stop_distance = abs(actual_entry - plan.stop)
-            actual_gross_rr = (
-                None if actual_stop_distance <= 0 else abs(plan.target - actual_entry) / actual_stop_distance
+            instrument = instruments_by_symbol.get(plan.symbol)
+            if instrument is None:
+                raise RuntimeError(f"instrument unavailable for audit: {plan.symbol}")
+            tick = float(instrument.price_increment)
+            signed_entry_slippage = float(plan.side.value) * (actual_entry - plan.entry)
+            adverse_entry_slippage = max(0.0, signed_entry_slippage)
+            entry_slippage_reserve = tick * strategy.config.estimated_entry_slippage_ticks
+            stop_slippage_reserve = tick * strategy.config.estimated_stop_slippage_ticks
+            worst_stop_fill = (
+                plan.stop - stop_slippage_reserve
+                if plan.side.value > 0
+                else plan.stop + stop_slippage_reserve
             )
-            estimated_per_unit_loss = actual_stop_distance
+            worst_stop_distance = abs(actual_entry - worst_stop_fill)
+            actual_gross_rr = (
+                None if worst_stop_distance <= 0 else abs(plan.target - actual_entry) / worst_stop_distance
+            )
+            estimated_per_unit_loss = worst_stop_distance
             estimated_per_unit_loss += actual_entry * float(strategy.config.estimated_entry_fee_rate)
-            estimated_per_unit_loss += plan.stop * float(strategy.config.estimated_stop_fee_rate)
+            estimated_per_unit_loss += worst_stop_fill * float(strategy.config.estimated_stop_fee_rate)
             estimated_per_unit_loss += actual_entry * float(strategy.config.estimated_funding_rate)
             estimated_planned_loss = quantity * estimated_per_unit_loss
+            risk_utilization = (
+                None if risk_budget in (None, 0) else estimated_planned_loss / float(risk_budget)
+            )
+            entry_slippage_ticks = adverse_entry_slippage / tick if tick > 0 else None
             row.update(
                 {
                     "symbol": plan.symbol,
@@ -292,11 +319,22 @@ def _build_trade_audit(
                     "planned_stop": plan.stop,
                     "planned_target": plan.target,
                     "planned_gross_rr": plan.gross_rr,
-                    "actual_gross_rr": actual_gross_rr,
+                    "actual_gross_rr_after_reserve": actual_gross_rr,
+                    "signed_entry_slippage": signed_entry_slippage,
                     "adverse_entry_slippage": adverse_entry_slippage,
-                    "estimated_planned_loss_at_actual_fill": estimated_planned_loss,
-                    "risk_budget_utilization": (
-                        None if risk_budget in (None, 0) else estimated_planned_loss / float(risk_budget)
+                    "adverse_entry_slippage_ticks": entry_slippage_ticks,
+                    "entry_slippage_reserve": entry_slippage_reserve,
+                    "stop_slippage_reserve": stop_slippage_reserve,
+                    "worst_stop_fill": worst_stop_fill,
+                    "estimated_worst_case_loss_at_actual_fill": estimated_planned_loss,
+                    "risk_budget_utilization": risk_utilization,
+                    "entry_slippage_within_reserve": (
+                        None
+                        if entry_slippage_ticks is None
+                        else entry_slippage_ticks <= strategy.config.estimated_entry_slippage_ticks + 1e-9
+                    ),
+                    "risk_budget_breach": (
+                        None if risk_utilization is None else risk_utilization > RISK_TOLERANCE
                     ),
                     "source_boundary_id": plan.source_boundary_id,
                     "source_level": plan.source_level,
@@ -346,7 +384,7 @@ def preserve_results(
     pd.DataFrame(strategy.event_log).to_csv(output / "decision_events.csv", index=False)
 
     trade_windows = _write_trade_windows(strategy, output)
-    trade_audit = _build_trade_audit(strategy, orders_export, positions_export)
+    trade_audit = _build_trade_audit(strategy, orders_export, positions_export, end)
     trade_audit.to_csv(output / "trade_audit.csv", index=False)
 
     nav = final_nav(engine)
@@ -359,6 +397,27 @@ def preserve_results(
     submitted_count = int(event_counts["submitted"])
     emergency = int(event_counts["emergency_exit_protective_failure"])
     orphan_audits = int(trade_audit["plan_id"].isna().sum()) if not trade_audit.empty else 0
+    missing_exit_roles = int(trade_audit["exit_role"].isna().sum()) if not trade_audit.empty else 0
+    risk_breaches = (
+        int(trade_audit["risk_budget_breach"].fillna(False).astype(bool).sum())
+        if "risk_budget_breach" in trade_audit.columns
+        else 0
+    )
+    entry_slippage_exceeds = (
+        int((~trade_audit["entry_slippage_within_reserve"].fillna(True).astype(bool)).sum())
+        if "entry_slippage_within_reserve" in trade_audit.columns
+        else 0
+    )
+    max_risk_utilization = (
+        float(trade_audit["risk_budget_utilization"].max())
+        if "risk_budget_utilization" in trade_audit.columns and not trade_audit.empty
+        else None
+    )
+    evaluation_end_flattens = (
+        int((trade_audit["exit_role"] == "EVALUATION_END_FLATTEN").sum())
+        if not trade_audit.empty
+        else 0
+    )
     metrics = {
         "candidate": "candidate-easychart-v2",
         "start": start.isoformat(),
@@ -376,13 +435,20 @@ def preserve_results(
         "trade_windows": trade_windows,
         "audited_positions": int(len(trade_audit.index)),
         "orphan_audited_positions": orphan_audits,
+        "missing_exit_roles": missing_exit_roles,
+        "evaluation_end_flattens": evaluation_end_flattens,
         "fill_events_logged": int(event_counts["order_filled"]),
         "plans_skipped_global_slot": int(event_counts["plan_skipped_global_slot"]),
         "plans_skipped_arbitration": int(event_counts["plan_skipped_arbitration"]),
         "plans_rejected_quantity": int(event_counts["plan_rejected_quantity"]),
         "emergency_protective_exits": emergency,
+        "risk_budget_breaches": risk_breaches,
+        "entry_slippage_reserve_exceeds": entry_slippage_exceeds,
+        "max_risk_budget_utilization": max_risk_utilization,
         "independent_trades_per_day": closed / days,
         "risk_fraction": 0.03,
+        "estimated_entry_slippage_ticks": strategy.config.estimated_entry_slippage_ticks,
+        "estimated_stop_slippage_ticks": strategy.config.estimated_stop_slippage_ticks,
         "minimum_gross_rr": 1.0,
         "min_prominence_atr": min_prominence_atr,
         "enable_rejection": enable_rejection,
@@ -406,6 +472,8 @@ def preserve_results(
                 "single_full_stop_market": True,
                 "single_full_target": True,
                 "risk_fraction_current_nav": 0.03,
+                "estimated_entry_slippage_ticks": strategy.config.estimated_entry_slippage_ticks,
+                "estimated_stop_slippage_ticks": strategy.config.estimated_stop_slippage_ticks,
                 "min_pre_entry_gross_rr": 1.0,
                 "global_pending_or_position_limit": 1,
                 "partial_management": False,
@@ -418,7 +486,29 @@ def preserve_results(
                 "fill_events": True,
                 "trade_audit": True,
                 "trade_windows": True,
+                "evaluation_end_flatten_classified": True,
+                "risk_budget_checked_at_actual_fill": True,
             },
         },
     )
+
+    failures: list[str] = []
+    if orphan_audits:
+        failures.append(f"{orphan_audits} positions could not be joined to a plan")
+    if missing_exit_roles:
+        failures.append(f"{missing_exit_roles} exits lack a classified role")
+    if risk_breaches:
+        failures.append(f"{risk_breaches} positions exceed the three-percent planned loss budget")
+    if entry_slippage_exceeds:
+        failures.append(f"{entry_slippage_exceeds} entries exceed the calibrated slippage reserve")
+    if emergency:
+        failures.append(f"{emergency} emergency exits followed protective-order failure")
+    validation = {
+        "status": "FAIL" if failures else "PASS",
+        "risk_tolerance": RISK_TOLERANCE,
+        "failures": failures,
+    }
+    write_json(output / "validation.json", validation)
+    if failures:
+        raise RuntimeError("; ".join(failures))
     return metrics
