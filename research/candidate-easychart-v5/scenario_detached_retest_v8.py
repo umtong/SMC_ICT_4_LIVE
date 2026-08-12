@@ -1,16 +1,20 @@
-"""Distinct departure-then-return semantics for EasyChart v8 retests.
+"""Distinct departure-then-return semantics for EasyChart retests.
 
 A human chart reader does not call uninterrupted contact with a boundary a
-"retest".  The source examples show a break or event-local footprint, visible
-separation from it, and only then a return.  The earlier machine policy accepted
-the first later bar which overlapped the zone, even when price had never fully
-left it.  That collapsed displacement and retest into one continuous episode.
+"retest". The source examples show a break or event-local footprint, visible
+separation from it, and only then a return. The earlier machine policy accepted
+the first later bar which overlapped the zone, even when price had never left it.
+That collapsed displacement and retest into one continuous episode.
 
-This module changes only that ambiguous translation.  No elapsed-time threshold,
-score, volatility multiple, direction filter or outcome-derived parameter is
-introduced.  A retest becomes eligible after one completed trigger bar lies
-entirely on the valid side of the boundary; the first subsequent overlap is the
-retest.  Dynamic trend-line and channel values are projected at every bar.
+Two causal translations are exposed for controlled comparison:
+
+* full-bar detachment: the entire completed trigger bar lies on the valid side;
+* close detachment: the completed trigger bar closes on the valid side, while a
+  wick may still overlap the boundary.
+
+Neither translation introduces an elapsed-time threshold, score, volatility
+multiple, direction filter, or outcome-derived parameter. Dynamic trend-line
+and channel values are projected at every bar.
 """
 from __future__ import annotations
 
@@ -27,8 +31,13 @@ DETACHED_RETEST_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "RETEST_REQUIRES_A_COMPLETED_BAR_FULLY_DETACHED_FROM_THE_BOUNDARY_BEFORE_RETURN"
 )
-if DETACHED_RETEST_RULE not in _contracts.TRANSLATION_RULES:
-    _contracts.TRANSLATION_RULES += (DETACHED_RETEST_RULE,)
+CLOSE_DETACHED_RETEST_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:"
+    "RETEST_REQUIRES_A_COMPLETED_CLOSE_OUTSIDE_THE_BOUNDARY_BEFORE_RETURN"
+)
+for _rule in (DETACHED_RETEST_RULE, CLOSE_DETACHED_RETEST_RULE):
+    if _rule not in _contracts.TRANSLATION_RULES:
+        _contracts.TRANSLATION_RULES += (_rule,)
 
 
 def fully_detached(side: Side, lower: float, upper: float, bar: Candle) -> bool:
@@ -38,12 +47,31 @@ def fully_detached(side: Side, lower: float, upper: float, bar: Candle) -> bool:
     return bar.low > upper if side is Side.LONG else bar.high < lower
 
 
+def close_detached(side: Side, lower: float, upper: float, bar: Candle) -> bool:
+    """Return whether the completed close has left the zone on the valid side."""
+    if lower > upper:
+        raise ValueError("detachment bounds are inverted")
+    return bar.close > upper if side is Side.LONG else bar.close < lower
+
+
 class DetachedRetestScenarioEngine(NearestAnyTargetScenarioEngine):
     """Nearest-objective engine with geometrically distinct retests."""
+
+    RETEST_RULE = DETACHED_RETEST_RULE
+    RETEST_POLICY_NAME = "FULL_BAR_DETACH_THEN_FIRST_RETURN"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._detached_setup_ids: set[str] = set()
+
+    def _is_detached(
+        self,
+        side: Side,
+        lower: float,
+        upper: float,
+        bar: Candle,
+    ) -> bool:
+        return fully_detached(side, lower, upper, bar)
 
     def _finish(
         self,
@@ -94,19 +122,22 @@ class DetachedRetestScenarioEngine(NearestAnyTargetScenarioEngine):
 
             _, lower, upper = self._projected_bounds(setup, bar.ts_close_ns)
             if setup.setup_id not in self._detached_setup_ids:
-                if fully_detached(setup.side, lower, upper, bar):
+                if self._is_detached(setup.side, lower, upper, bar):
                     self._detached_setup_ids.add(setup.setup_id)
-                    self._inc("acceptance_boundary_fully_detached")
+                    self._inc("acceptance_boundary_detached")
                     self._trace(
-                        "acceptance_boundary_fully_detached",
+                        "acceptance_boundary_detached",
                         bar.ts_close_ns,
                         setup,
                         detached_bar_low=bar.low,
                         detached_bar_high=bar.high,
+                        detached_bar_close=bar.close,
                         projected_lower=lower,
                         projected_upper=upper,
-                        provenance=DETACHED_RETEST_RULE,
+                        retest_policy=self.RETEST_POLICY_NAME,
+                        provenance=self.RETEST_RULE,
                     )
+                # The detachment bar itself can never also be the retest.
                 continue
 
             touched = bar.low <= upper and bar.high >= lower
@@ -178,18 +209,21 @@ class DetachedRetestScenarioEngine(NearestAnyTargetScenarioEngine):
                 continue
 
             if setup.setup_id not in self._detached_setup_ids:
-                if fully_detached(setup.side, trigger.lower, trigger.upper, bar):
+                if self._is_detached(setup.side, trigger.lower, trigger.upper, bar):
                     self._detached_setup_ids.add(setup.setup_id)
-                    self._inc("footprint_fully_detached")
+                    self._inc("footprint_detached")
                     self._trace(
-                        "footprint_fully_detached",
+                        "footprint_detached",
                         bar.ts_close_ns,
                         setup,
                         trigger_zone_id=trigger.zone_id,
                         detached_bar_low=bar.low,
                         detached_bar_high=bar.high,
-                        provenance=DETACHED_RETEST_RULE,
+                        detached_bar_close=bar.close,
+                        retest_policy=self.RETEST_POLICY_NAME,
+                        provenance=self.RETEST_RULE,
                     )
+                # The detachment bar itself can never also be the retest.
                 continue
 
             touched = bar.low <= trigger.upper and bar.high >= trigger.lower
@@ -228,12 +262,32 @@ class DetachedRetestScenarioEngine(NearestAnyTargetScenarioEngine):
         return output
 
 
+class CloseDetachedRetestScenarioEngine(DetachedRetestScenarioEngine):
+    """Retest engine where a completed close, rather than the full bar, detaches."""
+
+    RETEST_RULE = CLOSE_DETACHED_RETEST_RULE
+    RETEST_POLICY_NAME = "CLOSE_DETACH_THEN_FIRST_RETURN"
+
+    def _is_detached(
+        self,
+        side: Side,
+        lower: float,
+        upper: float,
+        bar: Candle,
+    ) -> bool:
+        return close_detached(side, lower, upper, bar)
+
+
 class MicroDetachedRetestBundleV8(MicroNearestAnyTargetResearchScenarioBundleV5):
-    """Micro-only nearest-objective bundle using distinct retest episodes."""
+    """Micro-only nearest-objective bundle using full-bar detachment."""
+
+    ENGINE_TYPE = DetachedRetestScenarioEngine
+    RETEST_POLICY_NAME = DetachedRetestScenarioEngine.RETEST_POLICY_NAME
+    RETEST_RULE = DetachedRetestScenarioEngine.RETEST_RULE
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
-        self.micro = DetachedRetestScenarioEngine(
+        self.micro = self.ENGINE_TYPE(
             symbol,
             tick_size,
             scale_name="MICRO",
@@ -248,7 +302,15 @@ class MicroDetachedRetestBundleV8(MicroNearestAnyTargetResearchScenarioBundleV5)
     def diagnostics(self) -> dict[str, Any]:
         output = dict(super().diagnostics)
         output["retest_policy"] = {
-            "name": "FULL_BAR_DETACH_THEN_FIRST_RETURN",
-            "rule_provenance": DETACHED_RETEST_RULE,
+            "name": self.RETEST_POLICY_NAME,
+            "rule_provenance": self.RETEST_RULE,
         }
         return output
+
+
+class MicroCloseDetachedRetestBundleV9(MicroDetachedRetestBundleV8):
+    """Micro-only nearest-objective bundle using close detachment."""
+
+    ENGINE_TYPE = CloseDetachedRetestScenarioEngine
+    RETEST_POLICY_NAME = CloseDetachedRetestScenarioEngine.RETEST_POLICY_NAME
+    RETEST_RULE = CloseDetachedRetestScenarioEngine.RETEST_RULE
