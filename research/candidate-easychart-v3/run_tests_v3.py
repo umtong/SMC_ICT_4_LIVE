@@ -1,10 +1,10 @@
-"""Run all v3 tests after applying the structure-policy compatibility repair."""
+"""Run all v3 tests after applying compatibility repairs."""
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 import unittest
 
+import funding_evidence_timefix  # noqa: F401
 import structure_runtime_v3  # noqa: F401
 
 
