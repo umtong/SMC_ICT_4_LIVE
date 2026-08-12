@@ -11,14 +11,14 @@ from typing import Any
 from domain import Candle
 from event_footprints_v5 import EventLocalZoneDetector
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
-from scenario_context_v5 import ScenarioContextMixin
+from objective_policy_v6 import FirstObstacleScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
 from scenario_transitions_v5 import ScenarioTransitionMixin
 from structure_v5 import CausalStructureBook
 
 
 class StructureScenarioEngine(
-    ScenarioContextMixin,
+    FirstObstacleScenarioContextMixin,
     ScenarioTransitionMixin,
     ScenarioExecutionMixin,
 ):
