@@ -1,8 +1,8 @@
-name: candidate-easychart-v20-diagonal-core
+name: candidate-easychart-v26-trendline-ob
 
 on:
   push:
-    branches: ["research/candidate-easychart-v20-diagonal-core"]
+    branches: ["research/candidate-easychart-v26-trendline-ob"]
     paths:
       - "research/candidate-easychart-v3/**"
       - "research/candidate-easychart-v5/**"
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: candidate-easychart-v20-diagonal-core
+  group: candidate-easychart-v26-trendline-ob
   cancel-in-progress: true
 
 permissions:
@@ -40,17 +40,16 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-easychart-v20/${{ matrix.period }}
-      OUT: artifacts/candidate-easychart-v20/${{ matrix.period }}
+      CACHE: .cache/candidate-easychart-v26/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-v26/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Run four-symbol continuous account
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$CACHE" "$OUT"
-          python research/candidate-easychart-v5/run_mtf_backtest_v20_diagonal_core.py \
+          python research/candidate-easychart-v5/run_mtf_backtest_v26_trendline_ob.py \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
             --warmup-days 30 \
@@ -58,12 +57,11 @@ jobs:
             --cache "$CACHE" \
             --output "$OUT" \
             --fee-profile usd_m_vip0
-
       - name: Preserve decision and execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-v20-${{ matrix.period }}-${{ github.sha }}
-          path: artifacts/candidate-easychart-v20/${{ matrix.period }}/**
+          name: candidate-easychart-v26-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-v26/${{ matrix.period }}/**
           if-no-files-found: warn
           retention-days: 90
