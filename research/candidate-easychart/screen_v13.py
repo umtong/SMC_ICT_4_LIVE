@@ -7,10 +7,15 @@ name the *first* opposing high/low, OB, FVG, trendline or channel boundary as a
 profit objective.  v13 corrects that semantic mismatch after v10 state routing:
 choose the nearest already-confirmed directional-change pivot between entry and
 the former far target; if it offers less than 1R, reject rather than skipping it.
+
+Every decision is recorded in ``LAST_TARGET_AUDIT_ROWS``.  This makes a zero-
+trade result diagnosable: it must be possible to see the candidate event, the
+pre-existing first objective, the setup-bar geometry, and the exact rejection
+reason instead of treating an aggregate gate as an explanation.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import os
 
 import pandas as pd
@@ -24,6 +29,7 @@ import screen_v10 as _base
 _ORIGINAL_ROUTE = _base.route_setups
 TARGET_MINUTES = int(os.environ.get("EC_TARGET_MINUTES", "5"))
 TARGET_DC_ATR = float(os.environ.get("EC_TARGET_DC_ATR", "1.0"))
+LAST_TARGET_AUDIT_ROWS: list[dict[str, object]] = []
 
 
 def _pivots(frame: pd.DataFrame, minutes: int):
@@ -48,6 +54,18 @@ def _setup_bar(frame: pd.DataFrame, observed_time_ns: int):
     return None if selected.empty else selected.iloc[-1]
 
 
+def _pivot_rows(pivots) -> list[dict[str, object]]:
+    return [
+        {
+            "side": pivot.side,
+            "level": float(pivot.level),
+            "event_time_ns": int(pivot.event_time_ns),
+            "observed_time_ns": int(pivot.observed_time_ns),
+        }
+        for pivot in pivots
+    ]
+
+
 def route_setups(*args, **kwargs):
     routed, diagnostics = _ORIGINAL_ROUTE(*args, **kwargs)
     five_frames = kwargs["five_frames"]
@@ -56,6 +74,7 @@ def route_setups(*args, **kwargs):
         for symbol, frame in five_frames.items()
     }
     output = []
+    LAST_TARGET_AUDIT_ROWS.clear()
 
     def count(key: str) -> None:
         diagnostics[key] = diagnostics.get(key, 0) + 1
@@ -78,20 +97,62 @@ def route_setups(*args, **kwargs):
                 if pivot.side == "LOW" and setup.initial_target <= pivot.level < setup.entry
             ]
             chosen = max(candidates, default=None, key=lambda pivot: pivot.level)
+
+        audit: dict[str, object] = {
+            "setup_id": setup.setup_id,
+            "causal_event_id": setup.causal_event_id,
+            "symbol": setup.symbol,
+            "family": setup.family,
+            "side": int(setup.side),
+            "observed_time_ns": int(setup.observed_time_ns),
+            "source_pool_id": setup.source_pool_id,
+            "entry": float(setup.entry),
+            "stop": float(setup.stop),
+            "far_target": float(setup.initial_target),
+            "far_gross_rr": float(
+                abs(setup.initial_target - setup.entry)
+                / abs(setup.entry - setup.stop)
+            ),
+            "target_timeframe_minutes": TARGET_MINUTES,
+            "target_dc_atr": TARGET_DC_ATR,
+            "eligible_pivots": _pivot_rows(eligible),
+            "candidate_pivots": _pivot_rows(candidates),
+            "chosen_pivot": None if chosen is None else asdict(chosen),
+        }
+
         if chosen is None:
+            audit["disposition"] = "FAR_BOUNDARY_FALLBACK_NO_INTERNAL_OBJECTIVE"
+            LAST_TARGET_AUDIT_ROWS.append(audit)
             count("no_internal_structural_objective_fallback_far_boundary")
             output.append(setup)
             continue
+
         row = _setup_bar(five_frames[setup.symbol], setup.observed_time_ns)
         if row is None:
+            audit["disposition"] = "REJECT_MISSING_SETUP_BAR"
+            LAST_TARGET_AUDIT_ROWS.append(audit)
             count("missing_setup_bar")
             continue
+        audit.update(
+            {
+                "setup_bar_open": float(row.open),
+                "setup_bar_high": float(row.high),
+                "setup_bar_low": float(row.low),
+                "setup_bar_close": float(row.close),
+                "selected_target": float(chosen.level),
+            },
+        )
         if setup.side is Side.LONG and float(row.high) >= chosen.level:
+            audit["disposition"] = "REJECT_FIRST_OBJECTIVE_CONSUMED_ON_SETUP_BAR"
+            LAST_TARGET_AUDIT_ROWS.append(audit)
             count("first_objective_consumed_on_setup_bar")
             continue
         if setup.side is Side.SHORT and float(row.low) <= chosen.level:
+            audit["disposition"] = "REJECT_FIRST_OBJECTIVE_CONSUMED_ON_SETUP_BAR"
+            LAST_TARGET_AUDIT_ROWS.append(audit)
             count("first_objective_consumed_on_setup_bar")
             continue
+
         candidate = replace(
             setup,
             family=f"{setup.family}_FIRST_DC_OBJECTIVE_{TARGET_MINUTES}M",
@@ -100,15 +161,27 @@ def route_setups(*args, **kwargs):
             fixed_target_id=f"FIRST_DC_PIVOT:{chosen.side}:{chosen.event_time_ns}",
             context_bias=f"{setup.context_bias}|FIRST_DC_OBJECTIVE={chosen.level}",
         )
-        if candidate.executable(
+        plan = candidate.executable(
             candidate.initial_target,
             target_id=candidate.fixed_target_id,
             min_gross_rr=1.0,
-        ) is None:
+        )
+        if plan is None:
+            audit["disposition"] = "REJECT_FIRST_OBJECTIVE_RR_LT_1"
+            audit["selected_gross_rr"] = float(
+                abs(candidate.initial_target - candidate.entry)
+                / abs(candidate.entry - candidate.stop)
+            )
+            LAST_TARGET_AUDIT_ROWS.append(audit)
             count("first_structural_objective_rr_lt_1")
             continue
+
+        audit["disposition"] = "SELECT_FIRST_OBJECTIVE"
+        audit["selected_gross_rr"] = float(plan.gross_rr)
+        LAST_TARGET_AUDIT_ROWS.append(audit)
         output.append(candidate)
         count("first_structural_objective_selected")
+
     output.sort(key=lambda item: (item.observed_time_ns, item.symbol, item.setup_id))
     return output, diagnostics
 
