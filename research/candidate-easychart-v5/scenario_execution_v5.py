@@ -247,6 +247,21 @@ class ScenarioExecutionMixin:
             if self._target_is_spent(setup, bar):
                 self._finish(setup, SetupState.TARGET_SPENT, bar.ts_close_ns, "target_spent_before_entry")
                 continue
+            trigger_invalidated = (
+                bar.low <= trigger.invalidation
+                if setup.side is Side.LONG
+                else bar.high >= trigger.invalidation
+            )
+            if index > setup.trigger_index and trigger_invalidated:
+                trigger.invalidated_index = index
+                trigger.invalidated_time_ns = bar.ts_close_ns
+                self._finish(
+                    setup,
+                    SetupState.INVALIDATED,
+                    bar.ts_close_ns,
+                    "trigger_footprint_invalidated_before_retest",
+                )
+                continue
             if self._extreme_breached(setup, bar):
                 self._finish(
                     setup,
@@ -263,6 +278,8 @@ class ScenarioExecutionMixin:
             if setup.first_retest_consumed:
                 raise RuntimeError("first footprint retest processed twice")
             setup.first_retest_consumed = True
+            trigger.first_touch_index = index
+            trigger.first_touch_time_ns = bar.ts_close_ns
             if setup.side is Side.LONG:
                 reacted = bar.close > trigger.upper and bar.close > bar.open
                 stop = min(setup.interaction_extreme - self.tick_size, trigger.invalidation)
@@ -288,4 +305,3 @@ class ScenarioExecutionMixin:
             )
             if plan is not None:
                 output.append(plan)
-        return output
