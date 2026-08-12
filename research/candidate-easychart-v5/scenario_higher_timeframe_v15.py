@@ -1,14 +1,16 @@
 """Use higher-timeframe structure to decide the role of a micro acceptance.
 
 EasyChart uses the larger structure for direction and the smaller structure for
-entry.  A confirmed 5m break/retest against an intact opposite 60m auction is
+entry. A confirmed 5m break/retest against an intact opposite 60m auction is
 usually a pullback, while a completed 60m close through the latest confirmed
 swing is already a directional transition even though a lagging HH/HL or LH/LL
-label has not yet changed.
+label has not yet changed. A mixed higher-high/lower-low or lower-high/higher-
+low sequence without a directional break remains unresolved rather than being
+permission to trade either way.
 
 Rejection, rotation and bounce paths are left untouched because a failed break
-can itself be the reversal event.  Only completed 60m bars and confirmed wick
-pivots are used.  No return threshold, moving average, score, risk multiplier,
+can itself be the reversal event. Only completed 60m bars and confirmed wick
+pivots are used. No return threshold, moving average, score, risk multiplier,
 time exit or post-entry rule is added.
 """
 from __future__ import annotations
@@ -25,7 +27,8 @@ from scenario_close_detached_v14 import MicroCloseDetachedRetestBundleV14
 HIGHER_TIMEFRAME_ACCEPTANCE_RULE = (
     "SOURCE_EXPLICIT:LARGER_TIMEFRAME_STRUCTURE_GIVES_DIRECTION_AND_SMALLER_"
     "TIMEFRAME_SUPPLIES_ENTRY;ACCEPTANCE_RETEST_REQUIRES_ALIGNED_OR_"
-    "DIRECTIONALLY_TRANSITIONING_60M_STRUCTURE"
+    "DIRECTIONALLY_TRANSITIONING_60M_STRUCTURE;DIRECTIONLESS_TRANSITION_"
+    "REMAINS_UNRESOLVED"
 )
 HIGHER_TIMEFRAME_STATE_TRANSLATION = (
     "RESEARCH_HYPOTHESIS:CONFIRMED_60M_WICK_PIVOT_SEQUENCE_DEFINES_THE_"
@@ -118,9 +121,6 @@ class CausalHigherTimeframeDirection:
         base = self._base_state(highs, lows)
         close = self.bars[-1].close
 
-        # A completed close through the latest confirmed swing means that the
-        # old directional label is no longer intact.  Give this current event
-        # precedence over the necessarily lagging two-pivot sequence.
         if lows and close < lows[-1].price and base is not DirectionState.DOWN:
             return DirectionState.TRANSITION_DOWN
         if highs and close > highs[-1].price and base is not DirectionState.UP:
@@ -153,12 +153,12 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
     def _acceptance_allowed(plan: V5TradePlan, state: DirectionState) -> bool:
         if plan.scenario_path != "ACCEPTANCE":
             return True
-        if state is DirectionState.TRANSITION:
-            return True
         if state in {DirectionState.UP, DirectionState.TRANSITION_UP}:
             return plan.side is Side.LONG
         if state in {DirectionState.DOWN, DirectionState.TRANSITION_DOWN}:
             return plan.side is Side.SHORT
+        # A directionless transition and an unresolved structure do not answer
+        # the directional question required by an acceptance trade.
         return False
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
