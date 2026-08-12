@@ -1,53 +1,54 @@
-"""Causal lifecycle and acceptance-stop translations for EasyChart v5.
+"""Causal lifecycle translations for EasyChart v5 structures.
 
-The source treats a trend line or channel edge as a pre-existing market
-structure whose next interaction is meaningful.  A charting human naturally
-stops treating that exact projected boundary as fresh after price has already
-met or crossed it.  Software must state that lifecycle explicitly; otherwise
-an old broken diagonal can remain a trade candidate for days.
+The source repeatedly uses trend lines and channels as structures which may
+survive a successful touch, but cease to support the original interpretation
+when price closes through the projected boundary.  A charting human updates
+that state naturally.  Software must do it explicitly or a broken diagonal can
+remain a fresh candidate for days.
 
-This module deliberately changes only semantic state.  NautilusTrader remains
-responsible for orders, fills, positions, fees and NAV.
+This module changes semantic state only.  NautilusTrader remains responsible
+for orders, fills, positions, fees and NAV.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import contracts_v5 as _contracts
-from contracts_v5 import ScenarioSetup, StructureFamily
-from domain import Candle, Side
+from contracts_v5 import StructureFamily
+from domain import Candle
+from easychart_zones import ZoneSide
 from structure_v5 import CausalStructureBook
 
 
-FIRST_INTERACTION_RULE = (
+DIAGONAL_INVALIDATION_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
-    "FIRST_PROJECTED_STRUCTURE_INTERACTION_RETIRES_THAT_BOUNDARY"
+    "PROJECTED_DIAGONAL_RETIRES_AFTER_BODY_CLOSE_THROUGH_ITS_INVALIDATION_SIDE"
 )
 ACCEPTANCE_STOP_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
-    "ACCEPTANCE_HARD_STOP_BEYOND_RETEST_EXTREME_AND_CAUSAL_ORIGIN"
+    "ACCEPTANCE_HARD_STOP_MUST_BE_BEYOND_THE_COMPLETED_RETEST_EXTREME"
 )
 
-# ``provenance()`` reads the module globals at plan-construction time.  Extend
-# the auditable translation ledger once, without relabelling either rule as an
-# explicit statement by the source.
-for _rule in (FIRST_INTERACTION_RULE, ACCEPTANCE_STOP_RULE):
+for _rule in (DIAGONAL_INVALIDATION_RULE, ACCEPTANCE_STOP_RULE):
     if _rule not in _contracts.TRANSLATION_RULES:
         _contracts.TRANSLATION_RULES += (_rule,)
 
 
 class LifecycleAwareStructureBook(CausalStructureBook):
-    """A structure book whose projected boundaries have a first-touch life.
+    """Remove broken projected boundaries without expiring valid bounces.
 
-    Horizontal pivots already had a first-touch lifecycle in v5.  Trend lines
-    and channel edges did not: every non-superseded diagonal was emitted
-    forever, even after a decisive break.  This subclass gives each projected
-    line or edge the same causal property while retaining the immutable
-    snapshots already attached to an armed setup.
+    The prior diagnostic translation retired a line or channel edge on any
+    touch.  That was too strong: the material explicitly depicts structures
+    surviving bounces.  The executable lifecycle is now narrower:
 
-    Channel edges are retired independently.  Touching the lower edge does not
-    destroy the opposite upper edge, which can still be the same-leg rotation
-    objective.
+    * a support diagonal retires only after a completed bar closes below it;
+    * a resistance diagonal retires only after a completed bar closes above it;
+    * channel edges retire independently;
+    * an already selected structure is still protected from duplicate trading
+      by the scenario engine's causal-episode registry.
+
+    Thus a valid bounce does not erase the structure, while a body-confirmed
+    break cannot reappear later as an untouched opportunity.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -55,10 +56,6 @@ class LifecycleAwareStructureBook(CausalStructureBook):
         self._retired_line_ids: set[str] = set()
         self._retired_channel_edges: set[str] = set()
         self._boundary_retired_time_ns: dict[str, int] = {}
-
-    @staticmethod
-    def _bar_touches_band(bar: Candle, lower: float, upper: float) -> bool:
-        return bar.low <= upper and bar.high >= lower
 
     def active_trend_lines(self, time_ns: int):  # type: ignore[no-untyped-def]
         return [
@@ -80,10 +77,6 @@ class LifecycleAwareStructureBook(CausalStructureBook):
         return output
 
     def boundaries_at(self, time_ns: int):  # type: ignore[no-untyped-def]
-        # The base method dynamically dispatches ``active_trend_lines`` and
-        # ``active_channels``.  A channel with one live edge still appears, so
-        # remove the independently retired edge from its two generated
-        # snapshots here.
         output = super().boundaries_at(time_ns)
         return [
             zone
@@ -94,12 +87,18 @@ class LifecycleAwareStructureBook(CausalStructureBook):
             )
         ]
 
+    @staticmethod
+    def _closed_through(bar: Candle, lower: float, upper: float, side: ZoneSide) -> bool:
+        if side is ZoneSide.SUPPORT:
+            return bar.close < lower
+        return bar.close > upper
+
     def _retire_line(self, structure_id: str, time_ns: int) -> None:
         if structure_id in self._retired_line_ids:
             return
         self._retired_line_ids.add(structure_id)
         self._boundary_retired_time_ns[structure_id] = time_ns
-        self._inc("trend_line_first_interaction_retired")
+        self._inc("trend_line_body_close_invalidated")
 
     def _retire_channel_edge(self, source_structure_id: str, time_ns: int) -> None:
         if source_structure_id in self._retired_channel_edges:
@@ -107,21 +106,22 @@ class LifecycleAwareStructureBook(CausalStructureBook):
         self._retired_channel_edges.add(source_structure_id)
         self._boundary_retired_time_ns[source_structure_id] = time_ns
         edge = source_structure_id.rsplit(":", 1)[-1].lower()
-        self._inc(f"channel_{edge}_first_interaction_retired")
+        self._inc(f"channel_{edge}_body_close_invalidated")
 
     def observe_price(self, bar: Candle) -> None:
-        """Retire every diagonal boundary touched by this completed bar.
+        """Apply body-close invalidation after the current interaction is read.
 
-        The scenario engine calls this *after* classifying the current decision
-        bar.  Consequently the first interaction is still available to create
-        one setup, but neither the selected boundary nor another crossed
-        lookalike can masquerade as fresh on a later bar.
+        The scenario engine invokes this after classifying the completed
+        decision bar.  An accepted break can therefore arm one retest episode,
+        but the broken diagonal is removed from the future fresh-opportunity
+        set.  A wick excursion which closes back on the valid side remains a
+        rejection/fakeout rather than a structural deletion.
         """
         for line in CausalStructureBook.active_trend_lines(self, bar.ts_close_ns):
             if line.structure_id in self._retired_line_ids:
                 continue
             snapshot = self._line_snapshot(line, bar.ts_close_ns)
-            if self._bar_touches_band(bar, snapshot.lower, snapshot.upper):
+            if self._closed_through(bar, snapshot.lower, snapshot.upper, snapshot.side):
                 self._retire_line(line.structure_id, bar.ts_close_ns)
 
         for channel in CausalStructureBook.active_channels(self, bar.ts_close_ns):
@@ -130,92 +130,11 @@ class LifecycleAwareStructureBook(CausalStructureBook):
                 if source_id in self._retired_channel_edges:
                     continue
                 snapshot = self.channel_edge_snapshot(channel, edge, bar.ts_close_ns)
-                if self._bar_touches_band(bar, snapshot.lower, snapshot.upper):
+                if self._closed_through(bar, snapshot.lower, snapshot.upper, snapshot.side):
                     self._retire_channel_edge(source_id, bar.ts_close_ns)
 
-        # Preserve the already-audited horizontal-pivot lifecycle.
+        # Preserve the audited horizontal-pivot first-touch lifecycle.
         super().observe_price(bar)
 
     def boundary_retired_time_ns(self, source_structure_id: str) -> int | None:
         return self._boundary_retired_time_ns.get(source_structure_id)
-
-
-class CausalAcceptanceGeometryMixin:
-    """Translate accepted-break retest failure into an executable hard stop.
-
-    A one-tick stop behind a projected zero-width line can lie inside the very
-    candle used to confirm the retest.  That creates artificial 20R--100R
-    plans which are stopped by already-observed price.  The protective stop is
-    therefore placed beyond the retest candle's opposite wick.  For a
-    non-channel breakout the pre-existing causal origin remains authoritative,
-    so the farther of origin and retest extreme is used.
-    """
-
-    def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
-        if not self.trigger_detector.bars:
-            raise RuntimeError("acceptance stop requested before a trigger bar")
-        current = self.trigger_detector.bars[-1]
-        if current.ts_close_ns != time_ns:
-            raise RuntimeError("acceptance stop must use the current completed retest bar")
-
-        members, lower, upper = self._projected_bounds(setup, time_ns)
-        retest_stop = (
-            current.low - self.tick_size
-            if setup.side is Side.LONG
-            else current.high + self.tick_size
-        )
-        has_channel = any(member.family is StructureFamily.CHANNEL for member in members)
-
-        if has_channel:
-            projected_stop = (
-                lower - self.tick_size
-                if setup.side is Side.LONG
-                else upper + self.tick_size
-            )
-            stop = (
-                min(projected_stop, retest_stop)
-                if setup.side is Side.LONG
-                else max(projected_stop, retest_stop)
-            )
-            basis = "CHANNEL_RETEST_EXTREME"
-        else:
-            origin = setup.acceptance_origin
-            if origin is None:
-                return None
-            origin_stop = (
-                origin.price - self.tick_size
-                if setup.side is Side.LONG
-                else origin.price + self.tick_size
-            )
-            projected_stop = origin_stop
-            stop = (
-                min(origin_stop, retest_stop)
-                if setup.side is Side.LONG
-                else max(origin_stop, retest_stop)
-            )
-            basis = "CAUSAL_ORIGIN_AND_RETEST_EXTREME"
-
-        projected_inside_retest = (
-            projected_stop >= current.low
-            if setup.side is Side.LONG
-            else projected_stop <= current.high
-        )
-        if projected_inside_retest:
-            self._inc("acceptance_projected_stop_was_inside_retest_bar")
-
-        if setup.side is Side.LONG and not stop < current.low:
-            raise RuntimeError("long acceptance stop was not moved beyond retest low")
-        if setup.side is Side.SHORT and not stop > current.high:
-            raise RuntimeError("short acceptance stop was not moved beyond retest high")
-
-        self._trace(
-            "acceptance_stop_fixed_before_submission",
-            time_ns,
-            setup,
-            stop=stop,
-            projected_stop=projected_stop,
-            retest_extreme=current.low if setup.side is Side.LONG else current.high,
-            basis=basis,
-            rule_provenance=ACCEPTANCE_STOP_RULE,
-        )
-        return stop
