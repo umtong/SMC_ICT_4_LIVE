@@ -5,7 +5,14 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce, TriggerType
-from nautilus_trader.model.events import OrderCanceled, OrderDenied, OrderExpired, OrderRejected, PositionClosed
+from nautilus_trader.model.events import (
+    OrderCanceled,
+    OrderDenied,
+    OrderExpired,
+    OrderFilled,
+    OrderRejected,
+    PositionClosed,
+)
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, Venue
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.orders.list import OrderList
@@ -43,12 +50,13 @@ class EasyChartOrderMixin:
             return None
         return instrument.make_qty(floored)
 
-    def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> None:
+    def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> bool:
         instrument = self.instruments[instrument_id]
         quantity = self._quantity(instrument, plan)
         if quantity is None:
             self._record("plan_rejected_quantity", plan_id=plan.plan_id, instrument_id=str(instrument_id))
-            return
+            return False
+        plan_tag = f"PLAN:{plan.plan_id}"
         order_list: OrderList = self.order_factory.bracket(
             instrument_id=instrument_id,
             order_side=OrderSide.BUY if plan.side is Side.LONG else OrderSide.SELL,
@@ -63,6 +71,9 @@ class EasyChartOrderMixin:
             entry_post_only=False,
             tp_post_only=False,
             emulation_trigger=TriggerType.NO_TRIGGER,
+            entry_tags=[plan_tag, "ROLE:ENTRY"],
+            sl_tags=[plan_tag, "ROLE:STOP_LOSS"],
+            tp_tags=[plan_tag, "ROLE:TAKE_PROFIT"],
         )
         self.active_plan = plan
         self.active_instrument_id = instrument_id
@@ -70,7 +81,14 @@ class EasyChartOrderMixin:
         self.entry_cancel_requested = False
         self.emergency_exit_requested = False
         self.submit_order_list(order_list)
-        self._record("submitted", plan_id=plan.plan_id, instrument_id=str(instrument_id), quantity=str(quantity))
+        self._record(
+            "submitted",
+            plan_id=plan.plan_id,
+            instrument_id=str(instrument_id),
+            quantity=str(quantity),
+            entry_client_order_id=str(self.active_entry_id),
+        )
+        return True
 
     def _clear_if_entry(self, client_order_id: ClientOrderId) -> bool:
         if self.active_entry_id is None or client_order_id != self.active_entry_id:
@@ -99,6 +117,26 @@ class EasyChartOrderMixin:
             )
             self.cancel_all_orders(self.active_instrument_id)
             self.close_all_positions(self.active_instrument_id)
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        plan_id = self.active_plan.plan_id if self.active_plan else None
+        role = "ENTRY" if event.client_order_id == self.active_entry_id else "EXIT_OR_PROTECTIVE"
+        self._record(
+            "order_filled",
+            plan_id=plan_id,
+            role=role,
+            client_order_id=str(event.client_order_id),
+            venue_order_id=None if event.venue_order_id is None else str(event.venue_order_id),
+            position_id=None if event.position_id is None else str(event.position_id),
+            instrument_id=str(event.instrument_id),
+            order_side=str(event.order_side),
+            order_type=str(event.order_type),
+            last_qty=str(event.last_qty),
+            last_px=str(event.last_px),
+            commission=str(event.commission),
+            liquidity_side=str(event.liquidity_side),
+            event_ts_ns=event.ts_event,
+        )
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         self._clear_if_entry(event.client_order_id)
