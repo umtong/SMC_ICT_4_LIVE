@@ -120,14 +120,14 @@ class TrendlineImpulseContextEngine:
         return eligible[-1] if eligible else None
 
     def on_close(self, candle: Candle) -> None:
-        # Breaks use only pivots observed before this close.  The body close,
-        # not a wick poke, changes the role of the trendline.
+        # Breaks use only pivots observed by this bar's open. A pivot confirmed
+        # exactly at the open is available; anything confirmed later is not.
         if len(self.highs) >= 2:
             first, second = self.highs[-2], self.highs[-1]
             if second.level < first.level:
                 line = self._line(Side.LONG, first, second)
                 if (
-                    candle.ts_open_ns > second.observed_time_ns
+                    candle.ts_open_ns >= second.observed_time_ns
                     and candle.close > line.price(candle.ts_close_ns)
                 ):
                     origin = self._latest_origin(Side.LONG, candle.ts_open_ns)
@@ -146,7 +146,7 @@ class TrendlineImpulseContextEngine:
             if second.level > first.level:
                 line = self._line(Side.SHORT, first, second)
                 if (
-                    candle.ts_open_ns > second.observed_time_ns
+                    candle.ts_open_ns >= second.observed_time_ns
                     and candle.close < line.price(candle.ts_close_ns)
                 ):
                     origin = self._latest_origin(Side.SHORT, candle.ts_open_ns)
