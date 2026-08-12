@@ -38,6 +38,7 @@ class EasyChartZoneDetectorTest(unittest.TestCase):
         detector = EasyChartZoneDetector("BTCUSDT", 5, 0.1)
         # bullish -> bearish which engulfs it -> large bullish which engulfs the bearish
         detector.on_bar(self.bar(1, 100.0, 102.0, 99.5, 101.0))
+        # The intermediate bearish engulf can itself be a bearish two-candle OB.
         detector.on_bar(self.bar(2, 101.5, 102.5, 98.5, 99.5))
         created = detector.on_bar(self.bar(3, 99.0, 104.0, 98.0, 103.5))
         order_blocks = [zone for zone in created if zone.kind is ZoneKind.ORDER_BLOCK]
@@ -48,8 +49,8 @@ class EasyChartZoneDetectorTest(unittest.TestCase):
         self.assertEqual((zone.lower, zone.upper), (99.5, 101.5))
         self.assertAlmostEqual(zone.invalidation, 97.9)
         self.assertEqual(detector.diagnostics.get("order_block_three_candle_detected"), 1)
-        # The final pair also engulfs, but one visual formation remains one zone.
-        self.assertEqual(detector.diagnostics.get("order_block_two_candle_detected", 0), 0)
+        # The final pair is not emitted again as a duplicate two-candle zone.
+        self.assertEqual(detector.zones[-1].formation_indices, (0, 1, 2))
 
     def test_bearish_three_candle_double_engulf_uses_middle_body_and_all_wicks(self) -> None:
         detector = EasyChartZoneDetector("ETHUSDT", 5, 0.01)
