@@ -5,10 +5,15 @@ Trap that spends time outside and forms a double-bottom/double-top shape before
 reclaiming.  Earlier screens called every delayed outside-close/reclaim a Trap.
 This module makes the stated shape a causal state transition rather than adding
 another generic filter.
+
+Every accepted setup carries the strictly observed outside, rebound, second-leg
+and extreme timestamps in ``context_bias``.  This is diagnostic evidence: a
+researcher can reconstruct whether the code traded the W/M episode the source
+actually describes instead of inferring shape from the final reclaim candle.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from domain_v3 import Candle, Side
 from market_v7 import (
@@ -24,12 +29,16 @@ class WMRangeState:
     liquidity_range: SessionLiquidityRange
     outside_side: Side | None = None
     outside_first_index: int | None = None
+    outside_first_time_ns: int | None = None
     extreme: float | None = None
+    extreme_time_ns: int | None = None
     previous_close: float | None = None
     previous_low: float | None = None
     previous_high: float | None = None
     rebound_seen: bool = False
+    rebound_time_ns: int | None = None
     second_leg_seen: bool = False
+    second_leg_time_ns: int | None = None
     completed: bool = False
 
 
@@ -64,7 +73,9 @@ class EasyChartWMTrapEngine(EasyChartSessionTrapEngine):
     ) -> None:
         state.outside_side = side
         state.outside_first_index = index
+        state.outside_first_time_ns = current.ts_close_ns
         state.extreme = current.low if side is Side.LONG else current.high
+        state.extreme_time_ns = current.ts_close_ns
         state.previous_close = current.close
         state.previous_low = current.low
         state.previous_high = current.high
@@ -78,6 +89,7 @@ class EasyChartWMTrapEngine(EasyChartSessionTrapEngine):
         if state.outside_side is Side.LONG:
             if not state.rebound_seen and current.close > state.previous_close:
                 state.rebound_seen = True
+                state.rebound_time_ns = current.ts_close_ns
                 self._count("w_rebound_seen")
             elif (
                 state.rebound_seen
@@ -86,11 +98,15 @@ class EasyChartWMTrapEngine(EasyChartSessionTrapEngine):
                 and current.close < state.previous_close
             ):
                 state.second_leg_seen = True
+                state.second_leg_time_ns = current.ts_close_ns
                 self._count("w_second_leg_seen")
-            state.extreme = min(float(state.extreme), current.low)
+            if current.low < float(state.extreme):
+                state.extreme = current.low
+                state.extreme_time_ns = current.ts_close_ns
         else:
             if not state.rebound_seen and current.close < state.previous_close:
                 state.rebound_seen = True
+                state.rebound_time_ns = current.ts_close_ns
                 self._count("m_rebound_seen")
             elif (
                 state.rebound_seen
@@ -99,11 +115,34 @@ class EasyChartWMTrapEngine(EasyChartSessionTrapEngine):
                 and current.close > state.previous_close
             ):
                 state.second_leg_seen = True
+                state.second_leg_time_ns = current.ts_close_ns
                 self._count("m_second_leg_seen")
-            state.extreme = max(float(state.extreme), current.high)
+            if current.high > float(state.extreme):
+                state.extreme = current.high
+                state.extreme_time_ns = current.ts_close_ns
         state.previous_close = current.close
         state.previous_low = current.low
         state.previous_high = current.high
+
+    def _annotated_setup(
+        self,
+        state: WMRangeState,
+        current: Candle,
+        side: Side,
+        extreme: float,
+        interaction: str,
+    ) -> ExpiringArmedSetup | None:
+        setup = self._build_setup(state, current, side, extreme, interaction)
+        if setup is None:
+            return None
+        context = (
+            f"{setup.context_bias}|WM_OUTSIDE={state.outside_first_time_ns}"
+            f"|WM_REBOUND={state.rebound_time_ns}"
+            f"|WM_SECOND_LEG={state.second_leg_time_ns}"
+            f"|WM_EXTREME_TIME={state.extreme_time_ns}"
+            f"|WM_RECLAIM={current.ts_close_ns}"
+        )
+        return replace(setup, context_bias=context)
 
     def _observe_state(
         self,
@@ -141,7 +180,7 @@ class EasyChartWMTrapEngine(EasyChartSessionTrapEngine):
                 if self.config.enable_delayed_trap and state.second_leg_seen:
                     state.completed = True
                     self._count("wm_trap_reclaims")
-                    return self._build_setup(
+                    return self._annotated_setup(
                         state,
                         current,
                         side,
