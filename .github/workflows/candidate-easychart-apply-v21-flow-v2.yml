@@ -1,0 +1,45 @@
+name: candidate-easychart-apply-v21-flow-v2
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-apply-v21-flow-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Apply event-linked aggregate-trade flow source
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=/tmp/easychart-v21-flow-source-v2.tar.gz
+          curl --fail --location --retry 4 \
+            https://filebin.net/easychart-v21-flow-v2-20260813-oai/easychart-v21-flow-source-v2.tar.gz \
+            --output "$payload"
+          tar -tzf "$payload"
+          tar -xzf "$payload" -C .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-easychart/market_v21_flow_state.py \
+            research/candidate-easychart/route_v21_flow_state.py \
+            research/candidate-easychart/download_binance_aggtrades.py \
+            research/candidate-easychart/replay_routed_setups_v21.py \
+            research/candidate-easychart/tests/test_market_v21_flow_state.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "source already present"
+            exit 0
+          fi
+          git commit -m "candidate-easychart: link flow state to causal source events"
+          git push origin HEAD:research/candidate-easychart
