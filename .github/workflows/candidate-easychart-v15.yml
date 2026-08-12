@@ -11,6 +11,7 @@ on:
       - "research/candidate-easychart/CASE_ROLE_CONTRACT_V15.json"
       - "research/candidate-easychart/tests/test_role_graph_v15.py"
       - "research/candidate-easychart/tests/test_market_v15.py"
+      - "research/candidate-easychart/tests/test_screen_v15.py"
       - ".github/workflows/candidate-easychart-v15.yml"
   workflow_dispatch:
 
@@ -48,7 +49,7 @@ jobs:
           python -m compileall -q research/candidate-easychart
           python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
 
-      - name: Run fixed role-complete policy on one development and two new diagnostic weeks
+      - name: Run fixed role-complete policy on one development and two diagnostic weeks
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +76,23 @@ jobs:
             --start 2026-02-02 --end 2026-02-08 \
             --output "$ROOT/diag-2026-02-02" "${common[@]}"
 
+      - name: Audit every recorded trade under both one-minute OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/semantic-audit.log") 2>&1
+          while IFS=: read -r window start end; do
+            python research/candidate-easychart/trade_semantic_audit.py \
+              --run-dir "$ROOT/$window" \
+              --start "$start" --end "$end" \
+              --cache "$CACHE" \
+              --output "$ROOT/$window/semantic-audit"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          diag-2026-02-02:2026-02-02:2026-02-08
+          EOF
+
       - name: Build cross-window evidence summary
         shell: bash
         run: |
@@ -92,6 +110,9 @@ jobs:
           rows = []
           for name in windows:
               metrics = json.loads((root / name / "metrics.json").read_text())
+              audit = json.loads(
+                  (root / name / "semantic-audit" / "audit_summary.json").read_text()
+              )
               rows.append(
                   {
                       "window": name,
@@ -99,12 +120,15 @@ jobs:
                       "ending_nav": metrics["ending_nav"],
                       "geometric_daily_growth": metrics["geometric_daily_growth"],
                       "profit_factor": metrics["profit_factor"],
-                      "max_drawdown_fraction": metrics["max_drawdown_fraction"],
+                      "max_drawdown": metrics["max_drawdown"],
                       "raw_setups_generated": metrics["raw_setups_generated"],
                       "merged_setups": metrics["merged_setups"],
                       "auction_routed_setups": metrics["auction_routed_setups"],
                       "setups_generated": metrics["setups_generated"],
                       "target_gate_passed": metrics["target_gate"]["passed"],
+                      "robust_replay_matches": audit["recorded_trade_replay_matches"],
+                      "path_ambiguous_recorded_trades": audit["path_ambiguous_recorded_trades"],
+                      "unexplained_missing_trades": audit["unexplained_missing_trades"],
                   }
               )
           summary = {
@@ -116,6 +140,11 @@ jobs:
               ),
               "all_windows_meet_target": all(
                   row["target_gate_passed"] for row in rows
+              ),
+              "all_recorded_trades_robust_under_one_minute_paths": all(
+                  row["robust_replay_matches"] == row["trades"]
+                  and row["path_ambiguous_recorded_trades"] == 0
+                  for row in rows
               ),
           }
           (root / "cross_window_summary.json").write_text(
@@ -141,6 +170,10 @@ jobs:
             test -e "$ROOT/$window/trades.csv"
             test -e "$ROOT/$window/equity.csv"
             test -e "$ROOT/$window/scenario_events.jsonl"
+            test -s "$ROOT/$window/semantic-audit/audit_summary.json"
+            test -e "$ROOT/$window/semantic-audit/setup_semantic_audit.csv"
+            test -e "$ROOT/$window/semantic-audit/trade_path_audit.csv"
+            test -e "$ROOT/$window/semantic-audit/trade_casebook.jsonl"
           done
 
       - uses: actions/upload-artifact@v4
