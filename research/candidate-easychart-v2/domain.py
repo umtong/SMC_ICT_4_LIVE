@@ -13,7 +13,7 @@ class Side(int, Enum):
 
 class Family(str, Enum):
     REJECTION_RETEST_CLOSE = "REJECTION_RETEST_CLOSE"
-    ACCEPTANCE_HOLD_CLOSE = "ACCEPTANCE_HOLD_CLOSE"
+    ACCEPTANCE_RETEST_CLOSE = "ACCEPTANCE_RETEST_CLOSE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,11 +94,14 @@ class RejectionCandidate:
 @dataclass(slots=True)
 class AcceptanceCandidate:
     source: Boundary
+    target: Boundary
     side: Side
     break_index: int
     break_time_ns: int
     break_extreme: float
     origin: Boundary
+    confirmed_index: int | None = None
+    confirmed_time_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
