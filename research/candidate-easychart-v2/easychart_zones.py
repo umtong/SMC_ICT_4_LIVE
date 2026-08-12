@@ -40,6 +40,7 @@ class PriceZone:
     strength_ratio: float
     source_body_lower: float | None = None
     source_body_upper: float | None = None
+    source_body_to_average_range: float | None = None
     first_touch_index: int | None = None
     first_touch_time_ns: int | None = None
     invalidated_index: int | None = None
@@ -58,6 +59,10 @@ class PriceZone:
         )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("zone values must be finite")
+        if self.source_body_to_average_range is not None and not math.isfinite(
+            self.source_body_to_average_range,
+        ):
+            raise ValueError("source_body_to_average_range must be finite")
         if not self.lower < self.upper:
             raise ValueError("zone lower must be below upper")
         if self.side is ZoneSide.SUPPORT and not self.invalidation < self.upper:
@@ -106,10 +111,18 @@ class EasyChartZoneDetector:
         the *engulfed candle body*, as stated in the video transcript, while
         invalidation uses the wick extreme of all formation candles.
 
+        The source explicitly excludes a pathologically small first candle.
+        Instead of inventing an asset-specific body threshold, the detector
+        reuses TA-Lib's longstanding causal doji convention: a real body at or
+        below 10% of the average high-low range of the previous 10 candles.
+
     FVG
         A three-candle non-overlap where the middle directional body is at
         least twice the larger adjacent body. The zone is the actual wick gap.
     """
+
+    DOJI_AVERAGE_PERIOD = 10
+    DOJI_RANGE_FACTOR = 0.10
 
     def __init__(self, symbol: str, timeframe_minutes: int, tick_size: float) -> None:
         if timeframe_minutes <= 0:
@@ -133,10 +146,30 @@ class EasyChartZoneDetector:
         return lower, upper, upper - lower
 
     def _ratio(self, numerator: float, denominator: float) -> float:
-        # An adjacent doji does not make the semantic ratio undefined. Use one
-        # tradable price increment as the minimum measurable body so the ratio
-        # remains finite, auditable and comparable across instruments.
+        # An adjacent doji does not make a diagnostic ratio infinite. The OB
+        # detector separately rejects a source doji once a causal baseline is
+        # available; one tick keeps early diagnostics finite.
         return numerator / max(denominator, self.tick_size)
+
+    def _source_body_to_average_range(self, source_index: int) -> float | None:
+        start = source_index - self.DOJI_AVERAGE_PERIOD
+        if start < 0:
+            return None
+        prior = self.bars[start:source_index]
+        if len(prior) != self.DOJI_AVERAGE_PERIOD:
+            return None
+        average_range = sum(max(0.0, bar.high - bar.low) for bar in prior) / len(prior)
+        if average_range <= 0.0:
+            return None
+        _, _, source_body = self._body(self.bars[source_index])
+        return source_body / average_range
+
+    def _source_is_doji(self, source_index: int) -> tuple[bool, float | None]:
+        ratio = self._source_body_to_average_range(source_index)
+        return (
+            ratio is not None and ratio <= self.DOJI_RANGE_FACTOR + 1e-12,
+            ratio,
+        )
 
     def _zone_id(self, kind: ZoneKind, side: ZoneSide, indices: tuple[int, ...]) -> str:
         joined = "-".join(str(index) for index in indices)
@@ -173,7 +206,7 @@ class EasyChartZoneDetector:
         previous_lower, previous_upper, previous_body = self._body(previous)
         current_lower, current_upper, current_body = self._body(current)
         if previous_body <= 0.0 or current_body <= 0.0:
-            self._inc("order_block_doji_rejected")
+            self._inc("order_block_zero_body_rejected")
             return None
 
         bullish = (
@@ -189,6 +222,11 @@ class EasyChartZoneDetector:
             and current_upper >= previous_upper
         )
         if not bullish and not bearish:
+            return None
+
+        source_is_doji, source_body_ratio = self._source_is_doji(index - 1)
+        if source_is_doji:
+            self._inc("order_block_source_doji_rejected")
             return None
 
         side = ZoneSide.SUPPORT if bullish else ZoneSide.RESISTANCE
@@ -215,8 +253,11 @@ class EasyChartZoneDetector:
             strength_ratio=self._ratio(current_body, previous_body),
             source_body_lower=previous_lower,
             source_body_upper=previous_upper,
+            source_body_to_average_range=source_body_ratio,
         )
         self._inc("order_block_detected")
+        if source_body_ratio is not None:
+            self._inc("order_block_source_body_baseline_available")
         if zone.high_quality_by_size:
             self._inc("order_block_size_confirmed")
         else:
