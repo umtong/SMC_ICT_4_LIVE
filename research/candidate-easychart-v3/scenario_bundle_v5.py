@@ -5,8 +5,9 @@ from typing import Any
 
 from domain import Candle, Side
 from contracts_v5 import V5TradePlan
-from learned_horizontal_v7 import LearnedHorizontalScenarioEngine
-import learned_horizontal_v7_runtime  # noqa: F401 - applies causal lifecycle repair
+from learned_horizontal_confirmation_v7 import (
+    ConfirmationCloseLearnedHorizontalScenarioEngine,
+)
 from scenario_engine_v5 import StructureScenarioEngine
 
 
@@ -52,11 +53,10 @@ class ResearchScenarioBundleV5:
     """One symbol, four causal scales of one market-structure policy.
 
     The original 60/15/5 and 15/5/1 engines retain trend-line, channel and
-    single-pivot structure. The learned-horizontal engines do not add a bag of
-    indicators. They solve one missing human inference: after repeated wick
-    defenses share an exact price interval, the crowd has learned a visible
-    support/resistance boundary. Fakeout and Trap are then opposite outcomes
-    of that boundary's state, routed through the same global account slot.
+    single-pivot structure. The learned-horizontal engines solve one missing
+    human inference: repeated wick defenses with an exact common price interval
+    teach the crowd a visible boundary. This diagnostic uses the source-allowed
+    reclaim-close entry; all plans still share one causal router and account.
     """
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
@@ -82,7 +82,7 @@ class ResearchScenarioBundleV5:
             interaction_minutes=15,
             minimum_gross_rr=minimum_gross_rr,
         )
-        self.learned_macro = LearnedHorizontalScenarioEngine(
+        self.learned_macro = ConfirmationCloseLearnedHorizontalScenarioEngine(
             symbol,
             tick_size,
             scale_name="MACRO",
@@ -91,7 +91,7 @@ class ResearchScenarioBundleV5:
             objective_book=self.macro.structure,
             minimum_gross_rr=minimum_gross_rr,
         )
-        self.learned_micro = LearnedHorizontalScenarioEngine(
+        self.learned_micro = ConfirmationCloseLearnedHorizontalScenarioEngine(
             symbol,
             tick_size,
             scale_name="MICRO",
@@ -135,6 +135,7 @@ class ResearchScenarioBundleV5:
             "macro_structure": self.macro.structure.diagnostics,
             "micro": self.micro.diagnostics,
             "micro_structure": self.micro.structure.diagnostics,
+            "learned_entry_policy": "CONFIRMATION_CLOSE",
             "learned_macro": self.learned_macro.diagnostics,
             "learned_macro_detector": self.learned_macro.detector.diagnostics,
             "learned_micro": self.learned_micro.diagnostics,
@@ -173,9 +174,9 @@ class ResearchScenarioBundleV5:
         plans: list[V5TradePlan] = []
 
         # Generic structure is processed first so its objective book includes
-        # every pivot causally observable at this close. Learned-horizontal
-        # target selection still requires objective.observed_time < interaction,
-        # so same-close targets cannot leak into the plan.
+        # every pivot causally observable at this close. Target selection still
+        # requires objective.observed_time < interaction; same-close targets
+        # therefore cannot leak into a learned plan.
         if timeframe_minutes in {60, 15, 5}:
             plans.extend(self.macro.on_bar(timeframe_minutes, bar))
         if timeframe_minutes in {15, 5, 1}:
