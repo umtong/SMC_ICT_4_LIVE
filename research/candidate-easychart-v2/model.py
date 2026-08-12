@@ -13,9 +13,17 @@ class EasyChartStateEngine(BoundaryState):
         remaining: list[RejectionCandidate] = []
         for candidate in self.rejections:
             source = candidate.source
-            stop = candidate.excursion - self.config.tick_size if candidate.side is Side.LONG else candidate.excursion + self.config.tick_size
+            stop = (
+                candidate.excursion - self.config.tick_size
+                if candidate.side is Side.LONG
+                else candidate.excursion + self.config.tick_size
+            )
             invalidated = current.low <= stop if candidate.side is Side.LONG else current.high >= stop
-            target_spent = current.high >= candidate.target.level if candidate.side is Side.LONG else current.low <= candidate.target.level
+            target_spent = (
+                current.high >= candidate.target.level
+                if candidate.side is Side.LONG
+                else current.low <= candidate.target.level
+            )
             if invalidated:
                 self._inc("rejection_invalidated_before_entry")
                 continue
@@ -34,6 +42,7 @@ class EasyChartStateEngine(BoundaryState):
                 )
                 if confirmed and index > candidate.sweep_index:
                     candidate.confirmed_index = index
+                    candidate.confirmed_time_ns = current.ts_close_ns
                     self._inc("rejection_confirmed")
                 remaining.append(candidate)
                 continue
@@ -59,6 +68,9 @@ class EasyChartStateEngine(BoundaryState):
                 stop=stop,
                 target=candidate.target,
                 event_suffix=str(candidate.sweep_index),
+                interaction_index=candidate.sweep_index,
+                confirmation_index=candidate.confirmed_index,
+                trigger_extreme=candidate.excursion,
             )
             self._inc("rejection_first_retest_spent")
             if plan is not None:
@@ -66,42 +78,99 @@ class EasyChartStateEngine(BoundaryState):
         self.rejections = remaining
         return plans
 
-    def _confirm_acceptance(self, current: Candle, index: int) -> list[TradePlan]:
+    def _advance_acceptance(self, current: Candle, index: int) -> list[TradePlan]:
         plans: list[TradePlan] = []
         remaining: list[AcceptanceCandidate] = []
         for candidate in self.acceptance:
-            if index != candidate.break_index + 1:
-                if index <= candidate.break_index + 1:
+            source = candidate.source
+            stop = (
+                candidate.origin.level - self.config.tick_size
+                if candidate.side is Side.LONG
+                else candidate.origin.level + self.config.tick_size
+            )
+            invalidated = current.low <= stop if candidate.side is Side.LONG else current.high >= stop
+            target_spent = (
+                current.high >= candidate.target.level
+                if candidate.side is Side.LONG
+                else current.low <= candidate.target.level
+            )
+            if invalidated:
+                self._inc("acceptance_invalidated_before_entry")
+                continue
+            if target_spent:
+                self._inc("acceptance_target_spent_before_entry")
+                continue
+
+            if candidate.confirmed_index is None:
+                if index != candidate.break_index + 1:
+                    if index <= candidate.break_index + 1:
+                        remaining.append(candidate)
+                    else:
+                        self._inc("acceptance_failed_next_bar_hold")
+                    continue
+                held = (
+                    current.open > source.level and current.close > source.level
+                    if candidate.side is Side.LONG
+                    else current.open < source.level and current.close < source.level
+                )
+                if not held:
+                    self._inc("acceptance_failed_next_bar_hold")
+                    continue
+                retest_spent = (
+                    current.low <= source.level
+                    if candidate.side is Side.LONG
+                    else current.high >= source.level
+                )
+                if retest_spent:
+                    self._inc("acceptance_retest_spent_before_observable")
+                    continue
+                candidate.confirmed_index = index
+                candidate.confirmed_time_ns = current.ts_close_ns
+                self._inc("acceptance_confirmed")
+                remaining.append(candidate)
+                continue
+
+            if index <= candidate.confirmed_index:
+                remaining.append(candidate)
+                continue
+            retested = (
+                current.low <= source.level and current.close > source.level
+                if candidate.side is Side.LONG
+                else current.high >= source.level and current.close < source.level
+            )
+            if not retested:
+                closed_back_inside = (
+                    current.close <= source.level
+                    if candidate.side is Side.LONG
+                    else current.close >= source.level
+                )
+                if closed_back_inside:
+                    self._inc("acceptance_failed_retest")
+                else:
                     remaining.append(candidate)
                 continue
-            source = candidate.source
-            if candidate.side is Side.LONG:
-                held = current.open > source.level and current.close > source.level
-                stop = candidate.origin - self.config.tick_size
-            else:
-                held = current.open < source.level and current.close < source.level
-                stop = candidate.origin + self.config.tick_size
-            if not held:
-                self._inc("acceptance_failed_hold")
-                continue
-            target = self._nearest_target(candidate.side, current, source)
+
             plan = self._plan(
-                family=Family.ACCEPTANCE_HOLD_CLOSE,
+                family=Family.ACCEPTANCE_RETEST_CLOSE,
                 side=candidate.side,
                 current=current,
                 source=source,
                 entry=current.close,
                 stop=stop,
-                target=target,
+                target=candidate.target,
                 event_suffix=str(candidate.break_index),
+                interaction_index=candidate.break_index,
+                confirmation_index=candidate.confirmed_index,
+                trigger_extreme=candidate.break_extreme,
+                origin=candidate.origin,
             )
+            self._inc("acceptance_first_retest_spent")
             if plan is not None:
                 plans.append(plan)
         self.acceptance = remaining
         return plans
 
     def _interactions(self, current: Candle, previous: Candle, index: int) -> list[TradePlan]:
-        plans: list[TradePlan] = []
         rejection_candidates: list[tuple[Boundary, Side, float]] = []
         break_candidates: list[tuple[Boundary, Side, float]] = []
         for boundary in self._active():
@@ -123,11 +192,15 @@ class EasyChartStateEngine(BoundaryState):
             for item in items:
                 boundary, side, _ = item
                 old = selected.get(side)
-                if old is None or (boundary.span, boundary.prominence_atr, boundary.observed_time_ns) > (
+                if old is None:
+                    selected[side] = item
+                    continue
+                if (boundary.span, boundary.prominence_atr, boundary.observed_time_ns) > (
                     old[0].span,
                     old[0].prominence_atr,
                     old[0].observed_time_ns,
                 ):
+                    self._inc("nested_interaction_collapsed")
                     selected[side] = item
                 else:
                     self._inc("nested_interaction_collapsed")
@@ -146,6 +219,7 @@ class EasyChartStateEngine(BoundaryState):
                         target=target,
                         side=side,
                         sweep_index=index,
+                        sweep_time_ns=current.ts_close_ns,
                         sweep_close=current.close,
                         excursion=excursion,
                         confirmation_deadline=index + self.config.rejection_confirmation_bars,
@@ -155,22 +229,34 @@ class EasyChartStateEngine(BoundaryState):
 
         if self.config.enable_acceptance:
             for source, side, extreme in strongest(break_candidates):
-                origin = self._latest_origin(side, current.ts_close_ns)
+                target = self._nearest_target(side, current, source)
+                origin = self._latest_origin(side, current.ts_close_ns, min_span=source.span)
                 source.consumed = True
+                if target is None:
+                    self._inc("no_preexisting_opposite_target")
+                    continue
                 if origin is None:
                     self._inc("acceptance_no_causal_origin")
                     continue
-                if side is Side.LONG and not origin < source.level:
+                if side is Side.LONG and not origin.level < source.level:
                     self._inc("acceptance_bad_origin")
                     continue
-                if side is Side.SHORT and not origin > source.level:
+                if side is Side.SHORT and not origin.level > source.level:
                     self._inc("acceptance_bad_origin")
                     continue
                 self.acceptance.append(
-                    AcceptanceCandidate(source=source, side=side, break_index=index, break_extreme=extreme, origin=origin),
+                    AcceptanceCandidate(
+                        source=source,
+                        target=target,
+                        side=side,
+                        break_index=index,
+                        break_time_ns=current.ts_close_ns,
+                        break_extreme=extreme,
+                        origin=origin,
+                    ),
                 )
                 self._inc("acceptance_armed")
-        return plans
+        return []
 
     def on_bar(self, bar: Candle) -> list[TradePlan]:
         self._update_true_range(bar)
@@ -178,10 +264,19 @@ class EasyChartStateEngine(BoundaryState):
         index = len(self.bars) - 1
         self._register_pivots(index)
         plans = self._advance_rejections(bar, index)
-        plans.extend(self._confirm_acceptance(bar, index))
+        plans.extend(self._advance_acceptance(bar, index))
         if index >= 1:
             plans.extend(self._interactions(bar, self.bars[index - 1], index))
-        return sorted(plans, key=lambda plan: (plan.observed_time_ns, -plan.source_span, -plan.source_prominence_atr, plan.symbol, plan.plan_id))
+        return sorted(
+            plans,
+            key=lambda plan: (
+                plan.observed_time_ns,
+                -plan.source_span,
+                -plan.source_prominence_atr,
+                plan.symbol,
+                plan.plan_id,
+            ),
+        )
 
 
 __all__ = [
