@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
 from scenario_transitions_v5 import ScenarioTransitionMixin
-from structure_v5 import CausalStructureBook
 
 
 class StructureScenarioEngine(
@@ -37,7 +37,7 @@ class StructureScenarioEngine(
         self.decision_minutes = decision_minutes
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
-        self.structure = CausalStructureBook(symbol, higher_minutes, tick_size)
+        self.structure = LifecycleAwareStructureBook(symbol, higher_minutes, tick_size)
         self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
         self.decision_bars: list[Candle] = []
         self.setups: list[ScenarioSetup] = []
@@ -83,6 +83,15 @@ class StructureScenarioEngine(
                     "overlap_lower": setup.context.lower,
                     "overlap_upper": setup.context.upper,
                     "interaction_time_ns": setup.interaction_time_ns,
+                    "structure_age_ns": max(0, setup.interaction_time_ns - setup.observed_time_ns),
+                    "event_age_from_interaction_ns": max(0, time_ns - setup.interaction_time_ns),
+                    "context_member_ids": [
+                        member.source_structure_id for member in setup.context_members
+                    ],
+                    "context_member_kinds": [
+                        getattr(member.kind, "value", str(member.kind))
+                        for member in setup.context_members
+                    ],
                 },
             )
         self.trace_events.append(event)
@@ -209,6 +218,10 @@ class StructureScenarioEngine(
             self._advance_decision_setups(bar, index)
             if index >= 1:
                 self._discover_interactions(bar, self.decision_bars[index - 1], index)
+            # The designated decision bar first owns the interaction. Only
+            # after classification do diagonal boundaries leave the fresh
+            # opportunity set, including crossed lookalikes which were not
+            # selected for a setup.
             self.structure.observe_price(bar)
             return []
         if timeframe_minutes != self.trigger_minutes:
