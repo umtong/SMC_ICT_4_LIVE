@@ -1,22 +1,23 @@
 """Channel-breakout objective correction for the canonical EasyChart policy.
 
 The channel material gives a different objective for an accepted channel break
-than for an in-channel rotation: the projected expansion channel.  The prior
+than for an in-channel rotation: the projected expansion channel. The prior
 machine policy instead searched arbitrary old horizontal pivots, occasionally
 creating 30R-50R targets whose account result depended on one exceptional move.
 
-For an accepted channel breakout, this module uses one current channel width
-beyond the broken edge as the single pre-entry full-position target.  That is
-the mechanically observable end of the first equal-width channel expansion.
-Rejections and rotations retain the opposite channel edge; non-channel setups
-retain their existing objective policy.  No risk, stop, entry, exit-management,
-time, daily, or trade-count rule changes.
+For an accepted channel breakout, this module compares the first equal-width
+channel extension with the existing pre-observed opposing structure and selects
+whichever price would be encountered first. Rejections and rotations retain the
+opposite channel edge; non-channel setups retain their existing objective
+policy. No risk, stop, entry, exit-management, time, daily, or trade-count rule
+changes.
 """
 from __future__ import annotations
 
 from enum import Enum
 from typing import Any
 
+import contracts_v5 as _contracts
 from contracts_v5 import ScenarioPath, ScenarioSetup, StructureFamily, StructureZone
 from domain import Side
 from easychart_zones import ZoneSide
@@ -32,8 +33,10 @@ class ChannelObjectiveKind(str, Enum):
 
 CHANNEL_EXTENSION_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
-    "ACCEPTED_CHANNEL_BREAK_TARGETS_FIRST_EQUAL_WIDTH_CHANNEL_EXTENSION"
+    "ACCEPTED_CHANNEL_BREAK_TARGETS_FIRST_OF_EQUAL_WIDTH_EXTENSION_OR_OPPOSING_STRUCTURE"
 )
+if CHANNEL_EXTENSION_RULE not in _contracts.TRANSLATION_RULES:
+    _contracts.TRANSLATION_RULES += (CHANNEL_EXTENSION_RULE,)
 
 
 class ChannelExtensionTargetScenarioEngine(CloseDetachedRetestScenarioEngine):
@@ -85,6 +88,18 @@ class ChannelExtensionTargetScenarioEngine(CloseDetachedRetestScenarioEngine):
         )
         return zone, price
 
+    @staticmethod
+    def _extension_is_first(
+        side: Side,
+        extension_price: float,
+        existing_price: float,
+    ) -> bool:
+        return (
+            extension_price < existing_price
+            if side is Side.LONG
+            else extension_price > existing_price
+        )
+
     def _select_target(
         self,
         context: StructureZone,
@@ -92,12 +107,28 @@ class ChannelExtensionTargetScenarioEngine(CloseDetachedRetestScenarioEngine):
         path: ScenarioPath,
         bar: Any,
     ) -> tuple[StructureZone, float, str | None, float | None] | None:
-        if path is ScenarioPath.ACCEPTANCE and context.family is StructureFamily.CHANNEL:
-            channel = self.structure.channel_for_boundary(context.source_structure_id)
-            if channel is not None:
-                zone, price = self._channel_extension_at(channel, side, bar.ts_close_ns)
-                return zone, price, channel.channel_id, channel.mid_at(bar.ts_close_ns)
-        return super()._select_target(context, side, path, bar)
+        existing = super()._select_target(context, side, path, bar)
+        if path is not ScenarioPath.ACCEPTANCE or context.family is not StructureFamily.CHANNEL:
+            return existing
+
+        channel = self.structure.channel_for_boundary(context.source_structure_id)
+        if channel is None:
+            return existing
+        extension_zone, extension_price = self._channel_extension_at(
+            channel,
+            side,
+            bar.ts_close_ns,
+        )
+        if existing is not None:
+            _, existing_price, _, _ = existing
+            if not self._extension_is_first(side, extension_price, existing_price):
+                return existing
+        return (
+            extension_zone,
+            extension_price,
+            channel.channel_id,
+            channel.mid_at(bar.ts_close_ns),
+        )
 
     def _channel_target_at(
         self,
@@ -113,7 +144,7 @@ class ChannelExtensionTargetScenarioEngine(CloseDetachedRetestScenarioEngine):
 
 
 class MicroChannelExtensionBundleV16(MicroCloseDetachedRetestBundleV14):
-    """Micro policy with fixed execution and first-width channel objectives."""
+    """Micro policy with fixed execution and first channel-break objectives."""
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
@@ -132,7 +163,7 @@ class MicroChannelExtensionBundleV16(MicroCloseDetachedRetestBundleV14):
     def diagnostics(self) -> dict[str, Any]:
         output = dict(super().diagnostics)
         output["channel_acceptance_target_policy"] = {
-            "name": "FIRST_EQUAL_WIDTH_CHANNEL_EXTENSION",
+            "name": "FIRST_OF_EQUAL_WIDTH_EXTENSION_OR_OPPOSING_STRUCTURE",
             "rule_provenance": CHANNEL_EXTENSION_RULE,
         }
         return output
