@@ -31,30 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Environment and causal-domain tests
+      - name: Environment and causal semantic tests
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT" "$CACHE"
           smc4 doctor
           python -m compileall -q research/candidate-easychart-v3
-          python -m unittest discover -s research/candidate-easychart-v3/tests -p 'test_*.py' -v
+          python research/candidate-easychart-v3/run_tests_v3.py
 
-      - name: Four-symbol causal MTF short diagnostic
+      - name: Four-symbol structure-first short diagnostic
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT/mtf"
           exec > >(tee "$ROOT/run.log") 2>&1
-          python research/candidate-easychart-v3/run_mtf_backtest.py \
-            --start 2024-02-01 \
-            --end 2024-02-14 \
-            --warmup-days 30 \
-            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
-            --cache "$CACHE" \
-            --output "$ROOT/mtf"
-          python research/candidate-easychart-v3/validate_order_lifecycle.py \
-            --output "$ROOT/mtf"
+          python research/candidate-easychart-v3/run_mtf_backtest.py             --start 2024-02-01             --end 2024-02-14             --warmup-days 30             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT             --cache "$CACHE"             --output "$ROOT/mtf"
+          python research/candidate-easychart-v3/validate_order_lifecycle.py             --output "$ROOT/mtf"
 
       - name: Preserve research evidence
         if: always()

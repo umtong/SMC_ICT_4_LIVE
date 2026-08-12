@@ -1,4 +1,4 @@
-"""Run the structure-first EasyChart v3 policy through one continuous account."""
+"""Run the EasyChart v3 planned-zone limit scenarios through one continuous account."""
 from __future__ import annotations
 
 import argparse
@@ -10,9 +10,9 @@ import pandas as pd
 
 from backtest_support import make_engine
 from instruments import CONTRACTS, make_instrument
-from mtf_backtest_support_structure_v3 import preserve_structure_results
+from mtf_backtest_support import preserve_mtf_results
 from mtf_data import add_symbol_mtf_data
-from mtf_strategy_structure_v3 import EasyChartMTFConfig, EasyChartMTFStrategy
+from mtf_strategy_limit_v3 import EasyChartMTFConfig, EasyChartMTFStrategy
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +39,6 @@ def main() -> None:
         raise SystemExit("--min-gross-rr must be positive")
     if args.entry_slippage_ticks < 0 or args.stop_slippage_ticks < 0:
         raise SystemExit("slippage ticks cannot be negative")
-
     symbols = tuple(args.symbols)
     unknown = sorted(set(symbols) - set(CONTRACTS))
     if unknown:
@@ -86,7 +85,7 @@ def main() -> None:
     engine.add_strategy(strategy)
     try:
         engine.run()
-        metrics = preserve_structure_results(
+        metrics = preserve_mtf_results(
             engine,
             strategy,
             args.output,
