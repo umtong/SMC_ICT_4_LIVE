@@ -9,6 +9,7 @@ from event_footprints_v5 import EventLocalZoneDetector
 from objective_ladder_v5 import CausalObjectiveLadder
 from objective_policy_v5 import ObjectiveLadderScenarioMixin
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
+from rejection_confirmation_v5 import DirectionalRejectionConfirmationMixin
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
 from scenario_transitions_v5 import ScenarioTransitionMixin
@@ -17,6 +18,7 @@ from structure_admission_v5 import SourceFaithfulStructureBook
 
 class StructureScenarioEngine(
     ObjectiveLadderScenarioMixin,
+    DirectionalRejectionConfirmationMixin,
     ScenarioContextMixin,
     ScenarioTransitionMixin,
     ScenarioExecutionMixin,
