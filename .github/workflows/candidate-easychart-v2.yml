@@ -40,19 +40,19 @@ jobs:
           python -m compileall -q research/candidate-easychart-v2
           python -m unittest discover -s research/candidate-easychart-v2/tests -p 'test_*.py' -v
 
-      - name: Source-faithful four-symbol MTF short diagnostic
+      - name: Unified four-symbol EasyChart short diagnostic
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$ROOT/mtf"
+          mkdir -p "$ROOT/integrated"
           exec > >(tee "$ROOT/run.log") 2>&1
-          python research/candidate-easychart-v2/run_mtf_backtest.py \
+          python research/candidate-easychart-v2/run_integrated_backtest.py \
             --start 2024-02-01 \
             --end 2024-02-14 \
             --warmup-days 30 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
-            --output "$ROOT/mtf"
+            --output "$ROOT/integrated"
 
       - name: Preserve research evidence
         if: always()
