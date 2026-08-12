@@ -58,7 +58,13 @@ def trade_robustness_metrics(
     The counterfactuals set the best trade or best close-day factor to ``1.0``;
     they do not reorder trades or refit the strategy.
     """
-    required = {"realized_pnl", "nav_at_submission", "actual_net_r", "ts_closed"}
+    required = {
+        "position_id",
+        "realized_pnl",
+        "nav_at_submission",
+        "actual_net_r",
+        "ts_closed",
+    }
     missing = sorted(required - set(trade_audit.columns))
     if missing:
         raise ValueError(f"trade audit missing robustness columns: {missing}")
@@ -86,11 +92,8 @@ def trade_robustness_metrics(
     gross_profit = float(positive_pnl.sum())
     gross_loss = float(-pnl[pnl < 0.0].sum())
     shares = positive_pnl / gross_profit if gross_profit > 0.0 else pd.Series(dtype=float)
-    effective_winners = (
-        float(1.0 / np.square(shares.to_numpy()).sum())
-        if len(shares) and np.square(shares.to_numpy()).sum() > 0.0
-        else 0.0
-    )
+    squared_share_sum = float(np.square(shares.to_numpy()).sum()) if len(shares) else 0.0
+    effective_winners = 1.0 / squared_share_sum if squared_share_sum > 0.0 else 0.0
 
     ordered_best = trade_returns.sort_values(ascending=False).index.tolist()
     best_index = ordered_best[0]
