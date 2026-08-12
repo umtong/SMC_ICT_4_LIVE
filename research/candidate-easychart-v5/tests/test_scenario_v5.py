@@ -63,7 +63,7 @@ def add_pivots(engine: StructureScenarioEngine, *items: Pivot) -> None:
 
 
 class StructureScenarioTests(unittest.TestCase):
-    def test_sweep_reclaim_uses_event_local_footprint_and_first_retest(self) -> None:
+    def test_sweep_reclaim_uses_first_later_structure_retest(self) -> None:
         engine = make_engine()
         source = pivot("LOW_SOURCE", "LOW", 100.0, 1, 3)
         target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
@@ -74,20 +74,23 @@ class StructureScenarioTests(unittest.TestCase):
         active = list(engine._active.values())
         self.assertEqual(len(active), 1)
         self.assertIs(active[0].path, ScenarioPath.REJECTION)
-        self.assertIs(active[0].state, SetupState.WAITING_DISPLACEMENT)
+        self.assertIs(active[0].state, SetupState.WAITING_REJECTION_RETEST)
+        self.assertEqual(active[0].confirmation_time_ns, 11 * NS)
 
-        engine.on_bar(5, candle(12, 101.0, 101.2, 99.8, 100.5))
-        self.assertIs(active[0].state, SetupState.WAITING_DISPLACEMENT)
-        engine.on_bar(5, candle(13, 100.4, 102.2, 99.7, 102.0))
-        self.assertIs(active[0].state, SetupState.WAITING_FOOTPRINT_RETEST)
-        plans = engine.on_bar(5, candle(14, 101.2, 102.0, 100.6, 101.5))
+        # A trigger bar with the same close time as the reclaim decision bar is
+        # not independent confirmation and cannot enter.
+        self.assertFalse(engine.on_bar(5, candle(11, 100.5, 101.2, 99.9, 100.8)))
+        self.assertIs(active[0].state, SetupState.WAITING_REJECTION_RETEST)
+
+        plans = engine.on_bar(5, candle(12, 100.7, 101.2, 99.9, 100.8))
         self.assertEqual(len(plans), 1)
         plan = plans[0]
         self.assertIs(plan.side, Side.LONG)
         self.assertEqual(plan.scenario_path, "REJECTION")
-        self.assertEqual(plan.entry, 101.5)
-        self.assertLess(plan.stop, plan.entry)
-        self.assertLess(plan.entry, plan.target)
+        self.assertIn("STRUCTURE_REJECTION_RETEST", plan.family)
+        self.assertEqual(plan.entry, 100.8)
+        self.assertEqual(plan.stop, 99.4)
+        self.assertEqual(plan.target, 120.0)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
         self.assertIs(active[0].state, SetupState.PLANNED)
 
@@ -114,7 +117,7 @@ class StructureScenarioTests(unittest.TestCase):
         self.assertEqual(plan.target, 120.0)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
 
-    def test_failed_first_footprint_retest_is_not_retried(self) -> None:
+    def test_failed_first_rejection_retest_is_not_retried(self) -> None:
         engine = make_engine()
         source = pivot("LOW_SOURCE", "LOW", 100.0, 1, 3)
         target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
@@ -122,6 +125,45 @@ class StructureScenarioTests(unittest.TestCase):
         engine.on_bar(15, candle(10, 105, 106, 104, 105))
         engine.on_bar(15, candle(11, 101, 102, 99.5, 101))
         setup = list(engine._active.values())[0]
+        self.assertIs(setup.state, SetupState.WAITING_REJECTION_RETEST)
+
+        self.assertFalse(engine.on_bar(5, candle(12, 100.1, 100.2, 99.7, 99.8)))
+        self.assertIs(setup.state, SetupState.UNRESOLVED)
+        self.assertTrue(setup.first_retest_consumed)
+        self.assertFalse(engine.on_bar(5, candle(13, 99.9, 101.2, 99.8, 101.0)))
+        self.assertFalse(engine.plans)
+
+    def test_later_decision_reclaim_arms_direct_retest(self) -> None:
+        engine = make_engine()
+        source = pivot("LOW_SOURCE", "LOW", 100.0, 1, 3)
+        target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
+        add_pivots(engine, target, source)
+        engine.on_bar(15, candle(10, 105, 106, 104, 105))
+        # Sweep closes outside the support band, so the state remains unresolved.
+        engine.on_bar(15, candle(11, 101.0, 101.2, 99.2, 99.5))
+        setup = list(engine._active.values())[0]
+        self.assertIs(setup.state, SetupState.WAITING_RECLAIM)
+        self.assertIsNone(setup.confirmation_time_ns)
+        # A later completed decision bar reclaims the full band.
+        engine.on_bar(15, candle(12, 99.6, 101.0, 99.3, 100.6))
+        self.assertIs(setup.state, SetupState.WAITING_REJECTION_RETEST)
+        self.assertEqual(setup.confirmation_time_ns, 12 * NS)
+        self.assertFalse(engine.on_bar(5, candle(12, 100.2, 100.8, 99.9, 100.5)))
+        plans = engine.on_bar(5, candle(13, 100.5, 101.0, 99.9, 100.7))
+        self.assertEqual(len(plans), 1)
+        self.assertLess(plans[0].stop, setup.interaction_extreme)
+
+    def test_failed_first_footprint_retest_is_not_retried_for_bounce(self) -> None:
+        engine = make_engine()
+        source = pivot("LOW_SOURCE", "LOW", 100.0, 1, 3)
+        target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
+        add_pivots(engine, target, source)
+        engine.on_bar(15, candle(10, 105, 106, 104, 105))
+        # Touch without an excursion creates the ordinary bounce family.
+        engine.on_bar(15, candle(11, 101.0, 102.0, 100.0, 101.0))
+        setup = list(engine._active.values())[0]
+        self.assertIs(setup.path, ScenarioPath.BOUNCE)
+        self.assertIs(setup.state, SetupState.WAITING_DISPLACEMENT)
         engine.on_bar(5, candle(12, 101.0, 101.2, 99.8, 100.5))
         engine.on_bar(5, candle(13, 100.4, 102.2, 99.7, 102.0))
         self.assertIs(setup.state, SetupState.WAITING_FOOTPRINT_RETEST)
@@ -153,14 +195,15 @@ class StructureScenarioTests(unittest.TestCase):
             any(setup.context.source_structure_id == source.pivot_id for setup in engine.setups),
         )
 
-    def test_meaningful_structure_allows_sub_two_x_ob_footprint(self) -> None:
+    def test_meaningful_structure_allows_sub_two_x_ob_footprint_for_bounce(self) -> None:
         engine = make_engine()
         source = pivot("LOW_SOURCE", "LOW", 100.0, 1, 3)
         target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
         add_pivots(engine, target, source)
         engine.on_bar(15, candle(10, 105, 106, 104, 105))
-        engine.on_bar(15, candle(11, 101, 102, 99.5, 101))
+        engine.on_bar(15, candle(11, 101, 102, 100.0, 101))
         setup = list(engine._active.values())[0]
+        self.assertIs(setup.path, ScenarioPath.BOUNCE)
         engine.on_bar(5, candle(12, 101.2, 101.3, 99.8, 100.2))
         engine.on_bar(5, candle(13, 100.1, 101.4, 99.7, 101.3))
         self.assertIsNotNone(setup.trigger_zone)
