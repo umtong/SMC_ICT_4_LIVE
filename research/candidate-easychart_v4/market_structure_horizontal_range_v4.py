@@ -117,7 +117,7 @@ class HorizontalRangeMarketStructureDetector(
                 boundary.active = False
         self._inc("horizontal_range_superseded")
 
-    def _horizontal_boundary(
+    def _make_horizontal_range_boundary(
         self,
         *,
         boundary_id: str,
@@ -189,7 +189,7 @@ class HorizontalRangeMarketStructureDetector(
             second.strength_ratio,
             third.strength_ratio,
         )
-        lower = self._horizontal_boundary(
+        lower = self._make_horizontal_range_boundary(
             boundary_id=self._boundary_id(StructureKind.CHANNEL_LOWER, channel_id),
             kind=StructureKind.CHANNEL_LOWER,
             role=BoundaryRole.SUPPORT,
@@ -201,7 +201,7 @@ class HorizontalRangeMarketStructureDetector(
             strength_ratio=strength,
             channel_id=channel_id,
         )
-        upper = self._horizontal_boundary(
+        upper = self._make_horizontal_range_boundary(
             boundary_id=self._boundary_id(StructureKind.CHANNEL_UPPER, channel_id),
             kind=StructureKind.CHANNEL_UPPER,
             role=BoundaryRole.RESISTANCE,
@@ -213,7 +213,7 @@ class HorizontalRangeMarketStructureDetector(
             strength_ratio=strength,
             channel_id=channel_id,
         )
-        mid = self._horizontal_boundary(
+        mid = self._make_horizontal_range_boundary(
             boundary_id=self._boundary_id(StructureKind.CHANNEL_MIDLINE, channel_id),
             kind=StructureKind.CHANNEL_MIDLINE,
             role=BoundaryRole.RESISTANCE,
