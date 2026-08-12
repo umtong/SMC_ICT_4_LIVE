@@ -11,7 +11,7 @@ Derived from the supplied files `00_시작하며`, `01_오더블럭`, `02_FVG`, 
 3. An FVG is a three-candle imbalance with a conspicuously large middle candle. Sweep-linked and OB-linked FVGs are emphasized; stale FVGs can lose function.
 4. Trend lines connect meaningful wick lows or highs and are used for direction, bounce and breakout/retest.
 5. A channel consists of exactly parallel lines. At least three points establish it; the next interaction is the first trade candidate. The opposite edge is the natural rotation objective.
-6. A fakeout/trap requires a pre-existing visible structure, a breach/sweep and a return. A conservative entry waits for recovery/retest.
+6. A fakeout/trap requires a pre-existing visible structure, a breach/sweep and a return. A conservative entry waits for recovery/retest. The fast fakeout is described as a sharp return which typically leaves a conspicuous long wick, whereas the slower trap allows time outside the level before returning.
 7. Channel acceptance requires a body close outside and the next bar to remain outside; re-entry means the breakout premise failed.
 8. A planned area that is not reached is not chased.
 9. Stop placement must invalidate the causal idea. Targets are prior highs/lows, the opposite channel edge or another pre-existing opposing structure.
@@ -31,6 +31,7 @@ These are necessary to run the ideas online. They are not attributed to the sour
 | A diagonal bounce survives but a body-confirmed break changes its role | wick rejection leaves the projected structure available; a close through its invalidation side removes it from future fresh opportunities while the armed break/retest episode remains | prevents both premature deletion of a valid line and reuse of a visibly broken line |
 | Channel target moves with the channel | recalculate until entry and freeze the exact price before order submission | satisfies both channel geometry and the single predeclared target contract |
 | A wick breaches but the close is neither clearly in nor out | remain `UNRESOLVED`; do not infer direction | avoids outcome-based labels |
+| A completed bar breaches and fully reclaims in one step | call it a fast fakeout only when the excursion-side wick is larger than the real body; otherwise terminate the first interaction as unresolved | converts the source's visual “long wick and sharp return” distinction into a scale-free rule instead of treating every close-back-inside as a sweep |
 | Several structures are touched by one bar | overlapping same-side structures form one causal cluster; a bar spanning both sides is unresolved | prevents ID-splitting one liquidity event into many trades |
 | Macro and micro plans describe the same event | overlapping decision-bar intervals plus overlapping price bands are one episode | suppresses cross-scale trade-count inflation without an arbitrary clock window |
 | A first retest fails | consume that retest and terminate the setup | prevents repeated hindsight entries into the same event |
@@ -46,7 +47,8 @@ These are falsifiable and may be replaced without rewriting the source history.
 - `60/15/5` and `15/5/1` are useful macro and micro decision stacks for intraday crypto.
 - Pivot spans 2 and 6 represent local and larger auction legs adequately enough for initial diagnosis.
 - Two same-side pivots plus the strongest intervening opposite pivot are a workable causal channel construction.
-- For rejection, bounce and rotation, a later same-side OB or FVG whose formation touches the structure is an independent event-local displacement footprint.
+- For an ordinary bounce or channel rotation, a later same-side OB or FVG whose formation touches the structure is an independent event-local displacement footprint.
+- For a confirmed fakeout/rejection, the first later retest of the reclaimed structure is the conservative entry event; no second post-reclaim OB/FVG cycle is assumed unless the case itself supplies one.
 - For accepted breakouts, outside hold plus first retest is sufficient confirmation without requiring an OB/FVG.
 - Confirmed decision-timeframe HH/HL, LH/LL or transition state is a workable online proxy for the source's current-trend judgment.
 - Rolling 24-hour return, range position and notional activity are diagnostic proxies for “recent strength” and “active trading,” not active filters until trade-level evidence identifies the exact decision they improve.
