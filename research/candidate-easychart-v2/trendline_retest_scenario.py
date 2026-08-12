@@ -111,7 +111,7 @@ class Objective:
 class TrendlineFirstRetestScenarioEngine:
     """One-timeframe causal trendline breakout/retest family.
 
-    Multi-timeframe context may route this family later.  It is not silently
+    Multi-timeframe context may route this family later. It is not silently
     invented inside the entry detector, which keeps source/implementation
     disagreements visible in the trade windows.
     """
@@ -160,8 +160,6 @@ class TrendlineFirstRetestScenarioEngine:
 
     @staticmethod
     def _trade_side(line_side: TrendLineSide) -> Side:
-        # Breaking resistance upward produces a long retest; breaking support
-        # downward produces a short retest.
         return Side.LONG if line_side is TrendLineSide.RESISTANCE else Side.SHORT
 
     @staticmethod
@@ -187,11 +185,7 @@ class TrendlineFirstRetestScenarioEngine:
         line: CausalTrendLine,
         retest_level: float,
     ) -> bool:
-        return (
-            zone.lower - line.tolerance
-            <= retest_level
-            <= zone.upper + line.tolerance
-        )
+        return zone.lower - line.tolerance <= retest_level <= zone.upper + line.tolerance
 
     def _create_setups(self, events: list[TrendLineEvent]) -> None:
         existing = {setup.setup_id for setup in self.setups}
@@ -239,7 +233,10 @@ class TrendlineFirstRetestScenarioEngine:
         for swing in self.line_tracker.swing_tracker.swings:
             if swing.side is not wanted_swing:
                 continue
-            if swing.observed_time_ns >= observed_time_ns:
+            # A swing confirmed by the same closed retest bar is visible before
+            # the order submitted after that close. Only genuinely later objects
+            # are future information.
+            if swing.observed_time_ns > observed_time_ns:
                 continue
             if not self._swing_unspent(swing, current_index):
                 continue
@@ -254,7 +251,7 @@ class TrendlineFirstRetestScenarioEngine:
 
         wanted_zone = ZoneSide.RESISTANCE if side is Side.LONG else ZoneSide.SUPPORT
         for zone in self.zone_detector.active_zones(side=wanted_zone):
-            if zone.observed_time_ns >= observed_time_ns:
+            if zone.observed_time_ns > observed_time_ns:
                 continue
             if zone.first_touch_index is not None:
                 continue
@@ -272,7 +269,6 @@ class TrendlineFirstRetestScenarioEngine:
 
     @staticmethod
     def _setup_rank(setup: TrendlineRetestSetup, line: CausalTrendLine) -> tuple[int, int, str]:
-        # This is historical geometry only, not a learned performance score.
         return (-line.touch_count, -line.anchor_span_bars, line.line_id)
 
     def _invalidated_before_confirmation(
@@ -303,7 +299,6 @@ class TrendlineFirstRetestScenarioEngine:
         line: CausalTrendLine,
         side: Side,
     ) -> PriceZone | None:
-        """Return the source case-02 form: an old OB first touched by retest."""
         candidates = [
             zone
             for zone in self.zone_detector.active_zones(
@@ -317,8 +312,6 @@ class TrendlineFirstRetestScenarioEngine:
         ]
         if not candidates:
             return None
-        # The most recently formed still-fresh zone is the one immediately left
-        # of the retest in the reviewed chart, not an arbitrary ancient OB.
         return max(
             candidates,
             key=lambda zone: (zone.observed_time_ns, zone.formed_index, zone.zone_id),
@@ -331,7 +324,6 @@ class TrendlineFirstRetestScenarioEngine:
         side: Side,
         created_zones: list[PriceZone],
     ) -> PriceZone | None:
-        """Return the source case-14 form: a strong OB made by the reaction."""
         for zone in created_zones:
             if zone.consumed:
                 continue
@@ -487,8 +479,6 @@ class TrendlineFirstRetestScenarioEngine:
             self._inc("plan_created")
             self._inc(f"plan_{confirmation_kind.value.lower()}")
 
-            # Several near-identical pivot pairs can describe one visible line.
-            # The one retest/OB episode is still one causal trading opportunity.
             for other in waiting:
                 if other is setup or other.state is not TrendlineRetestState.WAITING_CONFIRMATION:
                     continue
