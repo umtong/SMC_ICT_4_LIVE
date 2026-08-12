@@ -20,7 +20,7 @@ def pivot(
     price: float,
     event_index: int,
     observed_index: int,
-    span: int = 2,
+    span: int = 6,
 ) -> Pivot:
     return Pivot(
         pivot_id,
