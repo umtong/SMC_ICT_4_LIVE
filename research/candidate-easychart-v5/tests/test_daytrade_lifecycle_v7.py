@@ -8,9 +8,19 @@ from mtf_strategy_day_v7 import (
     MAX_HOLD_HOURS,
     MAX_HOLD_NS,
     MAX_HOLD_PROVENANCE,
+    active_timer_names,
     closing_order_side,
     max_hold_deadline_ns,
 )
+
+
+class PropertyClock:
+    timer_names = ["alpha", "beta"]
+
+
+class MethodClock:
+    def timer_names(self) -> list[str]:
+        return ["gamma", "delta"]
 
 
 class DayTradeLifecycleTests(unittest.TestCase):
@@ -29,6 +39,10 @@ class DayTradeLifecycleTests(unittest.TestCase):
         self.assertIs(closing_order_side(PositionSide.SHORT), OrderSide.BUY)
         with self.assertRaises(ValueError):
             closing_order_side(PositionSide.FLAT)
+
+    def test_timer_names_supports_pinned_property_and_newer_method_surfaces(self) -> None:
+        self.assertEqual(active_timer_names(PropertyClock()), ("alpha", "beta"))
+        self.assertEqual(active_timer_names(MethodClock()), ("gamma", "delta"))
 
     def test_rule_is_explicitly_source_provenanced(self) -> None:
         self.assertTrue(MAX_HOLD_PROVENANCE.startswith("SOURCE_EXPLICIT:"))
