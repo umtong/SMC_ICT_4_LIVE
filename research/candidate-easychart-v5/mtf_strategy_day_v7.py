@@ -58,8 +58,9 @@ class EasyChartDayTradeStrategy(_base.EasyChartMTFStrategy):
         self._time_exit_order_id: ClientOrderId | None = None
 
     def _reset_daytrade_lifecycle(self) -> None:
-        if self._max_hold_alert_name is not None:
-            self.clock.cancel_timer(self._max_hold_alert_name)
+        alert_name = self._max_hold_alert_name
+        if alert_name is not None and alert_name in self.clock.timer_names():
+            self.clock.cancel_timer(alert_name)
         self._first_entry_fill_ts_ns = None
         self._max_hold_deadline_ns = None
         self._max_hold_alert_name = None
