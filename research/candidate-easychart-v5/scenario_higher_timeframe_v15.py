@@ -1,12 +1,18 @@
-"""Assign every micro setup a causal role inside the completed 60m auction.
+"""Assign every micro setup a causal role inside the 60m and 4h auctions.
 
-EasyChart uses larger timeframes for direction and support/resistance, then
-15m/5m/1m for the actual setup and entry.  A micro acceptance is continuation
-only when the completed 60m structure is aligned or has already broken in that
-direction.  A rejection, rotation or bounce may trade against the current 60m
-direction only when the lower-timeframe interaction actually overlaps a fresh
-60m support/resistance, trend line or channel edge.  Otherwise it is merely a
-small countertrend reaction inside an intact larger auction.
+The source gives 12h/4h/1h charts the intermediate-trend and support/resistance
+role, while 15m/5m/1m provide the actual entry.  This policy therefore asks two
+separate questions before a lower-timeframe plan reaches the account:
+
+1. Does the completed 60m auction support this continuation or reversal?
+2. If the completed 4h auction has a clear direction, is the plan aligned with
+   it, or is a countertrend reversal occurring at an actual fresh 4h boundary?
+
+A micro acceptance against an intact larger auction is a pullback, not a proven
+trend change.  A rejection, rotation or bounce may reverse that auction only at
+a pre-existing larger support/resistance, trend line or channel edge.  Mixed or
+unresolved 4h structure does not veto a plan; the resolved 60m role remains the
+nearest directional authority.
 
 Only completed bars, confirmed wick pivots and exact price-band overlap are
 used.  No indicator score, return threshold, volatility multiple, time exit,
@@ -25,20 +31,30 @@ from easychart_zones import ZoneSide
 from scenario_close_detached_v14 import MicroCloseDetachedRetestBundleV14
 
 
+HOUR_NS = 3_600_000_000_000
+
 HIGHER_TIMEFRAME_ACCEPTANCE_RULE = (
-    "SOURCE_EXPLICIT:LARGER_TIMEFRAME_STRUCTURE_GIVES_DIRECTION_AND_SMALLER_"
-    "TIMEFRAME_SUPPLIES_ENTRY;ACCEPTANCE_RETEST_REQUIRES_ALIGNED_OR_"
-    "DIRECTIONALLY_TRANSITIONING_60M_STRUCTURE;DIRECTIONLESS_TRANSITION_"
-    "REMAINS_UNRESOLVED"
+    "SOURCE_EXPLICIT:60M_INTERMEDIATE_STRUCTURE_GIVES_DIRECTION_AND_15M_5M_1M_"
+    "SUPPLY_ENTRY;ACCEPTANCE_RETEST_REQUIRES_ALIGNED_OR_DIRECTIONALLY_"
+    "TRANSITIONING_60M_STRUCTURE"
 )
 HIGHER_TIMEFRAME_REVERSAL_RULE = (
     "SOURCE_EXPLICIT:COUNTERTREND_FAKEOUT_ROTATION_OR_BOUNCE_REQUIRES_"
     "ACTUAL_OVERLAP_WITH_PREEXISTING_60M_STRUCTURE"
 )
+FOUR_HOUR_ROLE_RULE = (
+    "SOURCE_EXPLICIT:4H_IS_AN_INTERMEDIATE_TREND_AND_SUPPORT_RESISTANCE_"
+    "TIMEFRAME;A_PLAN_AGAINST_RESOLVED_4H_DIRECTION_REQUIRES_AN_ACTUAL_"
+    "PREEXISTING_4H_BOUNDARY"
+)
 HIGHER_TIMEFRAME_STATE_TRANSLATION = (
-    "RESEARCH_HYPOTHESIS:CONFIRMED_60M_WICK_PIVOT_SEQUENCE_DEFINES_THE_"
-    "INTACT_AUCTION_AND_A_COMPLETED_CLOSE_THROUGH_ITS_LATEST_SWING_DEFINES_"
+    "RESEARCH_HYPOTHESIS:CONFIRMED_WICK_PIVOT_SEQUENCE_DEFINES_AN_INTACT_"
+    "AUCTION_AND_A_COMPLETED_CLOSE_THROUGH_ITS_LATEST_SWING_DEFINES_A_"
     "DIRECTIONAL_TRANSITION"
+)
+FOUR_HOUR_AGGREGATION_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:4H_CONTEXT_USES_FOUR_COMPLETED_CONSECUTIVE_"
+    "UTC_ALIGNED_60M_BARS"
 )
 
 
@@ -60,7 +76,7 @@ class DirectionPivot:
 
 
 class CausalHigherTimeframeDirection:
-    """Online 60m structure plus current completed-close structural break."""
+    """Online structure plus a current completed-close structural break."""
 
     PIVOT_SPAN = 2
 
@@ -146,15 +162,52 @@ class CausalHigherTimeframeDirection:
         return None if not lows else lows[-1]
 
 
+class CompletedFourHourBars:
+    """Causally aggregate completed 60m candles into UTC-aligned 4h candles."""
+
+    def __init__(self) -> None:
+        self.hourly: list[Candle] = []
+
+    def on_hour(self, bar: Candle) -> Candle | None:
+        if self.hourly and bar.ts_close_ns != self.hourly[-1].ts_close_ns + HOUR_NS:
+            self.hourly.clear()
+        self.hourly.append(bar)
+        if len(self.hourly) > 4:
+            self.hourly = self.hourly[-4:]
+        close_hour = (bar.ts_close_ns // HOUR_NS) % 24
+        if close_hour % 4 != 0 or len(self.hourly) != 4:
+            return None
+        if any(
+            self.hourly[index].ts_close_ns + HOUR_NS != self.hourly[index + 1].ts_close_ns
+            for index in range(3)
+        ):
+            return None
+        return Candle(
+            ts_close_ns=bar.ts_close_ns,
+            open=self.hourly[0].open,
+            high=max(item.high for item in self.hourly),
+            low=min(item.low for item in self.hourly),
+            close=self.hourly[-1].close,
+            volume=sum(item.volume for item in self.hourly),
+        )
+
+
 class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
-    """One micro decision policy whose paths receive distinct 60m roles."""
+    """One micro decision policy whose paths receive 60m and 4h roles."""
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
+
         self.higher_direction = CausalHigherTimeframeDirection()
         self.higher_structure = LifecycleAwareStructureBook(symbol, 60, tick_size)
         self._higher_snapshot_time_ns: int | None = None
         self._higher_boundaries_before_retirement: tuple[Any, ...] = ()
+
+        self.four_hour_aggregator = CompletedFourHourBars()
+        self.four_hour_direction = CausalHigherTimeframeDirection()
+        self.four_hour_structure = LifecycleAwareStructureBook(symbol, 240, tick_size)
+        self._four_hour_snapshot_time_ns: int | None = None
+        self._four_hour_boundaries_before_retirement: tuple[Any, ...] = ()
 
     @staticmethod
     def _directionally_aligned(plan: V5TradePlan, state: DirectionState) -> bool:
@@ -164,81 +217,160 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
             return plan.side is Side.SHORT
         return False
 
-    def _higher_boundaries_at(self, time_ns: int) -> tuple[Any, ...]:
-        if self._higher_snapshot_time_ns == time_ns:
-            return self._higher_boundaries_before_retirement
-        return tuple(self.higher_structure.boundaries_at(time_ns))
+    @staticmethod
+    def _directional(state: DirectionState) -> bool:
+        return state in {
+            DirectionState.UP,
+            DirectionState.DOWN,
+            DirectionState.TRANSITION_UP,
+            DirectionState.TRANSITION_DOWN,
+        }
 
-    def _higher_spatial_matches(self, plan: V5TradePlan) -> tuple[Any, ...]:
+    def _boundaries_at(
+        self,
+        book: LifecycleAwareStructureBook,
+        snapshot_time_ns: int | None,
+        snapshot: tuple[Any, ...],
+        time_ns: int,
+    ) -> tuple[Any, ...]:
+        if snapshot_time_ns == time_ns:
+            return snapshot
+        return tuple(book.boundaries_at(time_ns))
+
+    def _spatial_matches(
+        self,
+        plan: V5TradePlan,
+        *,
+        book: LifecycleAwareStructureBook,
+        snapshot_time_ns: int | None,
+        snapshot: tuple[Any, ...],
+    ) -> tuple[Any, ...]:
         wanted = ZoneSide.SUPPORT if plan.side is Side.LONG else ZoneSide.RESISTANCE
-        # One tick of adjacency is the discrete-price equivalent of the same
-        # boundary and is already the clustering convention used by the lower
-        # structure engine.  It is not a tunable distance threshold.
         lower = plan.overlap_lower - self.tick_size
         upper = plan.overlap_upper + self.tick_size
         return tuple(
             zone
-            for zone in self._higher_boundaries_at(plan.observed_time_ns)
+            for zone in self._boundaries_at(
+                book,
+                snapshot_time_ns,
+                snapshot,
+                plan.observed_time_ns,
+            )
             if zone.side is wanted
             and zone.observed_time_ns <= plan.observed_time_ns
             and zone.lower <= upper
             and zone.upper >= lower
         )
 
-    def _plan_allowed(
+    def _role_allows(
         self,
         plan: V5TradePlan,
         state: DirectionState,
         spatial_matches: tuple[Any, ...],
+        *,
+        neutral_allows: bool,
     ) -> bool:
+        if not self._directional(state):
+            return neutral_allows
         aligned = self._directionally_aligned(plan, state)
         if plan.scenario_path == "ACCEPTANCE":
             return aligned
-        # Rejection/rotation/bounce in the larger direction is an ordinary
-        # pullback continuation.  Against it, the larger timeframe must supply
-        # an actual price location for the reversal hypothesis.
         return aligned or bool(spatial_matches)
+
+    def _update_sixty_minute_context(self, bar: Candle) -> None:
+        self.higher_direction.on_bar(bar)
+        self.higher_structure.on_bar(bar)
+        self._higher_snapshot_time_ns = bar.ts_close_ns
+        self._higher_boundaries_before_retirement = tuple(
+            self.higher_structure.boundaries_at(bar.ts_close_ns),
+        )
+        self.higher_structure.observe_price(bar)
+
+    def _update_four_hour_context(self, hour: Candle) -> None:
+        four_hour = self.four_hour_aggregator.on_hour(hour)
+        if four_hour is None:
+            return
+        self.four_hour_direction.on_bar(four_hour)
+        self.four_hour_structure.on_bar(four_hour)
+        self._four_hour_snapshot_time_ns = four_hour.ts_close_ns
+        self._four_hour_boundaries_before_retirement = tuple(
+            self.four_hour_structure.boundaries_at(four_hour.ts_close_ns),
+        )
+        self.four_hour_structure.observe_price(four_hour)
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
         if timeframe_minutes == 60:
-            self.higher_direction.on_bar(bar)
-            self.higher_structure.on_bar(bar)
-            self._higher_snapshot_time_ns = bar.ts_close_ns
-            self._higher_boundaries_before_retirement = tuple(
-                self.higher_structure.boundaries_at(bar.ts_close_ns),
-            )
-            # Preserve the current completed bar's first interaction in the
-            # snapshot above, then retire it for later lower-timeframe plans.
-            self.higher_structure.observe_price(bar)
+            self._update_sixty_minute_context(bar)
+            self._update_four_hour_context(bar)
 
         plans = super().on_bar(timeframe_minutes, bar)
         if not plans:
             return []
 
-        state = self.higher_direction.state()
-        context_time = self.higher_direction.observed_time_ns
+        state_60m = self.higher_direction.state()
+        time_60m = self.higher_direction.observed_time_ns
+        state_4h = self.four_hour_direction.state()
+        time_4h = self.four_hour_direction.observed_time_ns
         output: list[V5TradePlan] = []
+
         for plan in plans:
-            if context_time is not None and context_time > plan.observed_time_ns:
-                raise RuntimeError("higher-timeframe router used future information")
-            spatial = self._higher_spatial_matches(plan)
-            allowed = self._plan_allowed(plan, state, spatial)
+            if time_60m is not None and time_60m > plan.observed_time_ns:
+                raise RuntimeError("60m router used future information")
+            if time_4h is not None and time_4h > plan.observed_time_ns:
+                raise RuntimeError("4h router used future information")
+
+            spatial_60m = self._spatial_matches(
+                plan,
+                book=self.higher_structure,
+                snapshot_time_ns=self._higher_snapshot_time_ns,
+                snapshot=self._higher_boundaries_before_retirement,
+            )
+            spatial_4h = self._spatial_matches(
+                plan,
+                book=self.four_hour_structure,
+                snapshot_time_ns=self._four_hour_snapshot_time_ns,
+                snapshot=self._four_hour_boundaries_before_retirement,
+            )
+            allowed_60m = self._role_allows(
+                plan,
+                state_60m,
+                spatial_60m,
+                neutral_allows=False,
+            )
+            allowed_4h = self._role_allows(
+                plan,
+                state_4h,
+                spatial_4h,
+                neutral_allows=True,
+            )
+            allowed = allowed_60m and allowed_4h
+
             context_values = {
-                "higher_timeframe_state": state.value,
-                "higher_timeframe_observed_ns": context_time,
-                "higher_timeframe_close": (
-                    None if not self.higher_direction.bars else self.higher_direction.bars[-1].close
-                ),
+                "higher_timeframe_state": state_60m.value,
+                "higher_timeframe_observed_ns": time_60m,
                 "higher_timeframe_latest_high": self.higher_direction.latest_high,
                 "higher_timeframe_latest_low": self.higher_direction.latest_low,
-                "higher_structure_match_ids": [zone.source_structure_id for zone in spatial],
-                "higher_structure_match_kinds": [zone.kind.value for zone in spatial],
-                "higher_structure_match_count": len(spatial),
-                "directionally_aligned": self._directionally_aligned(plan, state),
+                "higher_structure_match_ids": [zone.source_structure_id for zone in spatial_60m],
+                "higher_structure_match_kinds": [zone.kind.value for zone in spatial_60m],
+                "higher_structure_match_count": len(spatial_60m),
+                "directionally_aligned": self._directionally_aligned(plan, state_60m),
+                "four_hour_state": state_4h.value,
+                "four_hour_observed_ns": time_4h,
+                "four_hour_latest_high": self.four_hour_direction.latest_high,
+                "four_hour_latest_low": self.four_hour_direction.latest_low,
+                "four_hour_structure_match_ids": [zone.source_structure_id for zone in spatial_4h],
+                "four_hour_structure_match_kinds": [zone.kind.value for zone in spatial_4h],
+                "four_hour_structure_match_count": len(spatial_4h),
+                "four_hour_directionally_aligned": self._directionally_aligned(plan, state_4h),
+                "allowed_by_60m_role": allowed_60m,
+                "allowed_by_4h_role": allowed_4h,
                 "acceptance_rule": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
                 "reversal_rule": HIGHER_TIMEFRAME_REVERSAL_RULE,
+                "four_hour_role_rule": FOUR_HOUR_ROLE_RULE,
                 "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+                "four_hour_aggregation": FOUR_HOUR_AGGREGATION_RULE,
             }
+
             if allowed:
                 output.append(plan)
                 self._bundle_trace.append(
@@ -268,14 +400,25 @@ class HigherTimeframeAcceptanceBundleV15(MicroCloseDetachedRetestBundleV14):
     def diagnostics(self) -> dict[str, Any]:
         output = dict(super().diagnostics)
         output["higher_timeframe_role"] = {
-            "timeframe_minutes": 60,
-            "pivot_span": self.higher_direction.PIVOT_SPAN,
-            "state": self.higher_direction.state().value,
-            "latest_high": self.higher_direction.latest_high,
-            "latest_low": self.higher_direction.latest_low,
-            "active_structure_diagnostics": dict(self.higher_structure.diagnostics),
+            "60m": {
+                "pivot_span": self.higher_direction.PIVOT_SPAN,
+                "state": self.higher_direction.state().value,
+                "latest_high": self.higher_direction.latest_high,
+                "latest_low": self.higher_direction.latest_low,
+                "active_structure_diagnostics": dict(self.higher_structure.diagnostics),
+            },
+            "4h": {
+                "pivot_span": self.four_hour_direction.PIVOT_SPAN,
+                "state": self.four_hour_direction.state().value,
+                "latest_high": self.four_hour_direction.latest_high,
+                "latest_low": self.four_hour_direction.latest_low,
+                "completed_bars": len(self.four_hour_direction.bars),
+                "active_structure_diagnostics": dict(self.four_hour_structure.diagnostics),
+            },
             "acceptance_rule": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
             "reversal_rule": HIGHER_TIMEFRAME_REVERSAL_RULE,
+            "four_hour_role_rule": FOUR_HOUR_ROLE_RULE,
             "state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+            "four_hour_aggregation": FOUR_HOUR_AGGREGATION_RULE,
         }
         return output
