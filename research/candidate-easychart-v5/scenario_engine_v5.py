@@ -8,6 +8,7 @@ from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
 from objective_ladder_v5 import CausalObjectiveLadder
+from objective_policy_v5 import ObjectiveLadderScenarioMixin
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
@@ -15,6 +16,7 @@ from scenario_transitions_v5 import ScenarioTransitionMixin
 
 
 class StructureScenarioEngine(
+    ObjectiveLadderScenarioMixin,
     ScenarioContextMixin,
     ScenarioTransitionMixin,
     ScenarioExecutionMixin,
@@ -271,9 +273,6 @@ class StructureScenarioEngine(
                     self._discover_interactions(bar, self.decision_bars[index - 1], index)
                 return []
             finally:
-                # The completed decision bar first owns the interaction and
-                # target-spent checks. Only afterward is it allowed to consume
-                # a previously armed objective or retire a broken diagonal.
                 self.structure.observe_price(bar)
                 self.objectives.observe_decision_bar(bar)
         if timeframe_minutes != self.trigger_minutes:
