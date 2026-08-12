@@ -35,9 +35,8 @@ def make_engine() -> StructureScenarioEngine:
 
 
 class CausalDiagonalLifecycleTests(unittest.TestCase):
-    def test_trend_line_is_not_fresh_after_first_projected_interaction(self) -> None:
-        book = LifecycleAwareStructureBook("TEST", 60, 0.1, pivot_spans=(1,))
-        line = TrendLine(
+    def _uptrend_line(self) -> TrendLine:
+        return TrendLine(
             structure_id="UP_LINE",
             kind=ObjectKind.UPTREND_LINE,
             side=ZoneSide.SUPPORT,
@@ -52,17 +51,33 @@ class CausalDiagonalLifecycleTests(unittest.TestCase):
             pivot_span=1,
             strength_ratio=2.0,
         )
+
+    def test_wick_touch_and_valid_close_do_not_delete_trend_line(self) -> None:
+        book = LifecycleAwareStructureBook("TEST", 60, 0.1, pivot_spans=(1,))
+        line = self._uptrend_line()
         book.trend_lines.append(line)
         book._line_ids.add(line.structure_id)
 
-        before = book.boundaries_at(11 * NS)
-        self.assertTrue(any(zone.source_structure_id == line.structure_id for zone in before))
-        book.observe_price(candle(11, 111.0, 111.2, 110.9, 111.1))
+        # The projected line is 111.0. Price trades through the one-tick band
+        # intrabar but closes back above it, which is a possible bounce/fakeout.
+        book.observe_price(candle(11, 111.2, 111.4, 110.7, 111.2))
+        later = book.boundaries_at(12 * NS)
+        self.assertTrue(any(zone.source_structure_id == line.structure_id for zone in later))
+        self.assertIsNone(book.boundary_retired_time_ns(line.structure_id))
+
+    def test_body_close_through_support_retires_trend_line(self) -> None:
+        book = LifecycleAwareStructureBook("TEST", 60, 0.1, pivot_spans=(1,))
+        line = self._uptrend_line()
+        book.trend_lines.append(line)
+        book._line_ids.add(line.structure_id)
+
+        book.observe_price(candle(11, 111.1, 111.2, 110.4, 110.6))
         after = book.boundaries_at(12 * NS)
         self.assertFalse(any(zone.source_structure_id == line.structure_id for zone in after))
         self.assertEqual(book.boundary_retired_time_ns(line.structure_id), 11 * NS)
+        self.assertEqual(book.diagnostics.get("trend_line_body_close_invalidated"), 1)
 
-    def test_channel_edges_retire_independently(self) -> None:
+    def test_channel_edges_invalidate_independently(self) -> None:
         book = LifecycleAwareStructureBook("TEST", 60, 0.1, pivot_spans=(1,))
         channel = Channel(
             channel_id="ASC_CH",
@@ -83,7 +98,9 @@ class CausalDiagonalLifecycleTests(unittest.TestCase):
         book.channels.append(channel)
         book._channel_ids.add(channel.channel_id)
 
-        book.observe_price(candle(11, 111.0, 111.05, 110.8, 110.95))
+        # At t=11 the lower edge is 111 and the upper edge is 121. Close below
+        # the lower edge invalidates that support only.
+        book.observe_price(candle(11, 111.0, 111.05, 110.4, 110.6))
         later = book.boundaries_at(12 * NS)
         sources = {zone.source_structure_id for zone in later}
         self.assertNotIn("ASC_CH:LOWER", sources)
