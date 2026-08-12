@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import mtf_strategy as _base
-from scenario_bundle_v3 import ResearchScenarioBundle
+from horizontal_structure_v3 import StrongResearchScenarioBundle
 
-_base.MultiScaleScenarioBundle = ResearchScenarioBundle
+_base.MultiScaleScenarioBundle = StrongResearchScenarioBundle
 EasyChartMTFConfig = _base.EasyChartMTFConfig
 
 
