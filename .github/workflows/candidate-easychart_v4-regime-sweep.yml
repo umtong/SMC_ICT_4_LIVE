@@ -1,0 +1,123 @@
+name: candidate-easychart_v4-development-regime-sweep
+
+on:
+  push:
+    branches: ["research/candidate-easychart_v4"]
+    paths:
+      - "research/candidate-easychart_v4/**"
+      - ".github/workflows/candidate-easychart_v4-regime-sweep.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart_v4-development-regime-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-regime:
+    name: development-${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - label: 2024-03-a
+            start: 2024-03-01
+            end: 2024-03-14
+          - label: 2024-08-a
+            start: 2024-08-01
+            end: 2024-08-14
+          - label: 2025-02-a
+            start: 2025-02-01
+            end: 2025-02-14
+          - label: 2025-08-a
+            start: 2025-08-01
+            end: 2025-08-14
+          - label: 2026-02-a
+            start: 2026-02-01
+            end: 2026-02-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_v4
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart_v4-development/${{ matrix.label }}
+      ROOT: artifacts/candidate-easychart_v4-development/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify research environment and causal policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart_v4
+          python -m unittest discover -s research/candidate-easychart_v4/tests -p 'test_*.py' -v
+
+      - name: Run four-symbol continuous-account development regime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/mtf"
+          exec > >(tee "$ROOT/run.log") 2>&1
+          python research/candidate-easychart_v4/run_v4_backtest.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT/mtf"
+
+      - name: Surface development-regime outcome
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["ROOT"]) / "mtf" / "metrics.json"
+          if not path.exists():
+              raise SystemExit(0)
+          metrics = json.loads(path.read_text())
+          lines = [
+              f"## candidate-easychart_v4 development regime: {os.environ['LABEL']}",
+              "",
+              f"- Period: {os.environ['START']} through {os.environ['END']}",
+              f"- Final NAV: {metrics['final_nav']:.4f}",
+              f"- Total return: {metrics['total_return']:.4%}",
+              f"- Daily geometric growth: {metrics['daily_geometric_growth']:.4%}",
+              f"- Closed positions: {metrics['closed_positions']}",
+              f"- Independent trades/day: {metrics['independent_trades_per_day']:.4f}",
+              f"- Risk-budget breaches: {metrics['risk_budget_breaches']}",
+          ]
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          print(
+              f"::notice title=EasyChart v4 development {os.environ['LABEL']}::"
+              f"NAV={metrics['final_nav']:.4f}, return={metrics['total_return']:.4%}, "
+              f"daily_geo={metrics['daily_geometric_growth']:.4%}, "
+              f"trades={metrics['closed_positions']}"
+          )
+          PY
+
+      - name: Preserve development-regime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart_v4-development-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-easychart_v4-development/${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 90
