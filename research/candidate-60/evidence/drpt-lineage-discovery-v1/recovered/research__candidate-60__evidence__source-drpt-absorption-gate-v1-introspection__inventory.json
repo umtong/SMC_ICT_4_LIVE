@@ -1,0 +1,644 @@
+{
+  "argparse_calls": [],
+  "assigned_constants": {
+    "STATE_REASON": "RESIDUAL_SELL_PRESSURE_ABSORBED_IN_TOP_TWO_UNIVERSE",
+    "_COLUMNS": [
+      "observed_time_ns",
+      "feature_ready",
+      "absorption_60s",
+      "flow_open_10s",
+      "flow_60s",
+      "flow_3m"
+    ]
+  },
+  "byte_count": 12271,
+  "definitions": [
+    {
+      "docstring": null,
+      "end_lineno": 48,
+      "kind": "ClassDef",
+      "lineno": 40,
+      "name": "_AuctionObservation"
+    },
+    {
+      "docstring": "Minimal causal feature view for the frozen DRPT auction-state gate.",
+      "end_lineno": 124,
+      "kind": "ClassDef",
+      "lineno": 51,
+      "name": "_AuctionFeatureStore"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 79,
+      "kind": "FunctionDef",
+      "lineno": 63,
+      "name": "__init__"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 124,
+      "kind": "FunctionDef",
+      "lineno": 81,
+      "name": "observation"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 113,
+      "kind": "FunctionDef",
+      "lineno": 111,
+      "name": "value"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 131,
+      "kind": "ClassDef",
+      "lineno": 127,
+      "name": "Candidate35Config"
+    },
+    {
+      "docstring": "Source DRPT policy plus a causal passive-transfer auction-state gate.",
+      "end_lineno": 290,
+      "kind": "ClassDef",
+      "lineno": 134,
+      "name": "Candidate35Strategy"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 174,
+      "kind": "FunctionDef",
+      "lineno": 137,
+      "name": "__init__"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 181,
+      "kind": "FunctionDef",
+      "lineno": 176,
+      "name": "on_start"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 190,
+      "kind": "FunctionDef",
+      "lineno": 184,
+      "name": "_residual_sell"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 201,
+      "kind": "FunctionDef",
+      "lineno": 192,
+      "name": "_auction_observations"
+    },
+    {
+      "docstring": null,
+      "end_lineno": 290,
+      "kind": "FunctionDef",
+      "lineno": 203,
+      "name": "_reclaim_candidates"
+    }
+  ],
+  "imports": [
+    "__future__:annotations",
+    "dataclasses:dataclass,replace",
+    "math",
+    "numpy",
+    "pandas",
+    "pathlib:Path",
+    "strategy_base:SYMBOLS",
+    "strategy_drpt_source_selector:Candidate35Config",
+    "strategy_drpt_source_selector:Candidate35Strategy",
+    "typing:Any"
+  ],
+  "keyword_lines": {
+    "DRPT": [
+      {
+        "line": 1,
+        "text": "\"\"\"Causal auction-state gate for the source-faithful DRPT daily-low reclaim."
+      },
+      {
+        "line": 31,
+        "text": "from strategy_drpt_source_selector import Candidate35Config as _SourceConfig"
+      },
+      {
+        "line": 32,
+        "text": "from strategy_drpt_source_selector import Candidate35Strategy as _SourceStrategy"
+      },
+      {
+        "line": 52,
+        "text": "    \"\"\"Minimal causal feature view for the frozen DRPT auction-state gate.\"\"\""
+      },
+      {
+        "line": 67,
+        "text": "            raise RuntimeError(f\"DRPT absorption gate missing features {missing}: {path}\")"
+      },
+      {
+        "line": 95,
+        "text": "            raise RuntimeError(\"future feature observation reached DRPT absorption gate\")"
+      },
+      {
+        "line": 128,
+        "text": "    drpt_absorption_baseline_minutes: int = 240"
+      },
+      {
+        "line": 129,
+        "text": "    drpt_absorption_minimum_valid: int = 120"
+      },
+      {
+        "line": 130,
+        "text": "    drpt_absorption_top_universe_rank: int = 2"
+      },
+      {
+        "line": 131,
+        "text": "    drpt_absorption_require_residual_sell: bool = True"
+      },
+      {
+        "line": 135,
+        "text": "    \"\"\"Source DRPT policy plus a causal passive-transfer auction-state gate.\"\"\""
+      },
+      {
+        "line": 140,
+        "text": "            \"drpt_absorption_baseline_minutes\": 240,"
+      },
+      {
+        "line": 141,
+        "text": "            \"drpt_absorption_minimum_valid\": 120,"
+      },
+      {
+        "line": 142,
+        "text": "            \"drpt_absorption_top_universe_rank\": 2,"
+      },
+      {
+        "line": 143,
+        "text": "            \"drpt_absorption_require_residual_sell\": True,"
+      },
+      {
+        "line": 156,
+        "text": "                \"candidate\": \"candidate-60-drpt-absorption-gate-v1\","
+      },
+      {
+        "line": 196,
+        "text": "                baseline_minutes=int(self.config.drpt_absorption_baseline_minutes),"
+      },
+      {
+        "line": 197,
+        "text": "                minimum_valid=int(self.config.drpt_absorption_minimum_valid),"
+      },
+      {
+        "line": 238,
+        "text": "            if rank > int(self.config.drpt_absorption_top_universe_rank):"
+      },
+      {
+        "line": 243,
+        "text": "            if bool(self.config.drpt_absorption_require_residual_sell) and not residual_sell:"
+      }
+    ],
+    "Nautilus": [
+      {
+        "line": 9,
+        "text": "NautilusTrader execution shell may use that reclaim:"
+      }
+    ],
+    "absorption": [
+      {
+        "line": 14,
+        "text": "The gate is self-normalized.  It compares the current symbol's absorption to"
+      },
+      {
+        "line": 43,
+        "text": "    absorption_60s: float = math.nan"
+      },
+      {
+        "line": 44,
+        "text": "    prior_absorption_median: float = math.nan"
+      },
+      {
+        "line": 57,
+        "text": "        \"absorption_60s\","
+      },
+      {
+        "line": 67,
+        "text": "            raise RuntimeError(f\"DRPT absorption gate missing features {missing}: {path}\")"
+      },
+      {
+        "line": 95,
+        "text": "            raise RuntimeError(\"future feature observation reached DRPT absorption gate\")"
+      },
+      {
+        "line": 99,
+        "text": "        absorption = float(self.values[\"absorption_60s\"][index])"
+      },
+      {
+        "line": 101,
+        "text": "        prior = self.values[\"absorption_60s\"][start:index]"
+      },
+      {
+        "line": 103,
+        "text": "        if not math.isfinite(absorption) or clean.size < int(minimum_valid):"
+      },
+      {
+        "line": 107,
+        "text": "                absorption_60s=absorption,"
+      },
+      {
+        "line": 118,
+        "text": "            absorption_60s=absorption,"
+      },
+      {
+        "line": 119,
+        "text": "            prior_absorption_median=float(np.median(clean)),"
+      },
+      {
+        "line": 128,
+        "text": "    drpt_absorption_baseline_minutes: int = 240"
+      },
+      {
+        "line": 129,
+        "text": "    drpt_absorption_minimum_valid: int = 120"
+      },
+      {
+        "line": 130,
+        "text": "    drpt_absorption_top_universe_rank: int = 2"
+      },
+      {
+        "line": 131,
+        "text": "    drpt_absorption_require_residual_sell: bool = True"
+      },
+      {
+        "line": 140,
+        "text": "            \"drpt_absorption_baseline_minutes\": 240,"
+      },
+      {
+        "line": 141,
+        "text": "            \"drpt_absorption_minimum_valid\": 120,"
+      },
+      {
+        "line": 142,
+        "text": "            \"drpt_absorption_top_universe_rank\": 2,"
+      },
+      {
+        "line": 143,
+        "text": "            \"drpt_absorption_require_residual_sell\": True,"
+      },
+      {
+        "line": 156,
+        "text": "                \"candidate\": \"candidate-60-drpt-absorption-gate-v1\","
+      },
+      {
+        "line": 161,
+        "text": "                    \"minimum_absorption\": \"strictly-prior rolling median\","
+      },
+      {
+        "line": 169,
+        "text": "                \"auction_gate_absorption_rejections\": 0,"
+      },
+      {
+        "line": 196,
+        "text": "                baseline_minutes=int(self.config.drpt_absorption_baseline_minutes),"
+      },
+      {
+        "line": 197,
+        "text": "                minimum_valid=int(self.config.drpt_absorption_minimum_valid),"
+      },
+      {
+        "line": 210,
+        "text": "            (symbol, observation.absorption_60s)"
+      },
+      {
+        "line": 212,
+        "text": "            if observation.ready and math.isfinite(observation.absorption_60s)"
+      },
+      {
+        "line": 230,
+        "text": "            absorption_pass = ("
+      },
+      {
+        "line": 231,
+        "text": "                observation.absorption_60s >= observation.prior_absorption_median"
+      },
+      {
+        "line": 233,
+        "text": "            if not absorption_pass:"
+      },
+      {
+        "line": 234,
+        "text": "                self.diagnostics[\"auction_gate_absorption_rejections\"] += 1"
+      },
+      {
+        "line": 238,
+        "text": "            if rank > int(self.config.drpt_absorption_top_universe_rank):"
+      },
+      {
+        "line": 243,
+        "text": "            if bool(self.config.drpt_absorption_require_residual_sell) and not residual_sell:"
+      },
+      {
+        "line": 258,
+        "text": "                    \"auction_absorption_60s\": observation.absorption_60s,"
+      },
+      {
+        "line": 259,
+        "text": "                    \"auction_prior_absorption_median_240m\": observation.prior_absorption_median,"
+      },
+      {
+        "line": 261,
+        "text": "                    \"auction_absorption_ratio_to_median\": ("
+      },
+      {
+        "line": 262,
+        "text": "                        observation.absorption_60s"
+      },
+      {
+        "line": 263,
+        "text": "                        / max(observation.prior_absorption_median, 1e-12)"
+      },
+      {
+        "line": 265,
+        "text": "                    \"auction_cross_asset_absorption_rank\": rank,"
+      },
+      {
+        "line": 279,
+        "text": "                            observation.absorption_60s"
+      },
+      {
+        "line": 280,
+        "text": "                            / max(observation.prior_absorption_median, 1e-12),"
+      }
+    ],
+    "date": [
+      {
+        "line": 31,
+        "text": "from strategy_drpt_source_selector import Candidate35Config as _SourceConfig"
+      },
+      {
+        "line": 32,
+        "text": "from strategy_drpt_source_selector import Candidate35Strategy as _SourceStrategy"
+      },
+      {
+        "line": 127,
+        "text": "class Candidate35Config(_SourceConfig, frozen=True):"
+      },
+      {
+        "line": 134,
+        "text": "class Candidate35Strategy(_SourceStrategy):"
+      },
+      {
+        "line": 137,
+        "text": "    def __init__(self, config: Candidate35Config) -> None:"
+      },
+      {
+        "line": 154,
+        "text": "        self.diagnostics.update("
+      },
+      {
+        "line": 156,
+        "text": "                \"candidate\": \"candidate-60-drpt-absorption-gate-v1\","
+      },
+      {
+        "line": 203,
+        "text": "    def _reclaim_candidates(self, ts_event: int):"
+      },
+      {
+        "line": 204,
+        "text": "        source_candidates = super()._reclaim_candidates(ts_event)"
+      },
+      {
+        "line": 205,
+        "text": "        if not source_candidates:"
+      },
+      {
+        "line": 223,
+        "text": "        for decision, arm, target_diagnostics in source_candidates:"
+      },
+      {
+        "line": 256,
+        "text": "            diagnostics.update("
+      },
+      {
+        "line": 293,
+        "text": "__all__ = [\"Candidate35Config\", \"Candidate35Strategy\", \"_AuctionFeatureStore\"]"
+      }
+    ],
+    "development": [],
+    "dump": [
+      {
+        "line": 5,
+        "text": "    15m 1-2% dump -> prior seven-day low break -> source trend filters"
+      },
+      {
+        "line": 6,
+        "text": "    -> completed 1m close above dump high + 0.5 ATR"
+      }
+    ],
+    "entry": [],
+    "evidence": [],
+    "fee": [],
+    "fresh": [],
+    "output": [],
+    "peak": [],
+    "reclaim": [
+      {
+        "line": 1,
+        "text": "\"\"\"Causal auction-state gate for the source-faithful DRPT daily-low reclaim."
+      },
+      {
+        "line": 9,
+        "text": "NautilusTrader execution shell may use that reclaim:"
+      },
+      {
+        "line": 11,
+        "text": "    is price reclaiming while residual sell pressure is being absorbed,"
+      },
+      {
+        "line": 203,
+        "text": "    def _reclaim_candidates(self, ts_event: int):"
+      },
+      {
+        "line": 204,
+        "text": "        source_candidates = super()._reclaim_candidates(ts_event)"
+      }
+    ],
+    "reversal": [],
+    "risk": [],
+    "slippage": [],
+    "source": [
+      {
+        "line": 1,
+        "text": "\"\"\"Causal auction-state gate for the source-faithful DRPT daily-low reclaim."
+      },
+      {
+        "line": 3,
+        "text": "The public/source decision mechanism remains unchanged:"
+      },
+      {
+        "line": 5,
+        "text": "    15m 1-2% dump -> prior seven-day low break -> source trend filters"
+      },
+      {
+        "line": 31,
+        "text": "from strategy_drpt_source_selector import Candidate35Config as _SourceConfig"
+      },
+      {
+        "line": 32,
+        "text": "from strategy_drpt_source_selector import Candidate35Strategy as _SourceStrategy"
+      },
+      {
+        "line": 127,
+        "text": "class Candidate35Config(_SourceConfig, frozen=True):"
+      },
+      {
+        "line": 134,
+        "text": "class Candidate35Strategy(_SourceStrategy):"
+      },
+      {
+        "line": 135,
+        "text": "    \"\"\"Source DRPT policy plus a causal passive-transfer auction-state gate.\"\"\""
+      },
+      {
+        "line": 157,
+        "text": "                \"source_policy_sha256\": \"ef738712337eea113a47bb2b3ce1e3b402a00d203111633d6ac036685822ff23\","
+      },
+      {
+        "line": 204,
+        "text": "        source_candidates = super()._reclaim_candidates(ts_event)"
+      },
+      {
+        "line": 205,
+        "text": "        if not source_candidates:"
+      },
+      {
+        "line": 223,
+        "text": "        for decision, arm, target_diagnostics in source_candidates:"
+      }
+    ],
+    "state": [
+      {
+        "line": 1,
+        "text": "\"\"\"Causal auction-state gate for the source-faithful DRPT daily-low reclaim."
+      },
+      {
+        "line": 36,
+        "text": "STATE_REASON = \"RESIDUAL_SELL_PRESSURE_ABSORBED_IN_TOP_TWO_UNIVERSE\""
+      },
+      {
+        "line": 52,
+        "text": "    \"\"\"Minimal causal feature view for the frozen DRPT auction-state gate.\"\"\""
+      },
+      {
+        "line": 135,
+        "text": "    \"\"\"Source DRPT policy plus a causal passive-transfer auction-state gate.\"\"\""
+      },
+      {
+        "line": 283,
+        "text": "                        reasons=tuple(decision.reasons) + (STATE_REASON,),"
+      }
+    ],
+    "stop": [],
+    "symbol": [
+      {
+        "line": 14,
+        "text": "The gate is self-normalized.  It compares the current symbol's absorption to"
+      },
+      {
+        "line": 15,
+        "text": "its strictly-prior 240 completed one-minute observations, requires the symbol"
+      },
+      {
+        "line": 18,
+        "text": "remain negative.  No result, trade ID, symbol allowlist or period label is read."
+      },
+      {
+        "line": 30,
+        "text": "from strategy_base import SYMBOLS"
+      },
+      {
+        "line": 35,
+        "text": "_SYMBOL_PRIORITY = {symbol: index for index, symbol in enumerate(SYMBOLS)}"
+      },
+      {
+        "line": 172,
+        "text": "                \"auction_gate_passes_by_symbol\": {},"
+      },
+      {
+        "line": 179,
+        "text": "            symbol: _AuctionFeatureStore(self.feature_paths[symbol])"
+      },
+      {
+        "line": 180,
+        "text": "            for symbol in SYMBOLS"
+      },
+      {
+        "line": 194,
+        "text": "            symbol: self.auction_features[symbol].observation("
+      },
+      {
+        "line": 200,
+        "text": "            for symbol in SYMBOLS"
+      },
+      {
+        "line": 210,
+        "text": "            (symbol, observation.absorption_60s)"
+      },
+      {
+        "line": 211,
+        "text": "            for symbol, observation in observations.items()"
+      },
+      {
+        "line": 215,
+        "text": "        if len(finite_universe) == len(SYMBOLS):"
+      },
+      {
+        "line": 218,
+        "text": "                key=lambda item: (-float(item[1]), _SYMBOL_PRIORITY[item[0]]),"
+      },
+      {
+        "line": 220,
+        "text": "            ranks = {symbol: rank for rank, (symbol, _) in enumerate(ordered, start=1)}"
+      },
+      {
+        "line": 225,
+        "text": "            observation = observations.get(decision.symbol, _AuctionObservation(0, False))"
+      },
+      {
+        "line": 226,
+        "text": "            if not observation.ready or decision.symbol not in ranks:"
+      },
+      {
+        "line": 237,
+        "text": "            rank = int(ranks[decision.symbol])"
+      },
+      {
+        "line": 248,
+        "text": "            key = (decision.symbol, int(decision.episode_ts))"
+      },
+      {
+        "line": 252,
+        "text": "            counts = self.diagnostics[\"auction_gate_passes_by_symbol\"]"
+      },
+      {
+        "line": 253,
+        "text": "            counts[decision.symbol] = int(counts.get(decision.symbol, 0)) + 1"
+      },
+      {
+        "line": 282,
+        "text": "                        + (len(SYMBOLS) - rank + 1) / len(SYMBOLS),"
+      }
+    ],
+    "target": [
+      {
+        "line": 223,
+        "text": "        for decision, arm, target_diagnostics in source_candidates:"
+      },
+      {
+        "line": 287,
+        "text": "                    target_diagnostics,"
+      }
+    ],
+    "trail": [],
+    "window": []
+  },
+  "line_count": 293,
+  "main_guard_present": false,
+  "module_docstring": "Causal auction-state gate for the source-faithful DRPT daily-low reclaim.\n\nThe public/source decision mechanism remains unchanged:\n\n    15m 1-2% dump -> prior seven-day low break -> source trend filters\n    -> completed 1m close above dump high + 0.5 ATR\n\nThis adapter asks one additional, economically distinct question before the\nNautilusTrader execution shell may use that reclaim:\n\n    is price reclaiming while residual sell pressure is being absorbed,\n    rather than because buyers are chasing an already-efficient rebound?\n\nThe gate is self-normalized.  It compares the current symbol's absorption to\nits strictly-prior 240 completed one-minute observations, requires the symbol\nto rank in the top two of the four-asset universe at the same completed minute,\nand requires at least one of the current 10s/60s/3m aggressor-flow measures to\nremain negative.  No result, trade ID, symbol allowlist or period label is read.",
+  "source_sha256": "890a30c17d22cd95e1c33ca182292076e2a6c09ce7667345548058f84c351a6d"
+}

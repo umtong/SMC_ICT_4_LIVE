@@ -1,0 +1,259 @@
+name: candidate-55-drpt-source-selector-v21
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-drpt-source-selector-v21.yml"
+      - "research/candidate-55/strategy_drpt_source_selector.py"
+      - "research/candidate-55/strategy_drpt_source_selector_v21.py"
+      - "research/candidate-55/strategy_inventory_release_absorption.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-drpt-source-selector-v21
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: source-drpt-2024-01
+            start: "2024-01-01"
+            end: "2024-01-28"
+            calendar_days: 28
+            eligible_days: 21
+          - label: source-drpt-2025-06
+            start: "2025-06-01"
+            end: "2025-06-28"
+            calendar_days: 28
+            eligible_days: 21
+          - label: source-drpt-2026-03
+            start: "2026-03-01"
+            end: "2026-03-28"
+            calendar_days: 28
+            eligible_days: 21
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 1
+
+      - name: Materialize frozen policy with implementation-only repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_microauction.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_inventory_release_absorption.py research/candidate-51/strategy_inventory_release_absorption.py
+          cp research/candidate-55/strategy_drpt_source_selector.py research/candidate-51/strategy_drpt_source_selector.py
+          cp research/candidate-55/strategy_drpt_source_selector_v21.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor, compile and verify repair invariance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-05 research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from types import SimpleNamespace
+          import strategy
+          from strategy_drpt_source_selector import _complete_candles, _atr
+          assert strategy.Candidate35Strategy.__mro__[1].__module__ == "strategy_drpt_source_selector"
+          minute = 60 * 1_000_000_000
+          rows = [SimpleNamespace(
+              ts_event=i * minute,
+              open=100.0 + i * 0.001,
+              high=100.2 + i * 0.001,
+              low=99.8 + i * 0.001,
+              close=100.1 + i * 0.001,
+              volume=1.0,
+          ) for i in range(1_440)]
+          assert len(_complete_candles(rows[:30], 15)) == 2
+          assert len(_complete_candles(rows, 1_440)) == 1
+          assert _atr(_complete_candles(rows[:225], 15), 14) > 0.0
+          print("v2.1 is diagnostic-only repair; frozen policy inheritance pass")
+          PY
+
+      - name: Freeze unchanged policy and implementation-repair provenance
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+          CALENDAR_DAYS: ${{ matrix.calendar_days }}
+          ELIGIBLE_DAYS: ${{ matrix.eligible_days }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          strategy = base["strategy"]
+          for key in (
+              "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+              "sma_stop_max_fraction", "sma_stop_atr_buffer",
+          ):
+              strategy.pop(key, None)
+          strategy.update({
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 360,
+              "drpt_source_bucket_minutes": 15,
+              "drpt_source_anomaly_pct": 1.0,
+              "drpt_source_dump_cap_pct": 2.0,
+              "drpt_source_days_lookback": 7,
+              "drpt_source_resistance_days": 3,
+              "drpt_source_resistance_proximity_pct": 1.0,
+              "drpt_source_require_btc_4h_up": True,
+              "drpt_source_atr_period": 14,
+              "drpt_source_entry_buffer_atr": 0.50,
+              "drpt_source_stop_expiry_bars": 12,
+              "drpt_source_stop_buffer_atr": 0.15,
+              "drpt_source_target_net_r": 2.0,
+              "drpt_source_cooldown_minutes_after_close": 240,
+          })
+          work = Path(".work/candidate-55-drpt-source-selector-v21")
+          work.mkdir(parents=True, exist_ok=True)
+          config_path = work / "frozen-config.json"
+          config_path.write_text(json.dumps(base, indent=2, sort_keys=True) + "\n")
+          manifest = {
+              "candidate": "candidate-55-drpt-source-selector-v21",
+              "label": os.environ["LABEL"],
+              "interval": [os.environ["START"], os.environ["END"]],
+              "calendar_days": int(os.environ["CALENDAR_DAYS"]),
+              "trade_eligible_days_after_daily_warmup": int(os.environ["ELIGIBLE_DAYS"]),
+              "policy_identical_to_v2": True,
+              "implementation_repair": "initialize funding_runway_rejections diagnostic counter",
+              "economic_policy_changed": False,
+              "previous_job_failure_class": "implementation-not-economic",
+              "engine": "NautilusTrader BacktestNode",
+              "one_global_entry_or_position": True,
+              "current_nav_planned_loss_fraction": 0.03,
+              "prediction_and_falsification": {
+                  "prediction": "the source long-only daily-low selector must produce repeatable positive cost-after trade anatomy in more than one period to remain useful",
+                  "falsification": "negative expectancy in multiple valid periods, repeated full structural stops after reclaim, or no repeatable opportunity capacity"
+              },
+              "frozen_source_policy_sha256": hashlib.sha256(Path("research/candidate-51/strategy_drpt_source_selector.py").read_bytes()).hexdigest(),
+              "repair_wrapper_sha256": hashlib.sha256(Path("research/candidate-51/strategy.py").read_bytes()).hexdigest(),
+              "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+          }
+          (work / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Run one continuous Nautilus account
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+        run: |
+          set +e
+          output="artifacts/candidate-55/drpt-source-selector-v21-${LABEL}"
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-55-drpt-source-selector-v21/frozen-config.json \
+            --start "$START" --end "$END" \
+            --cache ".cache/candidate-55-drpt-source-selector-v21-${LABEL}" \
+            --output "$output" \
+            --workspace ".work/candidate-55-drpt-source-selector-v21-${LABEL}"
+          code="$?"
+          echo "$code" > .work/candidate-55-drpt-source-selector-v21/exit-code.txt
+          exit 0
+
+      - name: Write compact causal summary
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+          CALENDAR_DAYS: ${{ matrix.calendar_days }}
+          ELIGIBLE_DAYS: ${{ matrix.eligible_days }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          label = os.environ["LABEL"]
+          days = int(os.environ["CALENDAR_DAYS"])
+          eligible = int(os.environ["ELIGIBLE_DAYS"])
+          root = Path("artifacts/candidate-55") / f"drpt-source-selector-v21-{label}"
+          root.mkdir(parents=True, exist_ok=True)
+          metrics_path = root / "metrics.json"
+          diagnostics_path = root / "strategy_diagnostics.json"
+          closed_path = root / "closed_scenarios.json"
+          exit_path = Path(".work/candidate-55-drpt-source-selector-v21/exit-code.txt")
+          summary = {
+              "candidate": "candidate-55-drpt-source-selector-v21",
+              "label": label,
+              "calendar_days": days,
+              "trade_eligible_days_after_daily_warmup": eligible,
+              "exit_code": int(exit_path.read_text()) if exit_path.is_file() else None,
+              "produced": metrics_path.is_file() and diagnostics_path.is_file(),
+          }
+          if summary["produced"]:
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              closed = json.loads(closed_path.read_text()) if closed_path.is_file() else []
+              summary.update(
+                  metrics=metrics,
+                  trades_per_calendar_day=float(metrics.get("trades") or 0) / days,
+                  trades_per_eligible_day=float(metrics.get("trades") or 0) / eligible,
+                  closed_scenarios=closed,
+                  causal_anatomy={key: diagnostics.get(key) for key in (
+                      "dump_anomalies", "seven_day_low_breaks", "source_dump_events",
+                      "arms_created", "arms_replaced", "arms_activated", "arms_expired",
+                      "filter_wait_bars", "btc_trend_blocks", "resistance_blocks",
+                      "reclaim_candidates", "reclaim_competitions", "reclaim_entries",
+                      "geometry_rejections", "funding_runway_rejections",
+                      "dump_events_by_symbol", "entries_by_symbol"
+                  )},
+                  execution={key: diagnostics.get(key) for key in (
+                      "entry_submissions", "order_rejections", "entry_expirations",
+                      "global_position_violations", "max_open_positions_observed",
+                      "max_simultaneous_entry_intents", "economic_policy_changed"
+                  )},
+              )
+          (root / "SOURCE_SELECTOR_SUMMARY.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-drpt-source-selector-v21-${{ matrix.label }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/drpt-source-selector-v21-${{ matrix.label }}/**
+            .work/candidate-55-drpt-source-selector-v21/manifest.json
+            .work/candidate-55-drpt-source-selector-v21/exit-code.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce exact run completion
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          code="$(cat .work/candidate-55-drpt-source-selector-v21/exit-code.txt)"
+          test "$code" -eq 0
+          root="artifacts/candidate-55/drpt-source-selector-v21-${LABEL}"
+          test -s "$root/metrics.json"
+          test -s "$root/strategy_diagnostics.json"
