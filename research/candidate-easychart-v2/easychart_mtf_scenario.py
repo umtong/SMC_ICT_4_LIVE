@@ -8,7 +8,7 @@ The scenario separates roles rather than stacking synonymous filters:
     -> 5m same-direction engulfing order block
     -> entry / trigger invalidation / pre-existing opposite-zone target
 
-It is a pure state engine.  NautilusTrader wiring is added only after the
+It is a pure state engine. NautilusTrader wiring is added only after the
 geometry and temporal ordering are testable in isolation.
 """
 from __future__ import annotations
@@ -64,14 +64,22 @@ class MTFTradePlan:
     setup_id: str
     higher_zone_id: str
     higher_zone_kind: ZoneKind
+    higher_strength_ratio: float
     lower_zone_id: str
     lower_zone_kind: ZoneKind
+    lower_strength_ratio: float
     trigger_zone_id: str
+    trigger_strength_ratio: float
     target_zone_id: str
+    target_zone_kind: ZoneKind
     overlap_lower: float
     overlap_upper: float
     interaction_time_ns: int
     trigger_time_ns: int
+
+    @property
+    def kind_diversity(self) -> int:
+        return len({self.higher_zone_kind, self.lower_zone_kind, self.target_zone_kind})
 
 
 class MTFOverlapScenarioEngine:
@@ -119,8 +127,8 @@ class MTFOverlapScenarioEngine:
     @staticmethod
     def _zone_invalidated_by_bar(zone: PriceZone, bar: Candle) -> bool:
         if zone.side is ZoneSide.SUPPORT:
-            return bar.low < zone.invalidation
-        return bar.high > zone.invalidation
+            return bar.low <= zone.invalidation
+        return bar.high >= zone.invalidation
 
     def _setup_id(self, overlap: ZoneOverlap) -> str:
         return f"SETUP:{overlap.overlap_id}"
@@ -135,7 +143,7 @@ class MTFOverlapScenarioEngine:
             for lower in lower_detector.active_zones():
                 if not (higher.high_quality_by_size or lower.high_quality_by_size):
                     continue
-                # The first return is the auditable opportunity.  Already touched
+                # The first return is the auditable opportunity. Already touched
                 # zones are memory, not fresh pending orders.
                 if higher.first_touch_index is not None or lower.first_touch_index is not None:
                     continue
@@ -156,20 +164,26 @@ class MTFOverlapScenarioEngine:
                 )
                 existing.add(setup_id)
                 self._inc("setup_created")
-                self._inc(
-                    f"setup_{higher.kind.value.lower()}_{lower.kind.value.lower()}",
-                )
+                self._inc(f"setup_{higher.kind.value.lower()}_{lower.kind.value.lower()}")
 
-    def _opposite_target(self, side: ZoneSide, entry: float, observed_time_ns: int) -> tuple[PriceZone, float] | None:
+    def _opposite_target(
+        self,
+        side: ZoneSide,
+        entry: float,
+        current: Candle,
+        observed_time_ns: int,
+    ) -> tuple[PriceZone, float] | None:
         opposite = ZoneSide.RESISTANCE if side is ZoneSide.SUPPORT else ZoneSide.SUPPORT
         candidates: list[tuple[float, PriceZone]] = []
         for timeframe in (self.higher_minutes, self.decision_minutes):
             for zone in self.detectors[timeframe].active_zones(side=opposite):
                 if zone.observed_time_ns >= observed_time_ns:
                     continue
-                if side is ZoneSide.SUPPORT and zone.lower > entry:
+                # Confirmation is observed only at the close. A target already
+                # touched earlier inside that same candle is not available space.
+                if side is ZoneSide.SUPPORT and zone.lower > max(entry, current.high):
                     candidates.append((zone.lower, zone))
-                elif side is ZoneSide.RESISTANCE and zone.upper < entry:
+                elif side is ZoneSide.RESISTANCE and zone.upper < min(entry, current.low):
                     candidates.append((zone.upper, zone))
         if not candidates:
             return None
@@ -230,9 +244,9 @@ class MTFOverlapScenarioEngine:
                     setup.state = SetupState.TRIGGER_FAILED_GEOMETRY
                     self._inc("trigger_invalid_short_geometry")
                     break
-                target_result = self._opposite_target(setup.overlap.side, entry, bar.ts_close_ns)
+                target_result = self._opposite_target(setup.overlap.side, entry, bar, bar.ts_close_ns)
                 if target_result is None:
-                    self._inc("trigger_without_preexisting_opposite_target")
+                    self._inc("trigger_without_unspent_preexisting_target")
                     continue
                 target_zone, target = target_result
                 risk = abs(entry - stop)
@@ -262,10 +276,14 @@ class MTFOverlapScenarioEngine:
                     setup_id=setup.setup_id,
                     higher_zone_id=setup.higher_zone.zone_id,
                     higher_zone_kind=setup.higher_zone.kind,
+                    higher_strength_ratio=setup.higher_zone.strength_ratio,
                     lower_zone_id=setup.lower_zone.zone_id,
                     lower_zone_kind=setup.lower_zone.kind,
+                    lower_strength_ratio=setup.lower_zone.strength_ratio,
                     trigger_zone_id=trigger.zone_id,
+                    trigger_strength_ratio=trigger.strength_ratio,
                     target_zone_id=target_zone.zone_id,
+                    target_zone_kind=target_zone.kind,
                     overlap_lower=setup.overlap.lower,
                     overlap_upper=setup.overlap.upper,
                     interaction_time_ns=setup.interaction_time_ns or bar.ts_close_ns,
