@@ -140,9 +140,9 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         engine = self.seeded_engine()
         setup = engine.setups[0]
         engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
-        # Bullish engulfing body is weaker than 2x; price has already left the
-        # overlap, so this causal opportunity is missed rather than kept alive.
-        plans = engine.on_bar(5, self.bar(65, 99.1, 101.0, 98.9, 100.3))
+        # Bullish engulfing body is strictly weaker than 2x; price has already
+        # left the overlap, so the causal opportunity is missed rather than kept.
+        plans = engine.on_bar(5, self.bar(65, 99.1, 101.0, 98.9, 100.25))
         self.assertEqual(plans, [])
         self.assertIs(setup.state, SetupState.MISSED_WITHOUT_TRIGGER)
         self.assertEqual(engine.diagnostics.get("trigger_order_block_below_two_x"), 1)
