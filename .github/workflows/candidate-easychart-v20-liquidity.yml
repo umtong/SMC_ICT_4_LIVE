@@ -1,0 +1,237 @@
+name: candidate-easychart-v20-liquidity
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v18_context.py"
+      - "research/candidate-easychart/market_v20_liquidity.py"
+      - "research/candidate-easychart/screen_v20_integrated.py"
+      - "research/candidate-easychart/tests/test_market_v20_liquidity.py"
+      - ".github/workflows/candidate-easychart-v20-liquidity.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v20-liquidity
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  liquidity-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v20-liquidity
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify causal implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests \
+            -p 'test_market_v20_liquidity.py' -v
+
+      - name: Run liquidity-only and integrated microscopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --warmup-days 35 --cache "$CACHE" --families "$families"
+            --signal-minutes 5 --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5 --target-dc-atr 1.0
+            --continuation-cap-widths 10.0 --cost-profile role
+            --context-minutes 240,360,480,720,1440
+            --value-minutes 240,360,480,720,1440
+            --context-response-minutes 15
+            --context-objective-minutes 5,15,60,240
+            --liquidity-signal-minutes 15
+            --liquidity-pivot-minutes 15,60,240
+            --liquidity-response-minutes 15
+            --liquidity-objective-minutes 5,15,60,240
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v20_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/liquidity-only-$name" "${common[@]}" \
+              --disable-immediate --disable-wm --disable-predictive \
+              --disable-accepted-break --disable-trendline --disable-context
+            python research/candidate-easychart/screen_v20_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/integrated-$name" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          diag-2026-02-02:2026-02-02:2026-02-08
+          EOF
+
+      - name: Expand only a family that produced a complete option
+        shell: bash
+        run: |
+          set -euo pipefail
+          complete=$(python - <<'PY'
+          from pathlib import Path
+          import json
+          total = 0
+          for path in Path("artifacts/candidate-easychart-v20-liquidity").glob("liquidity-only-*/metrics.json"):
+              metrics = json.loads(path.read_text())
+              for values in metrics.get("liquidity_diagnostics", {}).values():
+                  total += int(values.get("complete_liquidity_options", 0))
+          print(total)
+          PY
+          )
+          echo "$complete" > "$ROOT/complete_liquidity_options.txt"
+          if [ "$complete" -le 0 ]; then
+            echo "No complete option; do not spend on a longer diagnostic."
+            exit 0
+          fi
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --start 2024-09-02 --end 2024-09-29
+            --warmup-days 35 --cache "$CACHE" --families "$families"
+            --signal-minutes 5 --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5 --target-dc-atr 1.0
+            --continuation-cap-widths 10.0 --cost-profile role
+            --context-minutes 240,360,480,720,1440
+            --value-minutes 240,360,480,720,1440
+            --context-response-minutes 15
+            --context-objective-minutes 5,15,60,240
+            --liquidity-signal-minutes 15
+            --liquidity-pivot-minutes 15,60,240
+            --liquidity-response-minutes 15
+            --liquidity-objective-minutes 5,15,60,240
+          )
+          python research/candidate-easychart/screen_v20_integrated.py \
+            --output "$ROOT/liquidity-only-expansion-2024-09" "${common[@]}" \
+            --disable-immediate --disable-wm --disable-predictive \
+            --disable-accepted-break --disable-trendline --disable-context
+          python research/candidate-easychart/screen_v20_integrated.py \
+            --output "$ROOT/integrated-expansion-2024-09" "${common[@]}"
+
+      - name: Build decision summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("artifacts/candidate-easychart-v20-liquidity")
+          rows = []
+          for path in sorted(root.glob("*/metrics.json")):
+              metrics = json.loads(path.read_text())
+              diagnostics = Counter()
+              for values in metrics.get("liquidity_diagnostics", {}).values():
+                  for key, value in values.items():
+                      if isinstance(value, (int, float)):
+                          diagnostics[key] += int(value)
+              trades_path = path.parent / "trades.csv"
+              trades = pd.read_csv(trades_path) if trades_path.stat().st_size else pd.DataFrame()
+              family_counts = (
+                  {}
+                  if trades.empty or "family" not in trades.columns
+                  else {str(k): int(v) for k, v in trades["family"].value_counts().items()}
+              )
+              rows.append({
+                  "run": path.parent.name,
+                  "calendar_days": metrics["calendar_days"],
+                  "direct_structure_candidates": metrics["direct_structure_candidates"],
+                  "setups": metrics["setups_generated"],
+                  "trades": metrics["trades"],
+                  "ending_nav": metrics["ending_nav"],
+                  "geometric_daily_growth": metrics["geometric_daily_growth"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "target_gate_passed": metrics["target_gate"]["passed"],
+                  "trade_families": family_counts,
+                  "liquidity_diagnostics": dict(sorted(diagnostics.items())),
+              })
+
+          isolated = [row for row in rows if row["run"].startswith("liquidity-only-")]
+          microscope = [row for row in isolated if "expansion" not in row["run"]]
+          expansion = [row for row in isolated if "expansion" in row["run"]]
+          complete = sum(row["liquidity_diagnostics"].get("complete_liquidity_options", 0) for row in microscope)
+          trades = sum(row["trades"] for row in microscope)
+          diagnostics = Counter()
+          for row in microscope:
+              diagnostics.update(row["liquidity_diagnostics"])
+          if complete > 0 and trades > 0:
+              disposition = "EXECUTABLE_LIQUIDITY_FAMILY"
+          elif complete > 0:
+              disposition = "ENTRY_REACH_OR_EXPIRY_GEOMETRY"
+          elif diagnostics.get("sweep_episodes", 0) == 0:
+              disposition = "LIQUIDITY_LOCATION_REPRESENTATION"
+          elif (
+              diagnostics.get("sweep_without_sponsored_response", 0)
+              + diagnostics.get("footprint_without_directional_reclaim", 0)
+              > 0
+          ):
+              disposition = "RESPONSE_SPONSORSHIP"
+          elif diagnostics.get("missing_active_first_objective", 0) > 0:
+              disposition = "OBJECTIVE_LIFECYCLE"
+          elif diagnostics.get("first_objective_rr_lt_1", 0) > 0:
+              disposition = "FIRST_OBJECTIVE_RR_REJECTION"
+          else:
+              disposition = "UNCLASSIFIED_LIQUIDITY_REPRESENTATION"
+          summary = {
+              "candidate": "candidate-easychart-v20-liquidity",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "policy_change": "generic confirmed pivot sweep and same-leg OB/FVG response are one causal retest option; multiple swept pivots and overlapping footprints do not inflate trade count",
+              "disposition": disposition,
+              "microscope_complete_options": complete,
+              "microscope_completed_trades": trades,
+              "expansion_ran": bool(expansion),
+              "expansion_positive": bool(expansion) and all(row["geometric_daily_growth"] > 0 for row in expansion),
+              "expansion_meets_target": bool(expansion) and all(row["target_gate_passed"] for row in expansion),
+              "windows": rows,
+          }
+          target = root / "cross_window_summary.json"
+          target.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(target.read_text())
+          PY
+
+      - name: Publish compact research memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" \
+            research/candidate-easychart/results/V20_LIQUIDITY_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V20_LIQUIDITY_LATEST.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart: record structural-liquidity diagnostic"
+          git push origin HEAD:research/candidate-easychart
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v20-liquidity-${{ github.sha }}
+          path: artifacts/candidate-easychart-v20-liquidity/**
+          if-no-files-found: warn
+          retention-days: 90
