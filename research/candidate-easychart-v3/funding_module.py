@@ -24,11 +24,15 @@ from nautilus_trader.backtest.modules import SimulationModule
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Money
 
+NS_PER_MINUTE = 60_000_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class HistoricalFundingBoundary:
     symbol: str
     instrument_id: InstrumentId
+    # Exact Binance archive calc_time. Some historical rows are 1 ms after the
+    # nominal clock boundary; preserving this value keeps source provenance.
     funding_time_ns: int
     interval_minutes: int
     rate: Decimal
@@ -44,6 +48,19 @@ class HistoricalFundingBoundary:
         if not self.mark_price.is_finite() or self.mark_price <= 0:
             raise ValueError("mark price must be finite and positive")
 
+    @property
+    def settlement_time_ns(self) -> int:
+        """Minute boundary on which a 1-minute simulation can causally settle.
+
+        Binance occasionally records ``calc_time`` a few milliseconds after the
+        nominal boundary.  The project has one-minute execution data, so the
+        module runs after strategy callbacks at the containing minute boundary:
+        old positions pay, while orders emitted at that boundary cannot fill
+        until later data.  This is the closest causal representation available
+        without inventing intraminute order events.
+        """
+        return self.funding_time_ns - self.funding_time_ns % NS_PER_MINUTE
+
 
 class HistoricalPerpetualFundingModule(SimulationModule):
     """Apply realized linear-perpetual funding through Nautilus account events.
@@ -58,11 +75,18 @@ class HistoricalPerpetualFundingModule(SimulationModule):
         super().__init__(SimulationModuleConfig())
         ordered = sorted(
             boundaries,
-            key=lambda item: (item.funding_time_ns, str(item.instrument_id)),
+            key=lambda item: (
+                item.settlement_time_ns,
+                item.funding_time_ns,
+                str(item.instrument_id),
+            ),
         )
-        keys = [(item.instrument_id, item.funding_time_ns) for item in ordered]
-        if len(keys) != len(set(keys)):
-            raise ValueError("duplicate instrument funding boundary")
+        source_keys = [(item.instrument_id, item.funding_time_ns) for item in ordered]
+        settlement_keys = [(item.instrument_id, item.settlement_time_ns) for item in ordered]
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("duplicate instrument funding source boundary")
+        if len(settlement_keys) != len(set(settlement_keys)):
+            raise ValueError("multiple instrument funding rows map to one simulation minute")
         self.boundaries = tuple(ordered)
         self.cursor = 0
         self.ledger: list[dict[str, Any]] = []
@@ -73,7 +97,7 @@ class HistoricalPerpetualFundingModule(SimulationModule):
     def process(self, ts_now: int) -> None:
         while self.cursor < len(self.boundaries):
             boundary = self.boundaries[self.cursor]
-            if boundary.funding_time_ns > ts_now:
+            if boundary.settlement_time_ns > ts_now:
                 break
             self.cursor += 1
             self.processed_boundaries += 1
@@ -109,6 +133,7 @@ class HistoricalPerpetualFundingModule(SimulationModule):
                     "account_id": str(position.account_id),
                     "strategy_id": str(position.strategy_id),
                     "funding_time_ns": boundary.funding_time_ns,
+                    "settlement_time_ns": boundary.settlement_time_ns,
                     "processed_time_ns": int(processed_time_ns),
                     "interval_minutes": boundary.interval_minutes,
                     "rate": str(boundary.rate),
