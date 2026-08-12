@@ -245,7 +245,9 @@ class FundingHistoryTests(unittest.TestCase):
         engine.add_instrument(eth)
         btc_type = BarType.from_str(f"{btc.id}-1-MINUTE-LAST-EXTERNAL")
         eth_type = BarType.from_str(f"{eth.id}-1-MINUTE-LAST-EXTERNAL")
-        bar_times = (1, 2, 3, 5, 7)
+        # Simulation modules run after strategy callbacks for a timestamp.  The
+        # first later bar therefore exposes the completed settlement.
+        bar_times = (1, 2, 3, 5, 7, 9)
         for instrument, bar_type in ((btc, btc_type), (eth, eth_type)):
             engine.add_data(
                 [
@@ -272,8 +274,8 @@ class FundingHistoryTests(unittest.TestCase):
                 clock_instrument_id=btc.id,
                 capture_times_ns=(
                     3 * NS_PER_MINUTE,
-                    5 * NS_PER_MINUTE,
                     7 * NS_PER_MINUTE,
+                    9 * NS_PER_MINUTE,
                 ),
             ),
         )
@@ -284,8 +286,8 @@ class FundingHistoryTests(unittest.TestCase):
             engine.dispose()
 
         before = strategy.snapshots[3 * NS_PER_MINUTE]
-        after_long = strategy.snapshots[5 * NS_PER_MINUTE]
-        after_short = strategy.snapshots[7 * NS_PER_MINUTE]
+        after_long = strategy.snapshots[7 * NS_PER_MINUTE]
+        after_short = strategy.snapshots[9 * NS_PER_MINUTE]
         self.assertAlmostEqual(
             after_long["cache_balance"] - before["cache_balance"],
             -1.0,
