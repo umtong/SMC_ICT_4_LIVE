@@ -1,0 +1,139 @@
+name: candidate-easychart-v11-daily-risk-backtest
+
+on:
+  push:
+    branches: ["research/candidate-easychart-v11-daily-risk"]
+    paths:
+      - "research/candidate-easychart-v5/**"
+      - ".github/workflows/candidate-easychart-v11-daily-risk-backtest.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v11-daily-risk-backtest
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  daily-risk-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-v11-daily-risk
+      ROOT: artifacts/candidate-easychart-v11-daily-risk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment and daily-risk semantic tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart-v5
+          python -m unittest discover -s research/candidate-easychart-v5/tests -p 'test_*.py' -v
+
+      - name: Three retest policies under one-percent daily loss budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/run.log") 2>&1
+          for PERIOD_SPEC in \
+            "february 2024-02-01 2024-02-14" \
+            "august 2024-08-01 2024-08-14"; do
+            set -- $PERIOD_SPEC
+            PERIOD="$1"
+            START="$2"
+            END="$3"
+            for RETEST in baseline close_detached full_detached; do
+              OUT="$ROOT/$PERIOD/$RETEST"
+              mkdir -p "$OUT"
+              python research/candidate-easychart-v5/run_mtf_backtest_v11_daily_risk.py \
+                --start "$START" \
+                --end "$END" \
+                --warmup-days 30 \
+                --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+                --cache "$CACHE" \
+                --output "$OUT" \
+                --fee-profile usd_m_vip0 \
+                --retest-policy "$RETEST" \
+                --exit-policy none \
+                --funding-accounting none
+            done
+          done
+
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-easychart-v11-daily-risk")
+          fields = (
+              "final_nav",
+              "total_return",
+              "daily_geometric_growth",
+              "closed_positions",
+              "independent_trades_per_day",
+              "win_rate",
+              "profit_factor",
+              "mean_net_r",
+              "median_net_r",
+              "sum_net_r",
+              "maximum_net_r",
+              "maximum_consecutive_losses",
+              "trade_path_max_drawdown",
+              "gross_profit_top1_share",
+              "gross_profit_top3_share",
+              "effective_positive_trade_count",
+              "best_trade_removed_compound_return",
+              "best_three_trades_removed_compound_return",
+              "best_close_day_removed_compound_return",
+              "positive_close_day_fraction",
+              "robustness_status",
+              "time_exit_positions",
+              "maximum_observed_hold_seconds",
+              "p95_hold_seconds",
+              "max_hold_breaches",
+              "plans",
+              "submitted_plans",
+              "plans_skipped_global_slot",
+              "plans_rejected_daily_loss_cap",
+              "plans_rejected_daily_budget_quantity",
+              "daily_risk_sessions",
+              "risk_budget_breaches",
+              "entry_slippage_reserve_exceeds",
+              "emergency_protective_exits",
+              "time_limit_state_mismatches",
+              "trade_compound_reproduction_error",
+          )
+          comparison = {}
+          for period in ("february", "august"):
+              comparison[period] = {}
+              for retest in ("baseline", "close_detached", "full_detached"):
+                  metrics = json.loads(
+                      (root / period / retest / "metrics.json").read_text(encoding="utf-8"),
+                  )
+                  comparison[period][retest] = {
+                      field: metrics.get(field) for field in fields
+                  }
+          (root / "comparison.json").write_text(
+              json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-v11-daily-risk-${{ github.sha }}
+          path: artifacts/candidate-easychart-v11-daily-risk/**
+          if-no-files-found: warn
+          retention-days: 90
