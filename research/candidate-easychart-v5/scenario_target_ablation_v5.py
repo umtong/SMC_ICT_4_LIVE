@@ -1,12 +1,10 @@
-"""Causal target-policy ablations for EasyChart v5.
+"""Nearest causal objective policy without changing the trading contract.
 
-The source repeatedly names prior highs/lows and opposing structures as
-objectives, but it does not say that the objective pivot must use the same or a
-larger machine pivot span than the entry context.  The current v5 policy adds
-that scale restriction as a research hypothesis.  This module removes only
-that one restriction while keeping the target pre-existing, unspent, opposite,
-and nearest in price.  No outcome information, score, risk multiplier or
-execution rule is introduced.
+The source names prior highs/lows and opposing structures as objectives but
+does not require an objective pivot to share the entry context's machine span.
+The integrated engine now searches the complete 15m/5m/1m objective ladder.
+This compatibility module keeps the meaningful-structure context book and that
+ladder pointed at the same causal 15m state.
 """
 from __future__ import annotations
 
@@ -14,10 +12,11 @@ from typing import Any
 
 import contracts_v5 as _contracts
 from causal_lifecycle_v5 import LifecycleAwareStructureBook
-from contracts_v5 import ScenarioSetup, V5TradePlan
+from contracts_v5 import V5TradePlan
 from domain import Side
 from scenario_bundle_v5 import AuditFrame, ResearchScenarioBundleV5
 from scenario_engine_v5 import StructureScenarioEngine
+from structure_admission_v5 import SourceFaithfulStructureBook
 
 
 NEAREST_ANY_PIVOT_RULE = (
@@ -29,7 +28,7 @@ if NEAREST_ANY_PIVOT_RULE not in _contracts.RESEARCH_RULES:
 
 
 class NearestAnyPivotStructureBook(LifecycleAwareStructureBook):
-    """Select the nearest eligible opposite pivot without a span gate."""
+    """Legacy compatibility book; the integrated ladder owns target choice."""
 
     def target_for(
         self,
@@ -40,7 +39,7 @@ class NearestAnyPivotStructureBook(LifecycleAwareStructureBook):
         current_high: float,
         current_low: float,
     ):
-        del source_span  # Deliberately ablated; retained in the public contract.
+        del source_span
         wanted = "HIGH" if side is Side.LONG else "LOW"
         candidates = [
             pivot
@@ -68,23 +67,30 @@ class NearestAnyPivotStructureBook(LifecycleAwareStructureBook):
 
 
 class NearestAnyTargetScenarioEngine(StructureScenarioEngine):
-    """Unchanged state machine with the ablated objective book."""
+    """One source-faithful context book and one synchronized objective ladder."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.structure = NearestAnyPivotStructureBook(
+        self.structure = SourceFaithfulStructureBook(
             self.symbol,
             self.higher_minutes,
             self.tick_size,
         )
+        # StructureScenarioEngine creates the cross-timeframe ladder before a
+        # subclass can select its concrete context book.  Synchronize the
+        # primary reference once, before any bar is processed.
+        self.objectives.primary = self.structure
+        self.objectives.books = (
+            self.structure,
+            self.objectives.decision,
+            self.objectives.trigger,
+        )
 
 
 class NearestAnyTargetResearchScenarioBundleV5(ResearchScenarioBundleV5):
-    """Both decision scales using the nearest-any-pivot target hypothesis."""
+    """Both decision scales using the complete nearest-objective policy."""
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
-        # Recreate the small bundle shell directly so no unused base engines
-        # retain state or obscure which policy generated an audit record.
         self.symbol = symbol
         self.tick_size = tick_size
         self.macro = NearestAnyTargetScenarioEngine(
@@ -114,7 +120,7 @@ class NearestAnyTargetResearchScenarioBundleV5(ResearchScenarioBundleV5):
     def diagnostics(self) -> dict[str, Any]:
         output = dict(super().diagnostics)
         output["target_policy"] = {
-            "name": "NEAREST_ANY_CONFIRMED_PREEXISTING_OPPOSITE_PIVOT",
+            "name": "NEAREST_CONFIRMED_PREEXISTING_OPPOSITE_OBJECTIVE_ACROSS_STACK",
             "rule_provenance": NEAREST_ANY_PIVOT_RULE,
         }
         return output
