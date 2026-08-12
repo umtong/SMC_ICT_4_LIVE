@@ -1,0 +1,40 @@
+name: candidate-easychart-apply-v18-source
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-apply-v18-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Reconstruct, verify and apply v18 source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=/tmp/easychart-v18-source.tar.gz
+          cat research/candidate-easychart/.v18_source_payload_* | base64 --decode > "$payload"
+          echo "20a58f38b8131bf8e40a91d69a811342bcf4bb14c7e537508d10907b3f04c93a  $payload" | sha256sum -c -
+          tar -xzf "$payload" -C .
+          rm -f research/candidate-easychart/.v18_source_payload_*
+          python -m compileall -q research/candidate-easychart
+          PYTHONPATH=research/candidate-easychart \
+            python -m unittest discover \
+              -s research/candidate-easychart/tests \
+              -p 'test_*.py' -v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "candidate-easychart: add set-membership trendline role-flip family"
+          git push origin HEAD:research/candidate-easychart
