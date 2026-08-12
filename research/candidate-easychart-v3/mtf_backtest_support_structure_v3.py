@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 import mtf_backtest_support as _base
-from backtest_support import _jsonable, write_json
+from backtest_support import RISK_TOLERANCE, _jsonable, write_json
 
 
 def _find_zone(scenario: Any, zone_id: str) -> Any | None:
@@ -89,6 +89,94 @@ def _write_structure_trade_windows(strategy: Any, output: Path) -> int:
     return count
 
 
+def _write_funding_evidence(
+    funding_module: Any,
+    output: Path,
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    columns = [
+        "symbol",
+        "instrument_id",
+        "position_id",
+        "account_id",
+        "strategy_id",
+        "funding_time_ns",
+        "processed_time_ns",
+        "interval_minutes",
+        "rate",
+        "mark_price",
+        "signed_qty",
+        "notional",
+        "currency",
+        "amount",
+    ]
+    ledger = pd.DataFrame(funding_module.ledger)
+    if ledger.empty:
+        ledger = pd.DataFrame(columns=columns)
+    else:
+        missing = sorted(set(columns) - set(ledger.columns))
+        if missing:
+            raise RuntimeError(f"funding ledger lost required columns: {missing}")
+        ledger = ledger[columns]
+    ledger.to_csv(output / "funding_ledger.csv", index=False)
+    with (output / "funding_ledger.jsonl").open("w", encoding="utf-8") as stream:
+        for record in funding_module.ledger:
+            stream.write(json.dumps(_jsonable(record), ensure_ascii=False, sort_keys=True) + "\n")
+
+    audit_path = output / "trade_audit.csv"
+    if not audit_path.exists():
+        raise RuntimeError("trade_audit.csv unavailable for funding join")
+    audit = pd.read_csv(audit_path)
+    if "position_id" not in audit.columns or "realized_pnl" not in audit.columns:
+        raise RuntimeError("trade audit lost position or realized-PnL fields")
+    audit["position_id"] = audit["position_id"].astype(str)
+    ledger_position_ids: set[str] = set()
+    if ledger.empty:
+        funding_by_position = pd.Series(dtype=float)
+        funding_total = 0.0
+    else:
+        ledger["position_id"] = ledger["position_id"].astype(str)
+        ledger["amount_numeric"] = pd.to_numeric(ledger["amount"], errors="raise")
+        ledger_position_ids = set(ledger["position_id"])
+        funding_by_position = ledger.groupby("position_id")["amount_numeric"].sum()
+        funding_total = float(ledger["amount_numeric"].sum())
+
+    audited_position_ids = set(audit["position_id"])
+    unmatched_funding_positions = sorted(ledger_position_ids - audited_position_ids)
+    audit["funding_pnl"] = audit["position_id"].map(funding_by_position).fillna(0.0)
+    execution_pnl = pd.to_numeric(audit["realized_pnl"], errors="coerce")
+    audit["realized_pnl_after_funding"] = execution_pnl + audit["funding_pnl"]
+    risk_budget = pd.to_numeric(audit.get("risk_budget"), errors="coerce")
+    audit["actual_net_r_after_funding"] = audit["realized_pnl_after_funding"] / risk_budget
+    audit["actual_loss_budget_breach_after_funding"] = (
+        (audit["realized_pnl_after_funding"] < 0.0)
+        & (-audit["realized_pnl_after_funding"] > risk_budget * RISK_TOLERANCE)
+    ).fillna(False)
+    audit.to_csv(audit_path, index=False)
+
+    execution_total = float(execution_pnl.fillna(0.0).sum())
+    expected_final_nav = float(metrics["starting_nav"]) + execution_total + funding_total
+    nav_reconciliation_error = float(metrics["final_nav"]) - expected_final_nav
+    loaded_boundaries = len(funding_module.boundaries)
+    processed_boundaries = int(funding_module.processed_boundaries)
+    funding_risk_breaches = int(
+        audit["actual_loss_budget_breach_after_funding"].astype(bool).sum()
+    )
+    return {
+        "funding_boundaries_loaded": loaded_boundaries,
+        "funding_boundaries_processed": processed_boundaries,
+        "funding_position_settlements": int(funding_module.settled_positions),
+        "funding_positions_charged_or_credited": len(funding_by_position.index),
+        "funding_total": funding_total,
+        "execution_realized_pnl_total": execution_total,
+        "realized_pnl_after_funding_total": execution_total + funding_total,
+        "expected_final_nav_from_trade_and_funding_ledgers": expected_final_nav,
+        "nav_reconciliation_error": nav_reconciliation_error,
+        "unmatched_funding_position_ids": unmatched_funding_positions,
+        "actual_loss_budget_breaches_after_funding": funding_risk_breaches,
+    }
+
+
 def _concentration_metrics(output: Path, calendar_days: int) -> dict[str, Any]:
     """Measure whether one lucky trade or one long hold dominates the account path."""
     path = output / "trade_audit.csv"
@@ -97,6 +185,7 @@ def _concentration_metrics(output: Path, calendar_days: int) -> dict[str, Any]:
     audit = pd.read_csv(path)
     if audit.empty:
         return {
+            "pnl_basis": "realized_pnl_after_funding",
             "positive_pnl_total": 0.0,
             "largest_winner_pnl": None,
             "largest_winner_share_of_positive_pnl": None,
@@ -107,13 +196,19 @@ def _concentration_metrics(output: Path, calendar_days: int) -> dict[str, Any]:
             "trades_longer_than_24h": 0,
             "single_slot_occupancy_fraction": 0.0,
         }
-    pnl = pd.to_numeric(audit["realized_pnl"], errors="coerce").dropna()
+    pnl_column = (
+        "realized_pnl_after_funding"
+        if "realized_pnl_after_funding" in audit.columns
+        else "realized_pnl"
+    )
+    pnl = pd.to_numeric(audit[pnl_column], errors="coerce").dropna()
     positive = pnl[pnl > 0.0].sort_values(ascending=False)
     gross_abs = float(pnl.abs().sum())
     duration_ns = pd.to_numeric(audit["duration_ns"], errors="coerce").dropna()
     duration_hours = duration_ns / 3_600_000_000_000.0
     positive_total = float(positive.sum())
     return {
+        "pnl_basis": pnl_column,
         "positive_pnl_total": positive_total,
         "largest_winner_pnl": None if positive.empty else float(positive.iloc[0]),
         "largest_winner_share_of_positive_pnl": (
@@ -143,12 +238,15 @@ def _concentration_metrics(output: Path, calendar_days: int) -> dict[str, Any]:
 
 
 def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    # The base writer knows nothing about historical funding provenance. Keep
-    # this metadata here while reusing its validated order/position joins and
-    # native Nautilus account reports.
+    # The base writer owns validated order/position joins and Nautilus account
+    # reports. This wrapper adds historical financing provenance and joins its
+    # cash-flow ledger back to the positions which incurred it.
     funding_summaries = kwargs.pop("funding_summaries", None)
+    funding_module = kwargs.pop("funding_module", None)
     if not isinstance(funding_summaries, dict) or not funding_summaries:
         raise RuntimeError("historical funding summaries are required")
+    if funding_module is None:
+        raise RuntimeError("historical funding module is required")
 
     original = _base._write_mtf_trade_windows
     _base._write_mtf_trade_windows = _write_structure_trade_windows
@@ -158,6 +256,7 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
         _base._write_mtf_trade_windows = original
 
     output: Path = kwargs["output"] if "output" in kwargs else args[2]
+    funding_evidence = _write_funding_evidence(funding_module, output, metrics)
     metrics["candidate"] = "candidate-easychart-v3-structure-first"
     metrics["decision_policy"] = (
         "structure -> first causal objective -> interaction -> auction state -> "
@@ -165,6 +264,7 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
     )
     metrics["entry_policy"] = "first confirmed retest close -> one market parent"
     metrics["historical_funding_enabled"] = True
+    metrics["funding_accounting"] = funding_evidence
     metrics["funding_data_by_symbol"] = funding_summaries
     metrics["funding_records_loaded"] = sum(
         int(summary["records"]) for summary in funding_summaries.values()
@@ -173,6 +273,32 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
         output,
         int(metrics["calendar_days"]),
     )
+
+    validation_path = output / "validation.json"
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    failures = list(validation.get("failures", []))
+    if funding_evidence["funding_boundaries_processed"] != funding_evidence["funding_boundaries_loaded"]:
+        failures.append(
+            "historical funding boundaries were not all processed by the continuous account",
+        )
+    if funding_evidence["unmatched_funding_position_ids"]:
+        failures.append(
+            "funding ledger contains positions absent from the Nautilus position audit",
+        )
+    if abs(float(funding_evidence["nav_reconciliation_error"])) > 1e-4:
+        failures.append(
+            "final NAV does not reconcile to execution PnL plus historical funding cash flow",
+        )
+    if funding_evidence["actual_loss_budget_breaches_after_funding"]:
+        failures.append(
+            f"{funding_evidence['actual_loss_budget_breaches_after_funding']} positions exceed "
+            "the three-percent loss budget after funding",
+        )
+    validation["status"] = "FAIL" if failures else "PASS"
+    validation["failures"] = failures
+    validation["funding"] = funding_evidence
+    write_json(validation_path, validation)
+
     write_json(output / "metrics.json", metrics)
     write_json(
         output / "run.json",
@@ -186,14 +312,24 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
                 "5m/15m/60m composites"
             ),
             "funding": {
-                "native_nautilus_settlement": True,
+                "nautilus_simulation_module_account_settlement": True,
+                "account_engine": "NautilusTrader",
+                "settlement_extension": (
+                    "same exchange.adjust_account path used by NautilusTrader "
+                    "FXRolloverInterestModule"
+                ),
+                "position_report_policy": (
+                    "execution PnL remains native; funding cash flows are joined "
+                    "from funding_ledger.csv"
+                ),
                 "source": (
                     "Binance Vision monthly fundingRate plus one-minute "
                     "markPriceKlines open at each realized boundary"
                 ),
                 "checksum_verified": True,
                 "causal_mark_policy": "mark-price bar open at funding boundary",
-                "bar_before_mark_before_funding_at_same_boundary": True,
+                "module_runs_after_strategy_callbacks_at_each_timestamp": True,
+                "evidence": funding_evidence,
                 "by_symbol": funding_summaries,
             },
             "scenario": (
@@ -213,7 +349,7 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
                 "daily_loss_limit": False,
                 "daily_trade_limit": False,
                 "historical_funding_applied_to_account": True,
-                "outlier_concentration_measured": True,
+                "outlier_concentration_measured_after_funding": True,
             },
             "provenance_classes": [
                 "SOURCE_EXPLICIT",
@@ -223,4 +359,6 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
             ],
         },
     )
+    if failures:
+        raise RuntimeError("; ".join(failures))
     return metrics
