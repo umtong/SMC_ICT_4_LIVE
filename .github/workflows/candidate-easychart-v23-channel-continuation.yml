@@ -1,8 +1,8 @@
-name: candidate-easychart-v24-mtf-ob-indexed
+name: candidate-easychart-v25-direct-mtf-ob
 
 on:
   push:
-    branches: ["research/candidate-easychart-v24-mtf-ob"]
+    branches: ["research/candidate-easychart-v25-direct-mtf-ob"]
     paths:
       - "research/candidate-easychart-v3/**"
       - "research/candidate-easychart-v5/**"
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: candidate-easychart-v24-mtf-ob-indexed
+  group: candidate-easychart-v25-direct-mtf-ob
   cancel-in-progress: true
 
 permissions:
@@ -40,8 +40,8 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-easychart-v24/${{ matrix.period }}
-      OUT: artifacts/candidate-easychart-v24/${{ matrix.period }}
+      CACHE: .cache/candidate-easychart-v25/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-v25/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
       - name: Run four-symbol continuous account
@@ -52,7 +52,7 @@ jobs:
           python research/candidate-easychart-v5/run_mtf_backtest_v24_mtf_ob.py \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
-            --warmup-days 45 \
+            --warmup-days 30 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
             --output "$OUT" \
@@ -61,7 +61,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-v24-${{ matrix.period }}-${{ github.sha }}
-          path: artifacts/candidate-easychart-v24/${{ matrix.period }}/**
+          name: candidate-easychart-v25-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-v25/${{ matrix.period }}/**
           if-no-files-found: warn
           retention-days: 90
