@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 
 from auction_context_v5 import AuctionContextSnapshot, CausalAuctionContext
-from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
 from objective_ladder_v5 import CausalObjectiveLadder
@@ -13,6 +12,7 @@ from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
 from scenario_transitions_v5 import ScenarioTransitionMixin
+from structure_admission_v5 import SourceFaithfulStructureBook
 
 
 class StructureScenarioEngine(
@@ -41,7 +41,7 @@ class StructureScenarioEngine(
         self.decision_minutes = decision_minutes
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
-        self.structure = LifecycleAwareStructureBook(symbol, higher_minutes, tick_size)
+        self.structure = SourceFaithfulStructureBook(symbol, higher_minutes, tick_size)
         self.objectives = CausalObjectiveLadder(
             self.structure,
             symbol=symbol,
