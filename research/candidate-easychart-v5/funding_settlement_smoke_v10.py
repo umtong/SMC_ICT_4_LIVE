@@ -1,7 +1,14 @@
-"""Deterministic native Nautilus funding-settlement smoke test."""
+"""Deterministic native Nautilus funding-settlement smoke test.
+
+NautilusTrader 1.230 initializes a process-global Rust logger, so control and
+funded engines are intentionally executed in separate Python processes by the
+workflow. This module emits one isolated account result per invocation.
+"""
 from __future__ import annotations
 
+import argparse
 from decimal import Decimal
+import json
 
 from nautilus_trader.model.data import Bar, BarType, FundingRateUpdate, MarkPriceUpdate
 from nautilus_trader.model.enums import OrderSide, TimeInForce
@@ -16,6 +23,7 @@ MARK_TS_NS = FUNDING_TS_NS - 1_000_000
 RATE = Decimal("0.001")
 PRICE = Decimal("100.0")
 QUANTITY = Decimal("1.000")
+EXPECTED_FUNDING_DELTA = -float(PRICE * QUANTITY * RATE)
 
 
 class HoldAcrossFunding(Strategy):
@@ -117,24 +125,29 @@ def run_smoke(include_funding: bool) -> float:
         engine.dispose()
 
 
-def verify_native_funding_settlement() -> dict[str, float]:
-    control_nav = run_smoke(False)
-    funded_nav = run_smoke(True)
-    observed = funded_nav - control_nav
-    expected = -float(PRICE * QUANTITY * RATE)
-    if abs(observed - expected) > 1e-8:
-        raise RuntimeError(
-            f"native funding mismatch: observed={observed}, expected={expected}",
-        )
-    return {
-        "control_nav": control_nav,
-        "funded_nav": funded_nav,
-        "observed_funding_delta": observed,
-        "expected_funding_delta": expected,
-    }
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("control", "funded"), required=True)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    include_funding = args.mode == "funded"
+    nav = run_smoke(include_funding)
+    print(
+        json.dumps(
+            {
+                "mode": args.mode,
+                "include_funding": include_funding,
+                "final_nav": nav,
+                "expected_funding_delta": EXPECTED_FUNDING_DELTA,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+    )
 
 
 if __name__ == "__main__":
-    import json
-
-    print(json.dumps(verify_native_funding_settlement(), indent=2, sort_keys=True))
+    main()
