@@ -1,0 +1,114 @@
+name: candidate-easychart-v14-semantic-integration
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/screen_v14.py"
+      - "research/candidate-easychart/market_v12.py"
+      - "research/candidate-easychart/screen_v13.py"
+      - "research/candidate-easychart/EXPERIMENT_COVERAGE.json"
+      - ".github/workflows/candidate-easychart-v14.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v14-semantic-integration
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  compare-generic-and-source-shaped:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v14
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify implementation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+      - name: Run generic and integrated semantics on the same week
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          leader="PRIOR_DAY_NY,FUNDING_16_00,FUNDING_08_16,LONDON_NY"
+          common=(--start 2024-02-19 --end 2024-02-25 --warmup-days 5 --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0 --cost-profile role --disable-fakeout --families "$leader" --cross-state isolated)
+          python research/candidate-easychart/screen_v10.py "${common[@]}" --output "$ROOT/v10-generic"
+          python research/candidate-easychart/screen_v14.py "${common[@]}" --output "$ROOT/v14-integrated"
+          python research/candidate-easychart/trade_semantic_audit.py --run-dir "$ROOT/v10-generic" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v10" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+          python research/candidate-easychart/trade_semantic_audit.py --run-dir "$ROOT/v14-integrated" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v14" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+      - name: Compare opportunity survival and concentration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-easychart-v14")
+          variants = {}
+          for name in ("v10-generic", "v14-integrated"):
+              metrics = json.loads((root / name / "metrics.json").read_text())
+              setups = pd.read_csv(root / name / "setups.csv")
+              trades = pd.read_csv(root / name / "trades.csv")
+              by_symbol = trades.groupby("symbol")["net_pnl"].agg(["count", "sum"]).to_dict("index") if not trades.empty else {}
+              variants[name] = {
+                  "metrics": {key: metrics.get(key) for key in ("trades", "ending_nav", "geometric_daily_growth", "profit_factor", "win_rate", "max_drawdown")},
+                  "setups": len(setups),
+                  "trades": len(trades),
+                  "by_symbol": by_symbol,
+                  "families": sorted(set(trades.get("family", pd.Series(dtype=str)).astype(str))),
+                  "source_pool_ids": sorted(set(setups.get("source_pool_id", pd.Series(dtype=str)).astype(str))),
+                  "largest_trade_net_pnl": float(trades["net_pnl"].max()) if not trades.empty else None,
+                  "total_net_pnl": float(trades["net_pnl"].sum()) if not trades.empty else 0.0,
+              }
+          generic = set(variants["v10-generic"]["source_pool_ids"])
+          integrated = set(variants["v14-integrated"]["source_pool_ids"])
+          output = {
+              "variants": variants,
+              "setup_source_pool_overlap": sorted(generic & integrated),
+              "generic_only_source_pools": sorted(generic - integrated),
+              "integrated_only_source_pools": sorted(integrated - generic),
+          }
+          (root / "comparison.json").write_text(json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n")
+          print(json.dumps(output, indent=2, sort_keys=True, allow_nan=False))
+          PY
+      - name: Verify evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/comparison.json" >/dev/null
+          for variant in v10-generic v14-integrated; do
+            test -s "$ROOT/$variant/metrics.json"
+            test -s "$ROOT/$variant/run.json"
+            test -e "$ROOT/$variant/setups.csv"
+            test -e "$ROOT/$variant/trades.csv"
+          done
+          for audit in audit-v10 audit-v14; do
+            test -s "$ROOT/$audit/audit_summary.json"
+            test -s "$ROOT/$audit/trade_path_audit.csv"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v14-${{ github.sha }}
+          path: artifacts/candidate-easychart-v14/**
+          if-no-files-found: warn
+          retention-days: 90
