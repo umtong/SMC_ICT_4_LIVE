@@ -1,0 +1,140 @@
+name: candidate-easychart-v22-policy
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v21_flow_state.py"
+      - "research/candidate-easychart/route_v21_flow_state.py"
+      - "research/candidate-easychart/arbitrate_v22_causal_options.py"
+      - "research/candidate-easychart/nautilus_replay_adapter_v21.py"
+      - "research/candidate-easychart/tests/test_arbitrate_v22_causal_options.py"
+      - ".github/workflows/candidate-easychart-v22-policy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v22-policy
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  unified-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v22-policy
+      CACHE: .cache/candidate-easychart
+      AGG: .cache/binance-vision-aggtrades
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify policy implementation
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE" "$AGG"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_market_v21_flow_state.py' -v
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_arbitrate_v22_causal_options.py' -v
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_nautilus_replay_adapter_v21.py' -v
+      - name: Generate complete integrated setup streams
+        run: |
+          set -euo pipefail
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(--warmup-days 35 --cache "$CACHE" --families "$families" --signal-minutes 5 --response-minutes 15 --trendline-minutes 5,15,60 --target-minutes 5 --target-dc-atr 1.0 --continuation-cap-widths 10.0 --cost-profile role --context-minutes 240,360,480,720,1440 --value-minutes 240,360,480,720,1440 --context-response-minutes 15 --context-objective-minutes 5,15,60,240 --liquidity-signal-minutes 15 --liquidity-pivot-minutes 15,60,240 --liquidity-response-minutes 15 --liquidity-objective-minutes 5,15,60,240)
+          python research/candidate-easychart/screen_v20_integrated.py --start 2024-02-19 --end 2024-02-25 --output "$ROOT/dev/baseline" "${common[@]}"
+          python research/candidate-easychart/screen_v20_integrated.py --start 2025-07-07 --end 2025-07-13 --output "$ROOT/diag/baseline" "${common[@]}"
+      - name: Download exact aggregate-trade partitions
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import datetime,timedelta,timezone
+          from pathlib import Path
+          import json,pandas as pd
+          from download_binance_aggtrades import download
+          from route_v21_flow_state import setup_episode
+          root=Path('artifacts/candidate-easychart-v22-policy'); needed=set()
+          for path in root.glob('*/baseline/setups.csv'):
+              if not path.stat().st_size: continue
+              for row in pd.read_csv(path).itertuples(index=False):
+                  a,b=setup_episode(row); d=datetime.fromtimestamp(a/1e9,tz=timezone.utc).date(); e=datetime.fromtimestamp(b/1e9,tz=timezone.utc).date()
+                  while d<=e: needed.add((str(row.symbol),d)); d+=timedelta(days=1)
+          rows=[download(s,d,Path('.cache/binance-vision-aggtrades')) for s,d in sorted(needed)]
+          Path('.cache/binance-vision-aggtrades/manifest.json').write_text(json.dumps({'files':rows},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Flow route, causal arbitrate and continuous replay
+        run: |
+          set -euo pipefail
+          while IFS=: read -r name start end; do
+            base="$ROOT/$name/baseline"; flow="$ROOT/$name/flow"; arb="$ROOT/$name/arbitration"; replay="$ROOT/$name/replay"
+            python research/candidate-easychart/route_v21_flow_state.py --setups "$base/setups.csv" --events "$base/scenario_events.jsonl" --aggtrades-root "$AGG" --output "$flow"
+            python research/candidate-easychart/arbitrate_v22_causal_options.py --setups "$flow/routed_setups.csv" --flow-audit "$flow/flow_state_audit.csv" --output "$arb"
+            python research/candidate-easychart/replay_routed_setups_v21.py --setups "$arb/arbitrated_setups.csv" --cancellations "$base/cancellations.csv" --start "$start" --end "$end" --warmup-days 35 --cache "$CACHE" --cost-profile role --output "$replay"
+          done <<'EOF'
+          dev:2024-02-19:2024-02-25
+          diag:2025-07-07:2025-07-13
+          EOF
+      - name: Reuse existing NautilusTrader replay when the policy has an intent
+        run: |
+          set -euo pipefail
+          for spec in dev:2024-02-19:2024-02-25 diag:2025-07-07:2025-07-13; do
+            IFS=: read -r name start end <<< "$spec"
+            setups="$ROOT/$name/arbitration/arbitrated_setups.csv"
+            out="$ROOT/$name/nautilus"
+            if [ ! -s "$setups" ] || ! python -c "import pandas as pd,sys;sys.exit(0 if len(pd.read_csv('$setups')) else 1)"; then
+              mkdir -p "$out"; echo '{"disposition":"NO_ARBITRATED_SETUPS"}' > "$out/adapter_result.json"; continue
+            fi
+            python research/candidate-easychart/nautilus_replay_adapter_v21.py --repo . --setups "$setups" --source-run-dir "$ROOT/$name/baseline" --start "$start" --end "$end" --cache "$CACHE" --aggtrades "$AGG" --output "$out" --plan-only
+            ready=$(python -c "import json;print(json.load(open('$out/invocation_plan.json'))['disposition'])")
+            if [ "$ready" = READY ]; then
+              set +e
+              python research/candidate-easychart/nautilus_replay_adapter_v21.py --repo . --setups "$setups" --source-run-dir "$ROOT/$name/baseline" --start "$start" --end "$end" --cache "$CACHE" --aggtrades "$AGG" --output "$out"
+              echo $? > "$out/execute.rc"
+              set -e
+            fi
+          done
+      - name: Decide next research action
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-easychart-v22-policy'); rows=[]
+          for name in ('dev','diag'):
+              b=json.loads((root/name/'baseline/metrics.json').read_text()); f=json.loads((root/name/'flow/flow_state_summary.json').read_text()); a=json.loads((root/name/'arbitration/arbitration_summary.json').read_text()); r=json.loads((root/name/'replay/metrics.json').read_text()); n=json.loads((root/name/'nautilus/adapter_result.json').read_text())
+              rows.append({'window':name,'baseline_setups':b['setups_generated'],'baseline_trades':b['trades'],'baseline_growth':b['geometric_daily_growth'],'flow_routed_setups':f['flow_routed_setups'],'flow_coverage_fraction':f['coverage_fraction'],'arbitrated_setups':a['arbitrated_setups'],'correlated_options_removed':a['correlated_options_removed'],'replay_trades':r['trades'],'replay_growth':r['geometric_daily_growth'],'replay_ending_nav':r['ending_nav'],'replay_profit_factor':r['profit_factor'],'replay_max_drawdown':r['max_drawdown'],'replay_target_gate':r['target_gate']['passed'],'nautilus':n})
+          intents=sum(x['arbitrated_setups'] for x in rows); trades=sum(x['replay_trades'] for x in rows); positive=[x for x in rows if x['replay_trades']>0]
+          authoritative=any(bool(x['nautilus'].get('authoritative_artifacts',{}).get('authoritative_shape')) for x in rows)
+          if intents==0: disposition='NO_FLOW_COMPATIBLE_CAUSAL_OPTION'
+          elif trades==0: disposition='CAUSAL_OPTIONS_NOT_FILLED'
+          elif not positive or not all(x['replay_growth']>0 for x in positive): disposition='CAUSAL_POLICY_EXPECTANCY_FAILURE'
+          elif authoritative: disposition='AUTHORITATIVE_REPLAY_AVAILABLE_REVIEW_METRICS'
+          else: disposition='POSITIVE_FAST_POLICY_BUT_NAUTILUS_ADAPTER_GAP'
+          summary={'candidate':'candidate-easychart-v22-policy','engine_status':'MIXED_FAST_AND_OPTIONAL_NAUTILUS','disposition':disposition,'policy_change':'one complete flow-compatible option per exact cross-asset causal episode, lexicographic state arbitration, no weighted confluence score','windows':rows,'authoritative_replay_available':authoritative,'future_information_used':False}
+          (root/'cross_window_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True,default=str)+'\n'); print(json.dumps(summary,indent=2,sort_keys=True,default=str))
+          PY
+      - name: Publish research memory
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" research/candidate-easychart/results/V22_POLICY_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V22_POLICY_LATEST.json
+          if ! git diff --cached --quiet; then git commit -m "candidate-easychart: record unified causal policy diagnostic"; git push origin HEAD:research/candidate-easychart; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v22-policy-${{ github.sha }}
+          path: artifacts/candidate-easychart-v22-policy/**
+          if-no-files-found: warn
+          retention-days: 90
