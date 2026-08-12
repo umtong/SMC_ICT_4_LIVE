@@ -1,12 +1,12 @@
 """Repeated-defense horizontal context for the canonical EasyChart policy.
 
 The source's Fakeout/Trap examples trade major, obvious support or resistance,
-not every isolated local pivot.  A machine-visible horizontal context therefore
+not every isolated local pivot. A machine-visible horizontal context therefore
 requires two distinct confirmed wick pivots whose wick-to-body rejection areas
-overlap.  The exact intersection becomes the boundary.  Individual pivots stay
+overlap. The exact intersection becomes the boundary. Individual pivots stay
 available as pre-existing objectives, but no longer create trades by themselves.
 
-This changes only horizontal context recognition.  Trend lines, channels,
+This changes only horizontal context recognition. Trend lines, channels,
 entries, stops, targets, three-percent risk, one-R eligibility and the full
 single-exit contract remain unchanged.
 """
@@ -17,7 +17,7 @@ from typing import Any
 
 import contracts_v5 as _contracts
 from contracts_v5 import ObjectKind, Pivot, StructureFamily, StructureZone
-from domain import Candle, Side
+from domain import Candle
 from easychart_zones import ZoneSide
 from scenario_channel_extension_v16 import (
     ChannelExtensionTargetScenarioEngine,
@@ -42,6 +42,7 @@ class RepeatedDefenseStructureBook(NearestAnyPivotStructureBook):
         self.horizontal_structures: list[StructureZone] = []
         self._horizontal_by_source: dict[str, StructureZone] = {}
         self._active_horizontal: dict[str, StructureZone] = {}
+        self._horizontal_consumed_time: dict[str, int] = {}
         self._pivot_rejection_areas: dict[str, tuple[float, float]] = {}
 
     def _rejection_area(self, pivot: Pivot) -> tuple[float, float]:
@@ -171,15 +172,16 @@ class RepeatedDefenseStructureBook(NearestAnyPivotStructureBook):
             if not touched:
                 continue
             zone.consumed = True
-            zone.consumed_time_ns = bar.ts_close_ns
+            self._horizontal_consumed_time[source_id] = bar.ts_close_ns
             self._active_horizontal.pop(source_id, None)
             self._inc("repeated_horizontal_first_interaction")
 
     def _repeated_snapshot(self, zone: StructureZone, time_ns: int) -> StructureZone:
+        consumed_time = self._horizontal_consumed_time.get(zone.source_structure_id)
         return replace(
             zone,
             zone_id=f"{zone.source_structure_id}:SNAP:{time_ns}",
-            consumed=zone.consumed and (zone.consumed_time_ns or 0) < time_ns,
+            consumed=consumed_time is not None and consumed_time < time_ns,
         )
 
     def boundaries_at(self, time_ns: int) -> list[StructureZone]:
