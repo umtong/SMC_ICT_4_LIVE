@@ -127,14 +127,17 @@ class CausalDiagonalLifecycleTests(unittest.TestCase):
             channel_id=channel.channel_id,
         )
         retest = candle(13, 123.3, 124.0, 122.8, 123.5)
-        engine.trigger_detector.on_bar(retest)
-        stop = engine._acceptance_stop(setup, retest.ts_close_ns)
+        engine._current_trigger_bar = retest
+        try:
+            stop = engine._acceptance_stop(setup, retest.ts_close_ns)
+        finally:
+            engine._current_trigger_bar = None
         self.assertIsNotNone(stop)
         assert stop is not None
         self.assertLess(stop, retest.low)
         self.assertAlmostEqual(stop, 122.7)
         self.assertEqual(
-            engine.diagnostics.get("acceptance_projected_stop_was_inside_retest_bar"),
+            engine.diagnostics.get("acceptance_stop_extended_beyond_entry_bar"),
             1,
         )
 
