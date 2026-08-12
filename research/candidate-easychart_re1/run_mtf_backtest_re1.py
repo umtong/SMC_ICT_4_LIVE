@@ -14,11 +14,7 @@ from easychart_re1 import (
     HTF_NEUTRAL_RULE,
     HTF_REVERSAL_AREA_RULE,
 )
-from easychart_re1_flips import (
-    EasyChartRE1FlipObjectiveBundle,
-    HORIZONTAL_FLIP_OBJECTIVE_RULE,
-)
-from easychart_re1_fresh import FRESH_HTF_FOOTPRINT_RULE
+from easychart_re1_fresh import EasyChartRE1FreshBundle, FRESH_HTF_FOOTPRINT_RULE
 from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy, LIVE_PROTECTION_POLICY
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
@@ -61,7 +57,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
-    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FlipObjectiveBundle
+    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FreshBundle
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -118,7 +114,7 @@ def main() -> None:
         metadata = {
             "candidate": "candidate-easychart_re1",
             "decision_policy": (
-                "60m causal structure direction -> 15m location -> 5m event/objective -> "
+                "60m causal structure direction -> 15m location -> 5m event -> "
                 "1m first distinct retest -> immutable plan"
             ),
             "scale_policy": "60m_context_router_plus_15_5_1_execution",
@@ -134,13 +130,8 @@ def main() -> None:
             ],
             "htf_footprint_lifecycle": "UNTOUCHED_OR_FIRST_COMPLETED_60M_TOUCH_EPISODE",
             "trade_context_policy": "CHANNEL_AND_TRENDLINE_MICRO_CORE_WITH_HTF_ROUTING",
-            "target_policy": (
-                "FIRST_LATER_RETEST_OF_CLOSE_BROKEN_5M_OR_15M_SWING_BEFORE_FARTHER_STRUCTURE"
-            ),
-            "target_policy_provenance": [
-                HORIZONTAL_FLIP_OBJECTIVE_RULE,
-                CHANNEL_EXTENSION_RULE,
-            ],
+            "target_policy": "CHANNEL_EDGE_OR_PREEXISTING_OPPOSING_STRUCTURE_WITH_CHANNEL_EXTENSION",
+            "target_policy_provenance": CHANNEL_EXTENSION_RULE,
             "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
             "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
             "execution_policy": LIVE_PROTECTION_POLICY,
