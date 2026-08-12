@@ -1,12 +1,21 @@
 """Causal wick trendlines for EasyChart structure scenarios.
 
-This module adapts a useful idea from programmatic trendline scanners: generate
-line candidates from confirmed pivot pairs, then count/monitor only information
-available at the current close.  It deliberately avoids fitting against future
-bars or ranking lines by future reactions.
+The source asks for meaningful wick anchors, but does not define an exhaustive
+pair search. Generating every direction-valid pivot pair produced thousands of
+near-duplicate lines and made the implementation unlike the visually dominant
+boundary a human actually follows.
 
-A line is a market object, not a trade signal.  It can later participate in a
-bounce, breakout/retest or fakeout scenario.
+This module instead maintains a causal outer envelope of confirmed wick pivots:
+
+- confirmed swing highs update an upper monotone hull;
+- confirmed swing lows update a lower monotone hull;
+- only the newest hull edge can become a new trendline;
+- every intervening wick must remain on the valid side of that edge;
+- an already active line absorbs a later collinear touch rather than spawning a
+  duplicate candidate.
+
+A line is a market object, not a trade signal. It can later participate in a
+bounce, breakout/retest or failed-break/fakeout scenario.
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ class TrendLineState(str, Enum):
     BROKEN = "BROKEN"
     RETESTED = "RETESTED"
     FAILED_BREAK = "FAILED_BREAK"
+    EXPIRED_WITHOUT_RETEST = "EXPIRED_WITHOUT_RETEST"
 
 
 class TrendLineEventKind(str, Enum):
@@ -35,6 +45,7 @@ class TrendLineEventKind(str, Enum):
     BREAK = "BREAK"
     FIRST_RETEST = "FIRST_RETEST"
     FAILED_BREAK = "FAILED_BREAK"
+    RETEST_MISSED = "RETEST_MISSED"
 
 
 @dataclass(slots=True)
@@ -61,9 +72,15 @@ class CausalTrendLine:
     break_time_ns: int | None = None
     break_level: float | None = None
     break_extreme: float | None = None
+    continuation_extreme: float | None = None
+    pullback_started_index: int | None = None
+    pullback_started_time_ns: int | None = None
+    pullback_reference_extreme: float | None = None
     retest_index: int | None = None
     retest_time_ns: int | None = None
     retest_level: float | None = None
+    expired_index: int | None = None
+    expired_time_ns: int | None = None
 
     def price_at(self, index: int) -> float:
         return self.first_level + self.slope_per_bar * (index - self.first_index)
@@ -90,20 +107,14 @@ class TrendLineEvent:
 class CausalTrendLineTracker:
     """Build and update trendlines from closed, causally confirmed wick pivots.
 
-    The detector keeps the source material's essential geometry:
-
-    - support connects rising wick lows;
-    - resistance connects falling wick highs;
-    - two confirmed anchors are enough to make a line observable;
-    - a directional close through the line creates a break candidate;
-    - only the first later touch which closes on the breakout side is a retest;
-    - a close back through the line before that retest is a failed break, which
-      belongs to a fakeout family rather than the breakout family.
-
     ``tolerance_range_fraction`` is measurement tolerance, not an alpha score.
     It scales the visual thickness of a line by the median closed-bar range that
-    was available when the second anchor became observable.  The value is stored
-    on the line and never refitted from later outcomes.
+    was available when the second anchor became observable. The value is stored
+    on the line and is never refitted from later outcomes.
+
+    ``max_prior_anchors`` remains in the constructor for compatibility with the
+    earlier all-pair detector. The outer-envelope implementation no longer uses
+    a rolling candidate pool.
     """
 
     def __init__(
@@ -144,6 +155,14 @@ class CausalTrendLineTracker:
         self.bars: list[Candle] = []
         self.lines: list[CausalTrendLine] = []
         self.diagnostics: dict[str, int] = {}
+        self.hulls: dict[SwingSide, list[SwingPoint]] = {
+            SwingSide.HIGH: [],
+            SwingSide.LOW: [],
+        }
+        self.hull_reset_index: dict[SwingSide, int] = {
+            SwingSide.HIGH: -1,
+            SwingSide.LOW: -1,
+        }
 
     def _inc(self, key: str) -> None:
         self.diagnostics[key] = self.diagnostics.get(key, 0) + 1
@@ -165,9 +184,12 @@ class CausalTrendLineTracker:
 
     def _tolerance(self, observed_index: int) -> float:
         start = max(0, observed_index - self.scale_window + 1)
-        ranges = [bar.high - bar.low for bar in self.bars[start : observed_index + 1]]
-        positive = [value for value in ranges if value > 0.0]
-        scale = median(positive) if positive else self.tick_size
+        ranges = [
+            bar.high - bar.low
+            for bar in self.bars[start : observed_index + 1]
+            if bar.high > bar.low
+        ]
+        scale = median(ranges) if ranges else self.tick_size
         return max(self.tick_size, scale * self.tolerance_range_fraction)
 
     @staticmethod
@@ -178,87 +200,309 @@ class CausalTrendLineTracker:
             return second.level > first.level
         return second.level < first.level
 
-    def _not_already_broken(self, line: CausalTrendLine, through_index: int) -> bool:
-        # Wick excursions are allowed because they can be fakeouts.  A closed
-        # body beyond the line before the line was observable makes it unusable
-        # as a live breakout boundary.
+    @staticmethod
+    def _cross(first: SwingPoint, middle: SwingPoint, last: SwingPoint) -> float:
+        return (
+            (middle.event_index - first.event_index) * (last.level - first.level)
+            - (middle.level - first.level) * (last.event_index - first.event_index)
+        )
+
+    def _update_hull(
+        self,
+        swing: SwingPoint,
+    ) -> tuple[SwingPoint, SwingPoint] | None:
+        if swing.event_index <= self.hull_reset_index[swing.side]:
+            self._inc("swing_before_or_on_hull_reset_skipped")
+            return None
+
+        hull = self.hulls[swing.side]
+        while len(hull) >= 2:
+            cross = self._cross(hull[-2], hull[-1], swing)
+            should_pop = (
+                swing.side is SwingSide.HIGH and cross >= 0.0
+            ) or (
+                swing.side is SwingSide.LOW and cross <= 0.0
+            )
+            if not should_pop:
+                break
+            hull.pop()
+            self._inc(
+                "upper_hull_popped"
+                if swing.side is SwingSide.HIGH
+                else "lower_hull_popped",
+            )
+        hull.append(swing)
+        if len(hull) < 2:
+            return None
+        return hull[-2], hull[-1]
+
+    def _envelope_valid(self, line: CausalTrendLine, through_index: int) -> bool:
+        """Require every known wick to remain inside the proposed outer edge."""
         for index in range(line.first_index, through_index + 1):
             level = line.price_at(index)
             bar = self.bars[index]
-            if line.side is TrendLineSide.SUPPORT:
-                if bar.close < level - line.tolerance:
+            if line.side is TrendLineSide.RESISTANCE:
+                if bar.high > level + line.tolerance:
                     return False
-            elif bar.close > level + line.tolerance:
+            elif bar.low < level - line.tolerance:
                 return False
         return True
 
-    def _create_lines(self, created_swings: list[SwingPoint]) -> list[TrendLineEvent]:
-        events: list[TrendLineEvent] = []
-        existing = {line.line_id for line in self.lines}
-        for second in created_swings:
-            previous = [
-                swing
-                for swing in self.swing_tracker.swings
-                if swing.side is second.side and swing.event_index < second.event_index
-            ][-self.max_prior_anchors :]
-            for first in previous:
-                if second.event_index - first.event_index < self.min_anchor_bars:
-                    continue
-                if not self._direction_valid(first, second):
-                    continue
-                line_id = self._line_id(first, second)
-                if line_id in existing:
-                    continue
-                slope = (second.level - first.level) / (
-                    second.event_index - first.event_index
-                )
-                line = CausalTrendLine(
-                    line_id=line_id,
-                    side=self._line_side(second.side),
-                    timeframe_minutes=self.timeframe_minutes,
-                    first_swing_id=first.swing_id,
-                    second_swing_id=second.swing_id,
-                    first_index=first.event_index,
-                    second_index=second.event_index,
-                    first_time_ns=first.event_time_ns,
-                    second_time_ns=second.event_time_ns,
-                    first_level=first.level,
-                    second_level=second.level,
-                    observed_index=second.observed_index,
-                    observed_time_ns=second.observed_time_ns,
-                    slope_per_bar=slope,
-                    tolerance=self._tolerance(second.observed_index),
-                    last_touch_index=second.event_index,
-                )
-                if not self._not_already_broken(line, second.observed_index):
-                    self._inc("candidate_broken_before_observable")
-                    continue
-                self.lines.append(line)
-                existing.add(line_id)
-                self._inc("line_created")
-                bar = self.bars[second.observed_index]
-                events.append(
-                    TrendLineEvent(
-                        kind=TrendLineEventKind.CREATED,
-                        line_id=line.line_id,
-                        side=line.side,
-                        index=second.observed_index,
-                        time_ns=bar.ts_close_ns,
-                        line_level=line.price_at(second.observed_index),
-                        bar_open=bar.open,
-                        bar_high=bar.high,
-                        bar_low=bar.low,
-                        bar_close=bar.close,
-                    ),
-                )
-        return events
+    def _touch_marker(self, line: CausalTrendLine, index: int) -> bool:
+        level = line.price_at(index)
+        bar = self.bars[index]
+        if line.side is TrendLineSide.RESISTANCE:
+            return abs(bar.high - level) <= line.tolerance
+        return abs(bar.low - level) <= line.tolerance
+
+    def _historical_touch_episodes(
+        self,
+        line: CausalTrendLine,
+    ) -> tuple[int, int | None]:
+        touched = [
+            index
+            for index in range(line.first_index, line.observed_index + 1)
+            if self._touch_marker(line, index)
+        ]
+        if not touched:
+            return 0, None
+        episodes = 1
+        last = touched[0]
+        for index in touched[1:]:
+            if index > last + 1:
+                episodes += 1
+            last = index
+        return episodes, last
+
+    def _represented_by_active_line(
+        self,
+        swing: SwingPoint,
+        tolerance: float,
+    ) -> bool:
+        side = self._line_side(swing.side)
+        for line in self.lines:
+            if line.state is not TrendLineState.ACTIVE or line.side is not side:
+                continue
+            if abs(line.price_at(swing.event_index) - swing.level) <= max(
+                line.tolerance,
+                tolerance,
+            ):
+                return True
+        return False
+
+    def _create_from_swing(self, swing: SwingPoint) -> list[TrendLineEvent]:
+        edge = self._update_hull(swing)
+        if edge is None:
+            return []
+        first, second = edge
+        if second.event_index - first.event_index < self.min_anchor_bars:
+            return []
+        if not self._direction_valid(first, second):
+            self._inc("hull_edge_wrong_direction")
+            return []
+
+        tolerance = self._tolerance(second.observed_index)
+        if self._represented_by_active_line(second, tolerance):
+            self._inc("active_line_represented_new_swing")
+            return []
+
+        slope = (second.level - first.level) / (
+            second.event_index - first.event_index
+        )
+        line = CausalTrendLine(
+            line_id=self._line_id(first, second),
+            side=self._line_side(second.side),
+            timeframe_minutes=self.timeframe_minutes,
+            first_swing_id=first.swing_id,
+            second_swing_id=second.swing_id,
+            first_index=first.event_index,
+            second_index=second.event_index,
+            first_time_ns=first.event_time_ns,
+            second_time_ns=second.event_time_ns,
+            first_level=first.level,
+            second_level=second.level,
+            observed_index=second.observed_index,
+            observed_time_ns=second.observed_time_ns,
+            slope_per_bar=slope,
+            tolerance=tolerance,
+        )
+        if not self._envelope_valid(line, second.observed_index):
+            # Preserve the old diagnostic key for longitudinal evidence while
+            # making the stronger wick-envelope reason explicit.
+            self._inc("candidate_broken_before_observable")
+            self._inc("candidate_wick_cross_before_observable")
+            return []
+        if any(existing.line_id == line.line_id for existing in self.lines):
+            return []
+
+        line.touch_count, line.last_touch_index = self._historical_touch_episodes(line)
+        self.lines.append(line)
+        self._inc("line_created")
+        bar = self.bars[second.observed_index]
+        return [
+            TrendLineEvent(
+                kind=TrendLineEventKind.CREATED,
+                line_id=line.line_id,
+                side=line.side,
+                index=second.observed_index,
+                time_ns=bar.ts_close_ns,
+                line_level=line.price_at(second.observed_index),
+                bar_open=bar.open,
+                bar_high=bar.high,
+                bar_low=bar.low,
+                bar_close=bar.close,
+            ),
+        ]
 
     @staticmethod
     def _touches(bar: Candle, level: float, tolerance: float) -> bool:
         return bar.low <= level + tolerance and bar.high >= level - tolerance
 
+    @staticmethod
+    def _event(
+        kind: TrendLineEventKind,
+        line: CausalTrendLine,
+        index: int,
+        bar: Candle,
+        level: float,
+    ) -> TrendLineEvent:
+        return TrendLineEvent(
+            kind=kind,
+            line_id=line.line_id,
+            side=line.side,
+            index=index,
+            time_ns=bar.ts_close_ns,
+            line_level=level,
+            bar_open=bar.open,
+            bar_high=bar.high,
+            bar_low=bar.low,
+            bar_close=bar.close,
+        )
+
+    def _reset_hull(self, line_side: TrendLineSide, index: int) -> None:
+        swing_side = (
+            SwingSide.HIGH
+            if line_side is TrendLineSide.RESISTANCE
+            else SwingSide.LOW
+        )
+        self.hulls[swing_side].clear()
+        self.hull_reset_index[swing_side] = max(
+            self.hull_reset_index[swing_side],
+            index,
+        )
+        self._inc("hull_reset_after_break")
+
+    def _advance_broken_line(
+        self,
+        line: CausalTrendLine,
+        index: int,
+        bar: Candle,
+        level: float,
+        touches: bool,
+    ) -> list[TrendLineEvent]:
+        valid_retest = touches and (
+            (
+                line.side is TrendLineSide.RESISTANCE
+                and bar.close >= level - line.tolerance
+            )
+            or (
+                line.side is TrendLineSide.SUPPORT
+                and bar.close <= level + line.tolerance
+            )
+        )
+        if valid_retest:
+            line.state = TrendLineState.RETESTED
+            line.retest_index = index
+            line.retest_time_ns = bar.ts_close_ns
+            line.retest_level = level
+            self._inc("line_first_retest")
+            return [
+                self._event(
+                    TrendLineEventKind.FIRST_RETEST,
+                    line,
+                    index,
+                    bar,
+                    level,
+                ),
+            ]
+
+        failed = (
+            line.side is TrendLineSide.RESISTANCE
+            and bar.close < level - line.tolerance
+        ) or (
+            line.side is TrendLineSide.SUPPORT
+            and bar.close > level + line.tolerance
+        )
+        if failed:
+            line.state = TrendLineState.FAILED_BREAK
+            self._inc("line_failed_break")
+            return [
+                self._event(
+                    TrendLineEventKind.FAILED_BREAK,
+                    line,
+                    index,
+                    bar,
+                    level,
+                ),
+            ]
+
+        broke_up = line.side is TrendLineSide.RESISTANCE
+        if line.continuation_extreme is None:
+            line.continuation_extreme = line.break_extreme
+        assert line.continuation_extreme is not None
+
+        if line.pullback_started_index is None:
+            line.continuation_extreme = (
+                max(line.continuation_extreme, bar.high)
+                if broke_up
+                else min(line.continuation_extreme, bar.low)
+            )
+            pullback_started = (
+                broke_up and bar.close < bar.open
+            ) or (
+                not broke_up and bar.close > bar.open
+            )
+            if pullback_started:
+                line.pullback_started_index = index
+                line.pullback_started_time_ns = bar.ts_close_ns
+                line.pullback_reference_extreme = line.continuation_extreme
+                self._inc("line_first_pullback_started")
+            return []
+
+        assert line.pullback_reference_extreme is not None
+        reference = line.pullback_reference_extreme
+        resumed_without_retest = (
+            broke_up and bar.close > reference + line.tolerance
+        ) or (
+            not broke_up and bar.close < reference - line.tolerance
+        )
+        if resumed_without_retest:
+            line.state = TrendLineState.EXPIRED_WITHOUT_RETEST
+            line.expired_index = index
+            line.expired_time_ns = bar.ts_close_ns
+            self._inc("line_retest_missed")
+            return [
+                self._event(
+                    TrendLineEventKind.RETEST_MISSED,
+                    line,
+                    index,
+                    bar,
+                    level,
+                ),
+            ]
+
+        # A wick made during the first pullback becomes part of the price the
+        # market must later close through to prove that pullback has ended.
+        line.pullback_reference_extreme = (
+            max(reference, bar.high)
+            if broke_up
+            else min(reference, bar.low)
+        )
+        return []
+
     def _update_lines(self, index: int, bar: Candle) -> list[TrendLineEvent]:
         events: list[TrendLineEvent] = []
+        broken_sides: set[TrendLineSide] = set()
         for line in self.lines:
             if index <= line.observed_index:
                 continue
@@ -267,13 +511,14 @@ class CausalTrendLineTracker:
 
             if line.state is TrendLineState.ACTIVE:
                 if touches:
-                    valid_side_close = (
+                    closes_on_valid_side = (
                         bar.close >= level - line.tolerance
                         if line.side is TrendLineSide.SUPPORT
                         else bar.close <= level + line.tolerance
                     )
-                    if valid_side_close and (
-                        line.last_touch_index is None or index > line.last_touch_index + 1
+                    if closes_on_valid_side and (
+                        line.last_touch_index is None
+                        or index > line.last_touch_index + 1
                     ):
                         line.touch_count += 1
                         line.last_touch_index = index
@@ -295,86 +540,44 @@ class CausalTrendLineTracker:
                 line.break_time_ns = bar.ts_close_ns
                 line.break_level = level
                 line.break_extreme = (
-                    bar.high if line.side is TrendLineSide.RESISTANCE else bar.low
+                    bar.high
+                    if line.side is TrendLineSide.RESISTANCE
+                    else bar.low
                 )
+                line.continuation_extreme = line.break_extreme
                 self._inc("line_break")
                 events.append(
-                    TrendLineEvent(
-                        kind=TrendLineEventKind.BREAK,
-                        line_id=line.line_id,
-                        side=line.side,
-                        index=index,
-                        time_ns=bar.ts_close_ns,
-                        line_level=level,
-                        bar_open=bar.open,
-                        bar_high=bar.high,
-                        bar_low=bar.low,
-                        bar_close=bar.close,
+                    self._event(
+                        TrendLineEventKind.BREAK,
+                        line,
+                        index,
+                        bar,
+                        level,
                     ),
                 )
+                broken_sides.add(line.side)
                 continue
 
-            if line.state is not TrendLineState.BROKEN or line.break_index is None:
-                continue
-            if index <= line.break_index:
-                continue
-
-            valid_retest = touches and (
-                (
-                    line.side is TrendLineSide.RESISTANCE
-                    and bar.close >= level - line.tolerance
-                )
-                or (
-                    line.side is TrendLineSide.SUPPORT
-                    and bar.close <= level + line.tolerance
-                )
-            )
-            if valid_retest:
-                line.state = TrendLineState.RETESTED
-                line.retest_index = index
-                line.retest_time_ns = bar.ts_close_ns
-                line.retest_level = level
-                self._inc("line_first_retest")
-                events.append(
-                    TrendLineEvent(
-                        kind=TrendLineEventKind.FIRST_RETEST,
-                        line_id=line.line_id,
-                        side=line.side,
-                        index=index,
-                        time_ns=bar.ts_close_ns,
-                        line_level=level,
-                        bar_open=bar.open,
-                        bar_high=bar.high,
-                        bar_low=bar.low,
-                        bar_close=bar.close,
+            if (
+                line.state is TrendLineState.BROKEN
+                and line.break_index is not None
+                and index > line.break_index
+            ):
+                events.extend(
+                    self._advance_broken_line(
+                        line,
+                        index,
+                        bar,
+                        level,
+                        touches,
                     ),
                 )
-                continue
 
-            failed = (
-                line.side is TrendLineSide.RESISTANCE
-                and bar.close < level - line.tolerance
-            ) or (
-                line.side is TrendLineSide.SUPPORT
-                and bar.close > level + line.tolerance
-            )
-            if failed:
-                line.state = TrendLineState.FAILED_BREAK
-                self._inc("line_failed_break")
-                events.append(
-                    TrendLineEvent(
-                        kind=TrendLineEventKind.FAILED_BREAK,
-                        line_id=line.line_id,
-                        side=line.side,
-                        index=index,
-                        time_ns=bar.ts_close_ns,
-                        line_level=level,
-                        bar_open=bar.open,
-                        bar_high=bar.high,
-                        bar_low=bar.low,
-                        bar_close=bar.close,
-                    ),
-                )
+        # A break ends the anchor regime for new lines. A swing whose event
+        # occurred before this close but is confirmed afterward may not seed the
+        # post-break hull.
+        for side in broken_sides:
+            self._reset_hull(side, index)
         return events
 
     def on_bar(self, bar: Candle) -> list[TrendLineEvent]:
@@ -383,14 +586,21 @@ class CausalTrendLineTracker:
         self.bars.append(bar)
         created_swings = self.swing_tracker.on_bar(bar)
         index = len(self.bars) - 1
-        events = self._create_lines(created_swings)
-        events.extend(self._update_lines(index, bar))
+
+        # Existing lines see the close before newly confirmed, historically
+        # located pivots are admitted into the post-close envelope.
+        events = self._update_lines(index, bar)
+        for swing in created_swings:
+            events.extend(self._create_from_swing(swing))
         return events
 
     def line(self, line_id: str) -> CausalTrendLine | None:
         return next((line for line in self.lines if line.line_id == line_id), None)
 
-    def active_lines(self, side: TrendLineSide | None = None) -> list[CausalTrendLine]:
+    def active_lines(
+        self,
+        side: TrendLineSide | None = None,
+    ) -> list[CausalTrendLine]:
         return [
             line
             for line in self.lines
