@@ -57,7 +57,7 @@ class CausalDiagonalLifecycleTests(unittest.TestCase):
 
         before = book.boundaries_at(11 * NS)
         self.assertTrue(any(zone.source_structure_id == line.structure_id for zone in before))
-        book.observe_price(candle(11, 110.7, 111.2, 110.9, 111.1))
+        book.observe_price(candle(11, 111.0, 111.2, 110.9, 111.1))
         after = book.boundaries_at(12 * NS)
         self.assertFalse(any(zone.source_structure_id == line.structure_id for zone in after))
         self.assertEqual(book.boundary_retired_time_ns(line.structure_id), 11 * NS)
