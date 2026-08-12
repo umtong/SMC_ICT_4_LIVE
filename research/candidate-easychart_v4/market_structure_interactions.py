@@ -66,7 +66,7 @@ class MarketStructureInteractionMixin:
             rejection.pop((Side.SHORT, StructurePath.BOUNCE), None)
             self._inc("nested_resistance_hold_suppressed_by_higher_break")
         # A wick sweep is semantically stronger than an ordinary touch on the
-        # same side and bar. Merge all touched structures into that one event.
+        # same side and bar.  Merge all touched structures into that one event.
         for side in (Side.LONG, Side.SHORT):
             fake = rejection.get((side, StructurePath.FAKEOUT), [])
             bounce = rejection.get((side, StructurePath.BOUNCE), [])
@@ -96,22 +96,22 @@ class MarketStructureInteractionMixin:
         return events
 
     def observe_lower_bar(self, bar: Candle) -> list[StructureEvent]:
-        """Observe a causally later lower-timeframe bar against known structure.
+        """Observe lower-timeframe price without resolving the HTF state.
 
-        Lower bars may confirm a bounce or wick-reclaim without waiting for the
-        context candle to close. They never confirm structural acceptance; the
-        source requires the channel/trendline timeframe close and next-bar hold
-        for that transition.
+        A 1m/5m candle may show the first touch, wick or provisional reclaim of
+        a known 15m/60m line, but it cannot decide whether that higher-timeframe
+        boundary ultimately closed inside or outside.  The EasyChart material
+        assigns Fakeout versus real breakout to the timeframe on which the
+        trendline/channel was drawn.  Lower bars therefore update diagnostics
+        and channel-midline progress only; ``on_bar`` on the context timeframe
+        emits the structural event.  Lower OB/FVG evidence remains available
+        immediately after that event for execution refinement.
         """
         if self.bars and bar.ts_close_ns <= self.bars[-1].ts_close_ns:
             return []
         self._update_channel_midlines(bar)
-        index = len(self.bars)
-        rejection: dict[tuple[Side, StructurePath], list[StructuralBoundary]] = {}
-        extremes: dict[tuple[Side, StructurePath], float] = {}
-        broken_roles: set[BoundaryRole] = set()
         half_tick = self.tick_size / 2.0
-        for boundary in list(self.boundaries.values()):
+        for boundary in self.boundaries.values():
             if (
                 not boundary.active
                 or boundary.kind in {StructureKind.CHANNEL_MIDLINE, StructureKind.CHANNEL_EXTENSION}
@@ -121,60 +121,19 @@ class MarketStructureInteractionMixin:
             level = boundary.level_at(bar.ts_close_ns)
             if boundary.role is BoundaryRole.SUPPORT:
                 if bar.close < level - half_tick:
-                    broken_roles.add(BoundaryRole.SUPPORT)
-                elif not boundary.rejection_used and bar.low < level - half_tick and bar.close > level:
-                    key = (Side.LONG, StructurePath.FAKEOUT)
-                    rejection.setdefault(key, []).append(boundary)
-                    extremes[key] = min(extremes.get(key, bar.low), bar.low)
-                elif not boundary.rejection_used and bar.low <= level + half_tick and bar.close >= level:
-                    key = (Side.LONG, StructurePath.BOUNCE)
-                    rejection.setdefault(key, []).append(boundary)
-                    extremes[key] = min(extremes.get(key, bar.low), bar.low)
+                    self._inc("lower_support_close_outside_observed")
+                elif bar.low < level - half_tick and bar.close > level:
+                    self._inc("lower_support_provisional_reclaim_observed")
+                elif bar.low <= level + half_tick and bar.close >= level:
+                    self._inc("lower_support_touch_observed")
             else:
                 if bar.close > level + half_tick:
-                    broken_roles.add(BoundaryRole.RESISTANCE)
-                elif not boundary.rejection_used and bar.high > level + half_tick and bar.close < level:
-                    key = (Side.SHORT, StructurePath.FAKEOUT)
-                    rejection.setdefault(key, []).append(boundary)
-                    extremes[key] = max(extremes.get(key, bar.high), bar.high)
-                elif not boundary.rejection_used and bar.high >= level - half_tick and bar.close <= level:
-                    key = (Side.SHORT, StructurePath.BOUNCE)
-                    rejection.setdefault(key, []).append(boundary)
-                    extremes[key] = max(extremes.get(key, bar.high), bar.high)
-        if BoundaryRole.SUPPORT in broken_roles:
-            rejection.pop((Side.LONG, StructurePath.FAKEOUT), None)
-            rejection.pop((Side.LONG, StructurePath.BOUNCE), None)
-        if BoundaryRole.RESISTANCE in broken_roles:
-            rejection.pop((Side.SHORT, StructurePath.FAKEOUT), None)
-            rejection.pop((Side.SHORT, StructurePath.BOUNCE), None)
-        events: list[StructureEvent] = []
-        for side in (Side.LONG, Side.SHORT):
-            fake = rejection.get((side, StructurePath.FAKEOUT), [])
-            bounce = rejection.get((side, StructurePath.BOUNCE), [])
-            if fake:
-                combined = fake + [item for item in bounce if item not in fake]
-                events.append(
-                    self._make_event(
-                        path=StructurePath.FAKEOUT,
-                        side=side,
-                        boundaries=combined,
-                        bar=bar,
-                        index=index,
-                        extreme=extremes[(side, StructurePath.FAKEOUT)],
-                    ),
-                )
-            elif bounce:
-                events.append(
-                    self._make_event(
-                        path=StructurePath.BOUNCE,
-                        side=side,
-                        boundaries=bounce,
-                        bar=bar,
-                        index=index,
-                        extreme=extremes[(side, StructurePath.BOUNCE)],
-                    ),
-                )
-        return events
+                    self._inc("lower_resistance_close_outside_observed")
+                elif bar.high > level + half_tick and bar.close < level:
+                    self._inc("lower_resistance_provisional_reclaim_observed")
+                elif bar.high >= level - half_tick and bar.close <= level:
+                    self._inc("lower_resistance_touch_observed")
+        return []
 
     def on_bar(self, bar: Candle) -> list[StructureEvent]:
         if self.bars and bar.ts_close_ns <= self.bars[-1].ts_close_ns:

@@ -20,10 +20,10 @@ def bar(i: int, o: float, h: float, l: float, c: float) -> Candle:
 def ascending_seed() -> list[Candle]:
     return [
         bar(0, 12.0, 13.0, 11.8, 12.5),
-        bar(1, 11.4, 12.2, 10.0, 11.5),
-        bar(2, 13.0, 16.0, 12.0, 15.0),
-        bar(3, 12.0, 14.0, 11.0, 13.0),
-        bar(4, 13.5, 15.0, 12.5, 14.0),
+        bar(1, 11.4, 12.2, 10.0, 11.5),  # first wick low
+        bar(2, 13.0, 16.0, 12.0, 15.0),  # opposite wick high
+        bar(3, 12.0, 14.0, 11.0, 13.0),  # second, higher wick low
+        bar(4, 13.5, 15.0, 12.5, 14.0),  # confirms the second low
     ]
 
 
@@ -59,16 +59,18 @@ class MarketStructureV4Tests(unittest.TestCase):
         self.assertIsNotNone(upper)
         assert lower is not None and upper is not None
         self.assertAlmostEqual(lower.slope_per_ns, upper.slope_per_ns)
-        opposite = next(item for item in detector.pivots if item.kind is PivotKind.HIGH and item.index == 2)
-        self.assertAlmostEqual(upper.level_at(opposite.event_time_ns), opposite.price)
+        opposite_pivot = next(item for item in detector.pivots if item.kind is PivotKind.HIGH and item.index == 2)
+        self.assertAlmostEqual(upper.level_at(opposite_pivot.event_time_ns), opposite_pivot.price)
         self.assertEqual(channel.observed_time_ns, ascending_seed()[-1].ts_close_ns)
 
     def test_first_later_channel_touch_is_fourth_point_and_targets_opposite_edge(self) -> None:
         detector = MarketStructureDetector("TEST", 1, 0.1, pivot_spans=(1,))
+        seed = ascending_seed()
         events = []
-        for candle in ascending_seed():
+        for candle in seed:
             events.extend(detector.on_bar(candle))
         self.assertEqual(events, [])
+        # Lower channel line is 12.0 at this close. Touch and close back inside.
         events = detector.on_bar(bar(5, 13.0, 14.0, 12.0, 13.2))
         self.assertEqual(len(events), 1)
         event = events[0]
@@ -83,6 +85,28 @@ class MarketStructureV4Tests(unittest.TestCase):
         self.assertAlmostEqual(event.target_price_at_interaction or 0.0, target.level_at(event.interaction_time_ns))
         channel = detector.channels[event.channel_id or ""]
         self.assertEqual(channel.first_interaction_time_ns, event.interaction_time_ns)
+
+    def test_lower_bar_cannot_resolve_higher_timeframe_fakeout(self) -> None:
+        detector = MarketStructureDetector("TEST", 1, 0.1, pivot_spans=(1,))
+        for candle in ascending_seed():
+            detector.on_bar(candle)
+        lower = Candle(
+            ts_close_ns=ascending_seed()[-1].ts_close_ns + NS // 5,
+            open=13.0,
+            high=14.0,
+            low=11.4,
+            close=12.8,
+            volume=1.0,
+        )
+        self.assertEqual(detector.observe_lower_bar(lower), [])
+        self.assertGreater(
+            detector.diagnostics.get("lower_support_provisional_reclaim_observed", 0),
+            0,
+        )
+        # The context-timeframe close still resolves the same geometry.
+        events = detector.on_bar(bar(5, 13.0, 14.0, 11.4, 12.8))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].path, StructurePath.FAKEOUT)
 
     def test_wick_outside_close_inside_is_immediate_fakeout(self) -> None:
         detector = MarketStructureDetector("TEST", 1, 0.1, pivot_spans=(1,))
