@@ -10,11 +10,11 @@ import pandas as pd
 
 from backtest_support import make_engine, write_json
 from easychart_re1 import (
-    EasyChartRE1Bundle,
     HTF_DIRECTION_RULE,
     HTF_NEUTRAL_RULE,
     HTF_REVERSAL_AREA_RULE,
 )
+from easychart_re1_fresh import EasyChartRE1FreshBundle, FRESH_HTF_FOOTPRINT_RULE
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
 from mtf_backtest_support_v5 import preserve_mtf_results_v5
@@ -57,7 +57,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
-    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1Bundle
+    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FreshBundle
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -120,13 +120,15 @@ def main() -> None:
             "scale_policy": "60m_context_router_plus_15_5_1_execution",
             "context_router_policy": (
                 "continuation with 60m BOS; neutral regime allowed; countertrend only at "
-                "same-side pre-existing 60m structure/OB/FVG"
+                "same-side untouched or first-touch-episode 60m structure/OB/FVG"
             ),
             "context_router_provenance": [
                 HTF_DIRECTION_RULE,
                 HTF_REVERSAL_AREA_RULE,
                 HTF_NEUTRAL_RULE,
+                FRESH_HTF_FOOTPRINT_RULE,
             ],
+            "htf_footprint_lifecycle": "UNTOUCHED_OR_FIRST_COMPLETED_60M_TOUCH_EPISODE",
             "trade_context_policy": "CHANNEL_AND_TRENDLINE_MICRO_CORE_WITH_HTF_ROUTING",
             "target_policy": "CHANNEL_ACCEPTANCE_FIRST_OBJECTIVE_OTHERWISE_EXISTING",
             "target_policy_provenance": CHANNEL_EXTENSION_RULE,
