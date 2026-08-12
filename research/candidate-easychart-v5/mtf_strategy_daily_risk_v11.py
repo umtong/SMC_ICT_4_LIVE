@@ -8,8 +8,9 @@ one-percent quantity for every trade and continue indefinitely.
 The governor uses UTC calendar days because the four-symbol crypto account is
 continuous and the historical data are UTC. It clips each new plan's complete
 estimated loss budget to the unused part of the day's one-percent starting-NAV
-allowance. Gains do not enlarge the allowance. Existing positions retain their
-native stop, target, opposing-structure exit, and 24-hour terminal protection.
+allowance. Realized losing trades consume the allowance; winning trades do not
+restore or enlarge it. Existing positions retain their native stop, target,
+opposing-structure exit, and 24-hour terminal protection.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce, TriggerType
+from nautilus_trader.model.events import PositionClosed
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.orders.list import OrderList
 
@@ -37,20 +39,30 @@ DAILY_BOUNDARY_TRANSLATION = (
 
 def unused_daily_loss_budget(
     day_start_nav: Decimal,
-    current_nav: Decimal,
+    cumulative_realized_losses: Decimal,
     per_trade_budget: Decimal,
     cap_fraction: Decimal = DAILY_LOSS_CAP_FRACTION,
 ) -> Decimal:
-    if day_start_nav <= 0 or current_nav <= 0:
-        raise ValueError("NAV values must be positive")
+    """Return unused gross-loss capacity; gains never offset earlier losses."""
+    if day_start_nav <= 0:
+        raise ValueError("day-start NAV must be positive")
+    if cumulative_realized_losses < 0:
+        raise ValueError("cumulative realized losses cannot be negative")
     if per_trade_budget < 0:
         raise ValueError("per-trade budget cannot be negative")
     if not Decimal("0") < cap_fraction < Decimal("1"):
         raise ValueError("daily cap fraction must lie between zero and one")
     cap = day_start_nav * cap_fraction
-    realized_drawdown = max(Decimal("0"), day_start_nav - current_nav)
-    remaining = max(Decimal("0"), cap - realized_drawdown)
+    remaining = max(Decimal("0"), cap - cumulative_realized_losses)
     return min(per_trade_budget, remaining)
+
+
+def realized_loss_amount(realized_pnl: Any) -> Decimal:
+    """Extract the non-negative loss amount from a Nautilus Money value."""
+    if realized_pnl is None:
+        return Decimal("0")
+    amount = Decimal(str(realized_pnl.as_double()))
+    return max(Decimal("0"), -amount)
 
 
 class DailyRiskGovernorMixin:
@@ -60,6 +72,7 @@ class DailyRiskGovernorMixin:
         super().__init__(*args, **kwargs)
         self._daily_risk_date = None
         self._daily_start_nav: Decimal | None = None
+        self._daily_realized_losses = Decimal("0")
 
     @staticmethod
     def _utc_date(time_ns: int):  # type: ignore[no-untyped-def]
@@ -74,12 +87,14 @@ class DailyRiskGovernorMixin:
         nav = self._current_nav()
         self._daily_risk_date = day
         self._daily_start_nav = nav
+        self._daily_realized_losses = Decimal("0")
         self._record(
             "daily_risk_session_started",
             utc_date=day.isoformat(),
             day_start_nav=float(nav),
             daily_loss_cap_fraction=float(DAILY_LOSS_CAP_FRACTION),
             daily_loss_cap_amount=float(nav * DAILY_LOSS_CAP_FRACTION),
+            cumulative_realized_losses=0.0,
             provenance=DAILY_RISK_PROVENANCE,
             boundary_translation=DAILY_BOUNDARY_TRANSLATION,
         )
@@ -89,7 +104,7 @@ class DailyRiskGovernorMixin:
             raise RuntimeError("daily risk session is not initialized")
         return unused_daily_loss_budget(
             self._daily_start_nav,
-            nav,
+            self._daily_realized_losses,
             nav * Decimal(str(self.config.risk_fraction)),
         )
 
@@ -137,6 +152,7 @@ class DailyRiskGovernorMixin:
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
                 day_start_nav=float(self._daily_start_nav),
+                cumulative_realized_losses=float(self._daily_realized_losses),
                 daily_loss_cap_fraction=float(DAILY_LOSS_CAP_FRACTION),
                 provenance=DAILY_RISK_PROVENANCE,
             )
@@ -151,6 +167,7 @@ class DailyRiskGovernorMixin:
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
                 day_start_nav=float(self._daily_start_nav),
+                cumulative_realized_losses=float(self._daily_realized_losses),
                 remaining_daily_risk_budget=float(budget),
                 estimated_entry_slippage=float(entry_slippage),
                 estimated_stop_slippage=float(stop_slippage),
@@ -191,6 +208,7 @@ class DailyRiskGovernorMixin:
             configured_per_trade_risk_fraction=float(self.config.risk_fraction),
             daily_loss_cap_fraction=float(DAILY_LOSS_CAP_FRACTION),
             day_start_nav=float(self._daily_start_nav),
+            cumulative_realized_losses=float(self._daily_realized_losses),
             remaining_daily_risk_budget_before_submission=float(budget),
             estimated_entry_slippage=float(entry_slippage),
             estimated_stop_slippage=float(stop_slippage),
@@ -198,6 +216,23 @@ class DailyRiskGovernorMixin:
             daily_boundary_translation=DAILY_BOUNDARY_TRANSLATION,
         )
         return True
+
+    def on_position_closed(self, event: PositionClosed) -> None:
+        self._ensure_daily_session(event.ts_event)
+        loss = realized_loss_amount(event.realized_pnl)
+        self._daily_realized_losses += loss
+        self._record(
+            "daily_realized_loss_updated",
+            instrument_id=str(event.instrument_id),
+            position_id=str(event.position_id),
+            utc_date=self._daily_risk_date.isoformat(),
+            closed_trade_loss=float(loss),
+            cumulative_realized_losses=float(self._daily_realized_losses),
+            day_start_nav=float(self._daily_start_nav),
+            daily_loss_cap_amount=float(self._daily_start_nav * DAILY_LOSS_CAP_FRACTION),
+            provenance=DAILY_RISK_PROVENANCE,
+        )
+        super().on_position_closed(event)
 
 
 class DailyRiskDayTradeStrategy(DailyRiskGovernorMixin, EasyChartDayTradeStrategy):
