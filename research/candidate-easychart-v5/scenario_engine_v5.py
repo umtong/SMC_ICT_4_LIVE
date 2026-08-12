@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from domain import Candle
+from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
@@ -50,13 +50,17 @@ class StructureScenarioEngine(
         self._claimed_structures: set[str] = set()
         self._claimed_episodes: set[str] = set()
         self.sequence = 0
+        self._current_trigger_bar: Candle | None = None
+
     def _inc(self, key: str) -> None:
         self.diagnostics[key] = self.diagnostics.get(key, 0) + 1
+
     def _audit(self, zone: Any) -> None:
         zone_id = getattr(zone, "zone_id", None)
         if zone_id and zone_id not in self._audit_zone_ids:
             self._audit_zone_ids.add(zone_id)
             self.audit_zones.append(zone)
+
     def _trace(self, kind: str, time_ns: int, setup: ScenarioSetup | None = None, **values: Any) -> None:
         event: dict[str, Any] = {
             "scenario_kind": kind,
@@ -82,9 +86,11 @@ class StructureScenarioEngine(
                 },
             )
         self.trace_events.append(event)
+
     def drain_trace(self) -> list[dict[str, Any]]:
         output, self.trace_events = self.trace_events, []
         return output
+
     @staticmethod
     def _terminal(state: SetupState) -> bool:
         return state in {
@@ -96,6 +102,7 @@ class StructureScenarioEngine(
             SetupState.UNRESOLVED,
             SetupState.DUPLICATE_EPISODE,
         }
+
     def _finish(
         self,
         setup: ScenarioSetup,
@@ -111,6 +118,76 @@ class StructureScenarioEngine(
             setup.trigger_zone.consumed = True
         self._inc(reason)
         self._trace(reason, time_ns, setup, **values)
+
+    def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
+        """Translate close-confirmed retest invalidation into one causal stop.
+
+        The source allows entry only after the retest bar has completed. A stop
+        inside that already-observed bar would have been crossed before the
+        entry decision existed, and in live trading it turns normal retest wick
+        noise into an immediate stop. Keep the structural invalidation from the
+        base policy, but place the executable stop beyond the completed retest
+        bar as well.
+        """
+        structural_stop = super()._acceptance_stop(setup, time_ns)
+        if structural_stop is None:
+            return None
+        bar = self._current_trigger_bar
+        if bar is None or bar.ts_close_ns != time_ns:
+            raise RuntimeError("acceptance stop requested without its completed trigger bar")
+        if setup.side is Side.LONG:
+            executable_stop = min(structural_stop, bar.low - self.tick_size)
+        else:
+            executable_stop = max(structural_stop, bar.high + self.tick_size)
+        if executable_stop != structural_stop:
+            self._inc("acceptance_stop_extended_beyond_entry_bar")
+            self._trace(
+                "acceptance_stop_extended_beyond_entry_bar",
+                time_ns,
+                setup,
+                structural_stop=structural_stop,
+                entry_bar_low=bar.low,
+                entry_bar_high=bar.high,
+                executable_stop=executable_stop,
+            )
+        return executable_stop
+
+    def _make_plan(
+        self,
+        setup: ScenarioSetup,
+        bar: Candle,
+        *,
+        entry: float,
+        stop: float,
+        trigger_zone: Any,
+        trigger_kind: Any,
+        trigger_strength: float,
+    ) -> V5TradePlan | None:
+        """Reject any plan whose stop was already traded before bar-close entry."""
+        stop_inside_completed_bar = (
+            stop >= bar.low if setup.side is Side.LONG else stop <= bar.high
+        )
+        if stop_inside_completed_bar:
+            self._finish(
+                setup,
+                SetupState.NO_TRADE_GEOMETRY,
+                bar.ts_close_ns,
+                "stop_inside_observed_entry_bar",
+                entry=entry,
+                stop=stop,
+                entry_bar_low=bar.low,
+                entry_bar_high=bar.high,
+            )
+            return None
+        return super()._make_plan(
+            setup,
+            bar,
+            entry=entry,
+            stop=stop,
+            trigger_zone=trigger_zone,
+            trigger_kind=trigger_kind,
+            trigger_strength=trigger_strength,
+        )
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
         if timeframe_minutes == self.higher_minutes:
@@ -136,27 +213,32 @@ class StructureScenarioEngine(
             return []
         if timeframe_minutes != self.trigger_minutes:
             raise ValueError(f"unsupported timeframe {timeframe_minutes} for {self.scale_name}")
-        created = self.trigger_detector.on_bar(bar)
-        for zone in created:
-            self._audit(zone)
-        index = len(self.trigger_detector.bars) - 1
-        self._arm_displacements(bar, index, created)
-        plans = self._advance_acceptance_retests(bar, index)
-        plan_count_before_retest = len(self.plans)
-        footprint_plans = self._advance_footprint_retests(bar, index)
-        if footprint_plans is None:
-            # Compatibility guard for the prior method version which appended
-            # plans to self.plans but accidentally omitted its return statement.
-            footprint_plans = self.plans[plan_count_before_retest:]
-        plans.extend(footprint_plans)
-        return sorted(
-            plans,
-            key=lambda plan: (
-                plan.interaction_time_ns,
-                -plan.higher_timeframe_minutes,
-                plan.symbol,
-                plan.plan_id,
-            ),
-        )
+        self._current_trigger_bar = bar
+        try:
+            created = self.trigger_detector.on_bar(bar)
+            for zone in created:
+                self._audit(zone)
+            index = len(self.trigger_detector.bars) - 1
+            self._arm_displacements(bar, index, created)
+            plans = self._advance_acceptance_retests(bar, index)
+            plan_count_before_retest = len(self.plans)
+            footprint_plans = self._advance_footprint_retests(bar, index)
+            if footprint_plans is None:
+                # Compatibility guard for the prior method version which appended
+                # plans to self.plans but accidentally omitted its return statement.
+                footprint_plans = self.plans[plan_count_before_retest:]
+            plans.extend(footprint_plans)
+            return sorted(
+                plans,
+                key=lambda plan: (
+                    plan.interaction_time_ns,
+                    -plan.higher_timeframe_minutes,
+                    plan.symbol,
+                    plan.plan_id,
+                ),
+            )
+        finally:
+            self._current_trigger_bar = None
+
     def find_zone(self, zone_id: str) -> Any | None:
         return next((zone for zone in self.audit_zones if zone.zone_id == zone_id), None)
