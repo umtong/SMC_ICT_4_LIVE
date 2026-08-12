@@ -288,6 +288,11 @@ class RoleRoutedBoundaryEngine:
         )
         self.latest_breakout_high: StructuralPivot | None = None
         self.latest_breakout_low: StructuralPivot | None = None
+        # Preserve the causal pivot history.  A breakout/retest stop belongs to
+        # the origin of the wave that produced the *first* outside close.  A
+        # later micro pivot printed after the break cannot retroactively become
+        # that origin merely because it is the latest pivot at acceptance.
+        self.breakout_pivots: list[StructuralPivot] = []
         self.sequence = 0
         self.diagnostics: dict[str, int] = {}
 
@@ -635,6 +640,33 @@ class RoleRoutedBoundaryEngine:
         self._count(f"setups_{interaction.lower()}")
         return setup
 
+    def _prebreak_wave_origin(
+        self,
+        *,
+        state: BoundaryState,
+        side: Side,
+        observed_time_ns: int,
+    ) -> StructuralPivot | None:
+        """Return the latest opposite pivot whose *event* predates the break.
+
+        Directional-change confirmation may arrive after the first outside
+        close, but the wick extreme itself must already belong to the wave that
+        produced that break.  This separates event time from observed time and
+        prevents a post-break pullback pivot from manufacturing a tight stop.
+        """
+        break_time_ns = state.outside_first_time_ns
+        if break_time_ns is None:
+            return None
+        wanted = "LOW" if side is Side.LONG else "HIGH"
+        eligible = [
+            pivot
+            for pivot in self.breakout_pivots
+            if pivot.side == wanted
+            and pivot.event_time_ns < break_time_ns
+            and pivot.observed_time_ns <= observed_time_ns
+        ]
+        return max(eligible, default=None, key=lambda pivot: pivot.event_time_ns)
+
     def _continuation_setup(
         self,
         *,
@@ -645,11 +677,16 @@ class RoleRoutedBoundaryEngine:
         liquidity_range = state.liquidity_range
         entry = self._continuation_boundary(liquidity_range, side)
         # The source-defined invalidation for a break/retest is the origin of
-        # the wave that produced the break, not one tick beyond the broken
-        # boundary.  Use the latest causally confirmed opposite DC pivot.
+        # the wave that produced the first outside close.  Never substitute a
+        # later micro pivot that happened to be latest at acceptance.
+        origin = self._prebreak_wave_origin(
+            state=state,
+            side=side,
+            observed_time_ns=current.ts_close_ns,
+        )
         if side is Side.LONG:
-            origin = self.latest_breakout_low
-            if origin is None or origin.observed_time_ns > current.ts_close_ns or origin.level >= entry:
+            if origin is None or origin.level >= entry:
+                self._count("continuation_missing_prebreak_wave_origin")
                 self._count("continuation_missing_breakout_wave_origin")
                 return None
             stop = origin.level - self.config.tick_size
@@ -657,8 +694,8 @@ class RoleRoutedBoundaryEngine:
             if not stop < entry < target:
                 return None
         else:
-            origin = self.latest_breakout_high
-            if origin is None or origin.observed_time_ns > current.ts_close_ns or origin.level <= entry:
+            if origin is None or origin.level <= entry:
+                self._count("continuation_missing_prebreak_wave_origin")
                 self._count("continuation_missing_breakout_wave_origin")
                 return None
             stop = origin.level + self.config.tick_size
@@ -741,6 +778,9 @@ class RoleRoutedBoundaryEngine:
                 f"ROLE_GRAPH_V15|OPTION=ACCEPTED_BREAK_FIRST_RETEST"
                 f"|TARGET_CAP_NOT_OBJECTIVE"
                 f"|BREAKOUT_WAVE_ORIGIN={origin.level:.12g}"
+                f"|BREAKOUT_WAVE_ORIGIN_EVENT={origin.event_time_ns}"
+                f"|BREAKOUT_WAVE_ORIGIN_OBSERVED={origin.observed_time_ns}"
+                f"|BREAK_TIME={state.outside_first_time_ns}"
                 f"|RANGE={liquidity_range.reference_family}"
                 f"|WINDOW={liquidity_range.trade_window}"
             ),
@@ -1045,6 +1085,8 @@ class RoleRoutedBoundaryEngine:
         self.candles.append(current)
         pivot = self.breakout_origin_detector.on_candle(current, index)
         if pivot is not None:
+            self.breakout_pivots.append(pivot)
+            self.breakout_pivots = self.breakout_pivots[-256:]
             if pivot.side == "HIGH":
                 self.latest_breakout_high = pivot
             else:

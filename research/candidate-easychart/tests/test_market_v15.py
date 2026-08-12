@@ -106,7 +106,7 @@ class BoundaryEngineTests(unittest.TestCase):
             enable_wm_trap=False,
             enable_predictive_outside_footprint=False,
         )
-        engine.latest_breakout_high = StructuralPivot(
+        origin = StructuralPivot(
             center_index=0,
             observed_index=0,
             side="HIGH",
@@ -114,6 +114,8 @@ class BoundaryEngineTests(unittest.TestCase):
             event_time_ns=1,
             observed_time_ns=9,
         )
+        engine.latest_breakout_high = origin
+        engine.breakout_pivots.append(origin)
         engine.on_close(c(0, 101, 102, 98, 99), 0)
         update = engine.on_close(c(1, 99, 99.5, 96, 97), 1)
         self.assertEqual(len(update.setups), 1)
@@ -123,6 +125,39 @@ class BoundaryEngineTests(unittest.TestCase):
         self.assertAlmostEqual(setup.stop, 103.1)
         self.assertAlmostEqual(setup.formation_extreme, 103.0)
         self.assertIn("ACCEPTED_BREAK", setup.family)
+
+
+    def test_postbreak_pivot_cannot_tighten_continuation_stop(self):
+        engine = self.engine(
+            enable_immediate_fakeout=False,
+            enable_wm_trap=False,
+            enable_predictive_outside_footprint=False,
+        )
+        prebreak = StructuralPivot(
+            center_index=0,
+            observed_index=0,
+            side="HIGH",
+            level=103.0,
+            event_time_ns=1,
+            observed_time_ns=9,
+        )
+        postbreak = StructuralPivot(
+            center_index=1,
+            observed_index=1,
+            side="HIGH",
+            level=100.5,
+            event_time_ns=15,
+            observed_time_ns=19,
+        )
+        engine.breakout_pivots.extend([prebreak, postbreak])
+        engine.latest_breakout_high = postbreak
+        engine.on_close(c(0, 101, 102, 98, 99), 0)
+        update = engine.on_close(c(1, 99, 99.5, 96, 97), 1)
+        self.assertEqual(len(update.setups), 1)
+        setup = update.setups[0]
+        self.assertAlmostEqual(setup.stop, 103.1)
+        self.assertIn("BREAKOUT_WAVE_ORIGIN_EVENT=1", setup.context_bias)
+        self.assertIn("BREAK_TIME=9", setup.context_bias)
 
     def test_accepted_break_without_causal_wave_origin_is_unresolved(self):
         engine = self.engine(
