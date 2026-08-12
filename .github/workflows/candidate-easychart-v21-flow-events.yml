@@ -1,0 +1,119 @@
+name: candidate-easychart-v21-flow-events
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v21_flow_state.py"
+      - "research/candidate-easychart/route_v21_flow_state.py"
+      - "research/candidate-easychart/download_binance_aggtrades.py"
+      - "research/candidate-easychart/replay_routed_setups_v21.py"
+      - ".github/workflows/candidate-easychart-v21-flow-events.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v21-flow-events
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  causal-flow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v21-flow-events
+      CACHE: .cache/candidate-easychart
+      AGG: .cache/binance-vision-aggtrades
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify flow state
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE" "$AGG"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_market_v21_flow_state.py' -v
+      - name: Generate two complete setup streams
+        run: |
+          set -euo pipefail
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(--warmup-days 35 --cache "$CACHE" --families "$families" --signal-minutes 5 --response-minutes 15 --trendline-minutes 5,15,60 --target-minutes 5 --target-dc-atr 1.0 --continuation-cap-widths 10.0 --cost-profile role --context-minutes 240,360,480,720,1440 --value-minutes 240,360,480,720,1440 --context-response-minutes 15 --context-objective-minutes 5,15,60,240 --liquidity-signal-minutes 15 --liquidity-pivot-minutes 15,60,240 --liquidity-response-minutes 15 --liquidity-objective-minutes 5,15,60,240)
+          python research/candidate-easychart/screen_v20_integrated.py --start 2024-02-19 --end 2024-02-25 --output "$ROOT/dev/baseline" "${common[@]}"
+          python research/candidate-easychart/screen_v20_integrated.py --start 2025-07-07 --end 2025-07-13 --output "$ROOT/diag/baseline" "${common[@]}"
+      - name: Download exact official aggregate-trade partitions
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+          import json, pandas as pd
+          from download_binance_aggtrades import download
+          from route_v21_flow_state import setup_episode
+          needed=set(); root=Path('artifacts/candidate-easychart-v21-flow-events')
+          for path in root.glob('*/baseline/setups.csv'):
+              if not path.stat().st_size: continue
+              for row in pd.read_csv(path).itertuples(index=False):
+                  a,b=setup_episode(row)
+                  d=datetime.fromtimestamp(a/1e9,tz=timezone.utc).date(); e=datetime.fromtimestamp(b/1e9,tz=timezone.utc).date()
+                  while d<=e: needed.add((str(row.symbol),d)); d+=timedelta(days=1)
+          rows=[download(symbol,day,Path('.cache/binance-vision-aggtrades')) for symbol,day in sorted(needed)]
+          Path('.cache/binance-vision-aggtrades/manifest.json').write_text(json.dumps({'files':rows},indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Flow route and replay the same continuous account
+        run: |
+          set -euo pipefail
+          while IFS=: read -r name start end; do
+            base="$ROOT/$name/baseline"; flow="$ROOT/$name/flow"; replay="$ROOT/$name/replay"
+            python research/candidate-easychart/route_v21_flow_state.py --setups "$base/setups.csv" --events "$base/scenario_events.jsonl" --aggtrades-root "$AGG" --output "$flow"
+            python research/candidate-easychart/replay_routed_setups_v21.py --setups "$flow/routed_setups.csv" --cancellations "$base/cancellations.csv" --start "$start" --end "$end" --warmup-days 35 --cache "$CACHE" --cost-profile role --output "$replay"
+          done <<'EOF'
+          dev:2024-02-19:2024-02-25
+          diag:2025-07-07:2025-07-13
+          EOF
+      - name: Decide next research action
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-easychart-v21-flow-events'); rows=[]; states=Counter(); dispositions=Counter()
+          for name in ('dev','diag'):
+              b=json.loads((root/name/'baseline/metrics.json').read_text()); f=json.loads((root/name/'flow/flow_state_summary.json').read_text()); r=json.loads((root/name/'replay/metrics.json').read_text())
+              states.update(f['state_counts']); dispositions.update(f['disposition_counts'])
+              rows.append({'window':name,'baseline_setups':b['setups_generated'],'baseline_trades':b['trades'],'baseline_growth':b['geometric_daily_growth'],'flow_input_setups':f['input_setups'],'flow_routed_setups':f['flow_routed_setups'],'flow_coverage_fraction':f['coverage_fraction'],'routed_trades':r['trades'],'routed_growth':r['geometric_daily_growth'],'routed_ending_nav':r['ending_nav'],'routed_profit_factor':r['profit_factor'],'routed_max_drawdown':r['max_drawdown'],'routed_target_gate':r['target_gate']['passed']})
+          total_input=sum(x['flow_input_setups'] for x in rows); routed=sum(x['flow_routed_setups'] for x in rows); trades=sum(x['routed_trades'] for x in rows)
+          positive=[x for x in rows if x['routed_trades']>0]
+          if total_input==0: disposition='NO_COMPLETE_OPTIONS_TO_ROUTE'
+          elif routed==0 and states['INSUFFICIENT_TRADES']+states['NO_INTERACTION']==total_input: disposition='SOURCE_EVENT_ANCHOR_OR_TRADE_COVERAGE'
+          elif routed==0: disposition='FLOW_MECHANISM_MISMATCH'
+          elif trades==0: disposition='FLOW_CONFIRMED_ENTRY_NOT_REACHED'
+          elif positive and all(x['routed_growth']>0 for x in positive): disposition='PROMOTE_FLOW_ROUTED_SETUPS_TO_NAUTILUS'
+          else: disposition='FLOW_ROUTED_EXPECTANCY_OR_GEOMETRY_FAILURE'
+          summary={'candidate':'candidate-easychart-v21-flow-events','engine_status':'FAST_DIAGNOSTIC_NOT_AUTHORITATIVE','disposition':disposition,'policy_change':'relational post-extreme aggressive-flow absorption versus accepted repricing, linked to the setup causal event; no fitted score','aggregate_state_counts':dict(states),'aggregate_disposition_counts':dict(dispositions),'windows':rows,'promote_to_nautilus':disposition=='PROMOTE_FLOW_ROUTED_SETUPS_TO_NAUTILUS','future_information_used':False,'flow_thresholds_fitted':False}
+          (root/'cross_window_summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n'); print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+      - name: Publish research memory
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" research/candidate-easychart/results/V21_FLOW_EVENTS_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V21_FLOW_EVENTS_LATEST.json
+          if ! git diff --cached --quiet; then git commit -m "candidate-easychart: record causal flow-state diagnostic"; git push origin HEAD:research/candidate-easychart; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v21-flow-events-${{ github.sha }}
+          path: artifacts/candidate-easychart-v21-flow-events/**
+          if-no-files-found: warn
+          retention-days: 90
