@@ -13,7 +13,6 @@ def main() -> None:
     suite = unittest.defaultTestLoader.discover(
         start_dir=str(root / "tests"),
         pattern="test_*.py",
-        top_level_dir=str(root),
     )
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
