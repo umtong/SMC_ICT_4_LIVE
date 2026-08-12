@@ -31,6 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore checksum-verified Binance research data
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE }}
+          # Bump only when the immutable data contract or diagnostic window changes.
+          key: ecv3-binance-vision-v2-${{ runner.os }}-20240102-20240215
+
       - name: Environment and causal semantic tests
         shell: bash
         run: |
@@ -46,8 +53,15 @@ jobs:
           set -euo pipefail
           mkdir -p "$ROOT/mtf"
           exec > >(tee "$ROOT/run.log") 2>&1
-          python research/candidate-easychart-v3/run_mtf_backtest.py             --start 2024-02-01             --end 2024-02-14             --warmup-days 30             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT             --cache "$CACHE"             --output "$ROOT/mtf"
-          python research/candidate-easychart-v3/validate_order_lifecycle.py             --output "$ROOT/mtf"
+          python research/candidate-easychart-v3/run_mtf_backtest.py \
+            --start 2024-02-01 \
+            --end 2024-02-14 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT/mtf"
+          python research/candidate-easychart-v3/validate_order_lifecycle.py \
+            --output "$ROOT/mtf"
 
       - name: Preserve research evidence
         if: always()
