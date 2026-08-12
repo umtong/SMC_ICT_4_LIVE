@@ -8,18 +8,45 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import Bar, BarType, FundingRateUpdate, MarkPriceUpdate
-from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Currency
+from nautilus_trader.backtest.engine import BacktestEngine
+from nautilus_trader.backtest.models import FillModel
+from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, RiskEngineConfig, StrategyConfig
+from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide
+from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
+from nautilus_trader.model.objects import Currency, Money
 from nautilus_trader.trading.strategy import Strategy
 
-from backtest_support import make_engine
 from funding_data import _read_funding_month, _read_mark_month, load_funding_history
+from funding_module import HistoricalFundingBoundary, HistoricalPerpetualFundingModule
 from instruments import make_instrument
 
 NS_PER_MINUTE = 60_000_000_000
+USDT = Currency.from_str("USDT")
+BINANCE = Venue("BINANCE")
+
+
+def make_probe_engine(module: HistoricalPerpetualFundingModule) -> BacktestEngine:
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            trader_id=TraderId("FUNDING-PROBE-001"),
+            logging=LoggingConfig(log_level="ERROR"),
+            risk_engine=RiskEngineConfig(bypass=False),
+        ),
+    )
+    engine.add_venue(
+        venue=BINANCE,
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        starting_balances=[Money(100_000.0, USDT)],
+        base_currency=USDT,
+        default_leverage=Decimal("100"),
+        fill_model=FillModel(prob_fill_on_limit=1.0, prob_slippage=0.0, random_seed=42),
+        modules=[module],
+        bar_execution=True,
+        bar_adaptive_high_low_ordering=True,
+    )
+    return engine
 
 
 class FundingProbeConfig(StrategyConfig, frozen=True):
@@ -60,16 +87,16 @@ class FundingProbeStrategy(Strategy):
             self.instruments[instrument_id] = instrument
             self.subscribe_bars(bar_type)
 
-    def _account_balance(self, account: object) -> float:
-        value = account.balance_total(Currency.from_str("USDT"))
+    @staticmethod
+    def _account_balance(account: object) -> float:
+        value = account.balance_total(USDT)
         if value is None:
             raise RuntimeError("probe USDT balance unavailable")
         return float(value.as_double())
 
-    def _snapshot(self, time_ns: int) -> dict[str, object]:
-        venue = self.instruments[self.config.clock_instrument_id].venue
-        portfolio_account = self.portfolio.account(venue)
-        cache_account = self.cache.account_for_venue(venue)
+    def _snapshot(self) -> dict[str, object]:
+        portfolio_account = self.portfolio.account(BINANCE)
+        cache_account = self.cache.account_for_venue(BINANCE)
         if portfolio_account is None or cache_account is None:
             raise RuntimeError("probe account unavailable")
         positions: dict[str, dict[str, object]] = {}
@@ -114,7 +141,7 @@ class FundingProbeStrategy(Strategy):
         ):
             if any(self.portfolio.is_flat(item) for item in self.config.instrument_ids):
                 raise RuntimeError("probe funding capture occurred before both entries filled")
-            self.snapshots[bar.ts_event] = self._snapshot(bar.ts_event)
+            self.snapshots[bar.ts_event] = self._snapshot()
 
     def on_stop(self) -> None:
         # Leave constant-price positions open so snapshot differences are
@@ -188,10 +215,32 @@ class FundingHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["markPrice"], Decimal("101.0"))
         self.assertEqual(rows[-1]["fundingTime"], 1706832000000)
 
-    def test_native_funding_debits_long_then_credits_short_in_one_engine(self) -> None:
-        engine = make_engine()
+    def test_simulation_module_debits_long_and_credits_short_in_one_engine(self) -> None:
         btc = make_instrument("BTCUSDT")
         eth = make_instrument("ETHUSDT")
+        long_boundary = 4 * NS_PER_MINUTE
+        short_boundary = 6 * NS_PER_MINUTE
+        module = HistoricalPerpetualFundingModule(
+            [
+                HistoricalFundingBoundary(
+                    symbol="BTCUSDT",
+                    instrument_id=btc.id,
+                    funding_time_ns=long_boundary,
+                    interval_minutes=1,
+                    rate=Decimal("0.01"),
+                    mark_price=Decimal("100"),
+                ),
+                HistoricalFundingBoundary(
+                    symbol="ETHUSDT",
+                    instrument_id=eth.id,
+                    funding_time_ns=short_boundary,
+                    interval_minutes=1,
+                    rate=Decimal("0.02"),
+                    mark_price=Decimal("100"),
+                ),
+            ],
+        )
+        engine = make_probe_engine(module)
         engine.add_instrument(btc)
         engine.add_instrument(eth)
         btc_type = BarType.from_str(f"{btc.id}-1-MINUTE-LAST-EXTERNAL")
@@ -214,47 +263,6 @@ class FundingHistoryTests(unittest.TestCase):
                 ],
                 sort=False,
             )
-
-        long_boundary = 4 * NS_PER_MINUTE
-        short_boundary = 6 * NS_PER_MINUTE
-        engine.add_data(
-            [
-                MarkPriceUpdate(
-                    instrument_id=btc.id,
-                    value=btc.make_price(100.0),
-                    ts_event=long_boundary,
-                    ts_init=long_boundary + 1,
-                ),
-                MarkPriceUpdate(
-                    instrument_id=eth.id,
-                    value=eth.make_price(100.0),
-                    ts_event=short_boundary,
-                    ts_init=short_boundary + 1,
-                ),
-            ],
-            sort=False,
-        )
-        engine.add_data(
-            [
-                FundingRateUpdate(
-                    instrument_id=btc.id,
-                    rate=Decimal("0.01"),
-                    ts_event=long_boundary,
-                    ts_init=long_boundary + 2,
-                    interval=1,
-                    next_funding_ns=long_boundary,
-                ),
-                FundingRateUpdate(
-                    instrument_id=eth.id,
-                    rate=Decimal("0.02"),
-                    ts_event=short_boundary,
-                    ts_init=short_boundary + 2,
-                    interval=1,
-                    next_funding_ns=short_boundary,
-                ),
-            ],
-            sort=False,
-        )
         engine.sort_data()
         strategy = FundingProbeStrategy(
             FundingProbeConfig(
@@ -278,16 +286,6 @@ class FundingHistoryTests(unittest.TestCase):
         before = strategy.snapshots[3 * NS_PER_MINUTE]
         after_long = strategy.snapshots[5 * NS_PER_MINUTE]
         after_short = strategy.snapshots[7 * NS_PER_MINUTE]
-        print("FUNDING_PROBE_SNAPSHOTS", strategy.snapshots)
-
-        btc_key = str(btc.id)
-        eth_key = str(eth.id)
-        btc_before = before["positions"][btc_key]["realized_pnl"]
-        btc_after = after_long["positions"][btc_key]["realized_pnl"]
-        eth_before = after_long["positions"][eth_key]["realized_pnl"]
-        eth_after = after_short["positions"][eth_key]["realized_pnl"]
-        self.assertAlmostEqual(btc_after - btc_before, -1.0, places=6)
-        self.assertAlmostEqual(eth_after - eth_before, 2.0, places=6)
         self.assertAlmostEqual(
             after_long["cache_balance"] - before["cache_balance"],
             -1.0,
@@ -299,6 +297,25 @@ class FundingHistoryTests(unittest.TestCase):
             2.0,
             places=6,
             msg=str(strategy.snapshots),
+        )
+        self.assertEqual(module.processed_boundaries, 2)
+        self.assertEqual(module.settled_positions, 2)
+        self.assertEqual(
+            [Decimal(item["amount"]) for item in module.ledger],
+            [Decimal("-1.00"), Decimal("2.00")],
+        )
+        # Legacy Nautilus modules book financing as account cash flows, exactly
+        # like FXRolloverInterestModule. Position realized PnL therefore remains
+        # execution-only and the funding ledger is joined separately for audit.
+        btc_key = str(btc.id)
+        eth_key = str(eth.id)
+        self.assertEqual(
+            before["positions"][btc_key]["realized_pnl"],
+            after_long["positions"][btc_key]["realized_pnl"],
+        )
+        self.assertEqual(
+            after_long["positions"][eth_key]["realized_pnl"],
+            after_short["positions"][eth_key]["realized_pnl"],
         )
 
 
