@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile canonical decision and execution code
+      - name: Compile canonical decision, execution and paper code
         shell: bash
         run: |
           set -euo pipefail
@@ -55,7 +55,15 @@ jobs:
             research/candidate-easychart_re1/easychart_re1_fresh.py \
             research/candidate-easychart_re1/easychart_re1_flips.py \
             research/candidate-easychart_re1/execution_re1.py \
+            research/candidate-easychart_re1/paper_re1.py \
+            research/candidate-easychart_re1/run_binance_demo_re1.py \
             research/candidate-easychart_re1/run_mtf_backtest_re1.py
+
+      - name: Validate paper configuration without credentials or network
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart_re1/run_binance_demo_re1.py --check-config
 
       - name: Run four-symbol continuous account
         shell: bash
