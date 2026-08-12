@@ -40,7 +40,12 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
             strength_ratio=strength,
         )
 
-    def seeded_engine(self, *, target_observed_minute: int = 20) -> MTFOverlapScenarioEngine:
+    def seeded_engine(
+        self,
+        *,
+        target_observed_minute: int = 20,
+        target_lower: float = 106.0,
+    ) -> MTFOverlapScenarioEngine:
         engine = MTFOverlapScenarioEngine("BTCUSDT", 0.1)
         higher = self.zone(
             "higher-support",
@@ -64,9 +69,9 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
             "target-resistance",
             ZoneSide.RESISTANCE,
             60,
-            106.0,
-            107.0,
-            108.0,
+            target_lower,
+            target_lower + 1.0,
+            target_lower + 2.0,
             target_observed_minute,
         )
         engine.detectors[60].zones.extend([higher, target])
@@ -95,6 +100,7 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         self.assertGreaterEqual(plan.gross_rr, 1.0)
         self.assertEqual(plan.higher_zone_id, "higher-support")
         self.assertEqual(plan.lower_zone_id, "lower-support")
+        self.assertGreaterEqual(plan.trigger_strength_ratio, 2.0)
         self.assertIs(setup.state, SetupState.PLANNED)
 
     def test_opposite_target_must_exist_before_entry_confirmation(self) -> None:
@@ -102,13 +108,22 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
         plans = engine.on_bar(5, self.bar(65, 99.0, 101.5, 98.7, 101.0))
         self.assertEqual(plans, [])
-        self.assertEqual(engine.diagnostics.get("trigger_without_preexisting_opposite_target"), 1)
+        self.assertEqual(engine.diagnostics.get("trigger_without_unspent_preexisting_target"), 1)
 
-    def test_source_zone_invalidation_ends_setup_before_trigger(self) -> None:
+    def test_target_touched_inside_confirmation_bar_is_not_future_space(self) -> None:
+        engine = self.seeded_engine(target_lower=101.4)
+        engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
+        # The high reaches the target before this candle closes. A close-based
+        # strategy cannot enter afterward and count the already printed target.
+        plans = engine.on_bar(5, self.bar(65, 99.0, 101.5, 98.7, 101.0))
+        self.assertEqual(plans, [])
+        self.assertEqual(engine.diagnostics.get("trigger_without_unspent_preexisting_target"), 1)
+
+    def test_source_zone_exact_invalidation_touch_ends_setup_before_trigger(self) -> None:
         engine = self.seeded_engine()
         setup = engine.setups[0]
         engine.on_bar(5, self.bar(60, 99.8, 100.2, 98.8, 99.2))
-        plans = engine.on_bar(5, self.bar(65, 99.2, 100.0, 96.9, 97.5))
+        plans = engine.on_bar(5, self.bar(65, 99.2, 100.0, 97.0, 97.5))
         self.assertEqual(plans, [])
         self.assertIs(setup.state, SetupState.INVALIDATED)
 
