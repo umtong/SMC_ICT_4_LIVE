@@ -81,8 +81,11 @@ def _bar_types(instrument_id: InstrumentId) -> tuple[BarType, BarType, BarType, 
     decision = BarType.from_str(
         f"{instrument_id}-15-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL",
     )
+    # Nautilus bar specifications use the canonical fixed-subunit form for an
+    # hour. A 60-MINUTE specification is invalid even though the internal
+    # scenario contract continues to express the timeframe as 60 minutes.
     higher = BarType.from_str(
-        f"{instrument_id}-60-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL",
+        f"{instrument_id}-1-HOUR-LAST-INTERNAL@1-MINUTE-EXTERNAL",
     )
     return execution, trigger, decision, higher
 
