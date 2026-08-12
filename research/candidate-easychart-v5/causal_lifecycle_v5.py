@@ -14,8 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 import contracts_v5 as _contracts
-from contracts_v5 import StructureFamily
-from domain import Candle
+from contracts_v5 import StructureFamily, StructureZone
+from domain import Candle, Side
 from easychart_zones import ZoneSide
 from structure_v5 import CausalStructureBook
 
@@ -32,6 +32,10 @@ FAST_FAKEOUT_WICK_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "FAST_FAKEOUT_EXCURSION_WICK_EXCEEDS_REAL_BODY"
 )
+NEAREST_TARGET_RULE = (
+    "SOURCE_EXPLICIT:"
+    "SINGLE_TARGET_IS_FIRST_UNSPENT_OPPOSING_STRUCTURE"
+)
 
 for _rule in (
     DIAGONAL_INVALIDATION_RULE,
@@ -40,10 +44,12 @@ for _rule in (
 ):
     if _rule not in _contracts.TRANSLATION_RULES:
         _contracts.TRANSLATION_RULES += (_rule,)
+if NEAREST_TARGET_RULE not in _contracts.SOURCE_RULES:
+    _contracts.SOURCE_RULES += (NEAREST_TARGET_RULE,)
 
 
 class LifecycleAwareStructureBook(CausalStructureBook):
-    """Remove broken projected boundaries without expiring valid bounces.
+    """Remove broken structures and keep target selection on the first obstacle.
 
     The prior diagnostic translation retired a line or channel edge on any
     touch. That was too strong: the material explicitly depicts structures
@@ -53,10 +59,15 @@ class LifecycleAwareStructureBook(CausalStructureBook):
     * a resistance diagonal retires only after a completed bar closes above it;
     * channel edges retire independently;
     * an already selected structure is still protected from duplicate trading
-      by the scenario engine's causal-episode registry.
+      by the scenario engine's causal-episode registry;
+    * a non-channel trade targets the nearest still-unspent opposing pivot,
+      even when that obstacle belongs to a smaller confirmed auction scale.
 
-    Thus a valid bounce does not erase the structure, while a body-confirmed
-    break cannot reappear later as an untouched opportunity.
+    The last point prevents a large source span from skipping an intervening
+    local high/low and manufacturing an attractive R multiple to a much more
+    distant objective. If the first real obstacle leaves less than 1R, the
+    ordinary pre-entry geometry rule rejects the trade rather than pretending
+    the intervening liquidity is absent.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -143,6 +154,50 @@ class LifecycleAwareStructureBook(CausalStructureBook):
 
         # Preserve the audited horizontal-pivot first-touch lifecycle.
         super().observe_price(bar)
+
+    def target_for(
+        self,
+        side: Side,
+        *,
+        interaction_time_ns: int,
+        source_span: int,
+        current_high: float,
+        current_low: float,
+    ) -> tuple[StructureZone, float] | None:
+        """Return the first observable unspent opposing horizontal structure.
+
+        ``source_span`` is retained in the public contract and diagnostics, but
+        it no longer grants permission to jump over a nearer confirmed pivot.
+        A span-2 pivot can therefore cap a span-6 idea. At an identical price,
+        the larger span wins because both describe the same objective and the
+        more structural representation is preferable.
+        """
+        wanted = "HIGH" if side is Side.LONG else "LOW"
+        candidates = [
+            pivot
+            for pivot in self.pivots
+            if pivot.side == wanted
+            and pivot.observed_time_ns < interaction_time_ns
+            and not (
+                pivot.consumed_time_ns is not None
+                and pivot.consumed_time_ns < interaction_time_ns
+            )
+            and (
+                (side is Side.LONG and pivot.price > current_high)
+                or (side is Side.SHORT and pivot.price < current_low)
+            )
+        ]
+        if not candidates:
+            return None
+        pivot = (
+            min(candidates, key=lambda item: (item.price, -item.span))
+            if side is Side.LONG
+            else max(candidates, key=lambda item: (item.price, item.span))
+        )
+        if pivot.span < source_span:
+            self._inc("nearest_target_uses_smaller_confirmed_span")
+        self._inc("nearest_unspent_opposing_target_selected")
+        return self._horizontal_snapshot(pivot, interaction_time_ns), pivot.price
 
     def boundary_retired_time_ns(self, source_structure_id: str) -> int | None:
         return self._boundary_retired_time_ns.get(source_structure_id)
