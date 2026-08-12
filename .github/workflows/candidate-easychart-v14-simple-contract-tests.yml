@@ -1,4 +1,4 @@
-name: candidate-easychart-v14-simple-contract-tests
+name: candidate-easychart-v14-integrated-diagnostic
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: candidate-easychart-v14-simple-contract-tests
+  group: candidate-easychart-v14-integrated-diagnostic
   cancel-in-progress: true
 
 permissions:
@@ -18,43 +18,52 @@ permissions:
   packages: read
 
 jobs:
-  simple-contract:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - period: august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - period: february-2025
+            start: 2025-02-01
+            end: 2025-02-14
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
       PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-easychart-v14-simple-contract
+      CACHE: .cache/candidate-easychart-v14/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-v14/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Environment and full semantic suite
+      - name: Run the corrected four-symbol continuous account
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$ROOT"
-          smc4 doctor
-          python -m compileall -q research/candidate-easychart-v3 research/candidate-easychart-v5
-          python -m unittest discover -s research/candidate-easychart-v5/tests -p 'test_*.py' -v
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-v5/run_mtf_backtest_v14_simple.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
 
-      - name: Emit immutable contract record
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY' | tee "$ROOT/contract.json"
-          import json
-          from simple_contract_v14 import contract_record
-          print(json.dumps(contract_record(), indent=2, sort_keys=True))
-          PY
-
-      - name: Preserve contract evidence
+      - name: Preserve the actual decision and execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-v14-simple-contract-${{ github.sha }}
-          path: artifacts/candidate-easychart-v14-simple-contract/**
+          name: candidate-easychart-v14-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-v14/${{ matrix.period }}/**
           if-no-files-found: warn
           retention-days: 90
