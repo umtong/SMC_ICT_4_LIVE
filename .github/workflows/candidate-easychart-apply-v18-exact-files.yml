@@ -26,28 +26,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          root=research/candidate-easychart
+          echo "9e3b21a62b5ac15cfe958cc9296a4815b720d3f9b4cf91c027cdd8255c279b79  $root/.v18_exact_fix_payload_00" | sha256sum -c -
+          echo "3a16c38913d94b82b44e2365e8e5f50422f4a92f2da8ccc9eb7ec9a26c668332  $root/.v18_exact_fix_payload_01" | sha256sum -c -
+          echo "60983ef17192853da4e693004a4edbd7e5dd0574ad5e5157ec48ef0bf24a04a8  $root/.v18_exact_fix_payload_02" | sha256sum -c -
+          echo "01f761186123dadf18b846fb64e924db2650fb7d7c9dbe581a3566cc502bfe69  $root/.v18_exact_fix_payload_03" | sha256sum -c -
           payload=/tmp/v18-exact-fix.tar.gz
-          cat research/candidate-easychart/.v18_exact_fix_payload_* | base64 --decode > "$payload"
-          sha256sum "$payload"
+          cat "$root"/.v18_exact_fix_payload_* | base64 --decode > "$payload"
+          echo "229ec87d9e1322f676ed62dfcc6e015a2b45f393d253cc60e8e7ac5b68abdb98  $payload" | sha256sum -c -
           gzip -t "$payload"
-          tar -tzf "$payload"
           tar -xzf "$payload" -C .
-          rm -f research/candidate-easychart/.v18_exact_fix_payload_*
+          rm -f "$root"/.v18_exact_fix_payload_*
           python -m compileall -q \
-            research/candidate-easychart/market_v18_trendline.py \
-            research/candidate-easychart/tests/test_market_v18_trendline.py \
-            research/candidate-easychart/market_v19_trendline.py \
-            research/candidate-easychart/tests/test_market_v19_trendline.py
-          PYTHONPATH=research/candidate-easychart \
+            "$root/market_v18_trendline.py" \
+            "$root/tests/test_market_v18_trendline.py" \
+            "$root/market_v19_trendline.py" \
+            "$root/tests/test_market_v19_trendline.py"
+          PYTHONPATH="$root" \
             python -m unittest \
-              research/candidate-easychart/tests/test_market_v18_trendline.py \
-              research/candidate-easychart/tests/test_market_v19_trendline.py -v
+              "$root/tests/test_market_v18_trendline.py" \
+              "$root/tests/test_market_v19_trendline.py" -v
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
-            research/candidate-easychart/market_v18_trendline.py \
-            research/candidate-easychart/tests/test_market_v18_trendline.py \
-            research/candidate-easychart/.v18_exact_fix_payload_*
+            "$root/market_v18_trendline.py" \
+            "$root/tests/test_market_v18_trendline.py" \
+            "$root"/.v18_exact_fix_payload_*
           git diff --cached --check
           git commit -m "candidate-easychart: make trendline feasible set numerically exact"
           git push origin HEAD:research/candidate-easychart
