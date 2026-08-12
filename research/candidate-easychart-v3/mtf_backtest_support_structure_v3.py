@@ -88,8 +88,13 @@ def _write_structure_trade_windows(strategy: Any, output: Path) -> int:
 
 
 def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    # Reuse the validated joins, risk audit and Nautilus account reports.  Only
-    # the evidence window writer needs the one-minute micro decision frame.
+    # The base writer knows nothing about historical funding provenance. Keep
+    # this metadata here while reusing its validated order/position joins and
+    # native Nautilus account reports.
+    funding_summaries = kwargs.pop("funding_summaries", None)
+    if not isinstance(funding_summaries, dict) or not funding_summaries:
+        raise RuntimeError("historical funding summaries are required")
+
     original = _base._write_mtf_trade_windows
     _base._write_mtf_trade_windows = _write_structure_trade_windows
     try:
@@ -100,10 +105,15 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
     output: Path = kwargs["output"] if "output" in kwargs else args[2]
     metrics["candidate"] = "candidate-easychart-v3-structure-first"
     metrics["decision_policy"] = (
-        "structure -> objective -> interaction -> auction state -> "
+        "structure -> first causal objective -> interaction -> auction state -> "
         "event-local footprint -> immutable plan"
     )
     metrics["entry_policy"] = "first confirmed retest close -> one market parent"
+    metrics["historical_funding_enabled"] = True
+    metrics["funding_data_by_symbol"] = funding_summaries
+    metrics["funding_records_loaded"] = sum(
+        int(summary["records"]) for summary in funding_summaries.values()
+    )
     write_json(output / "metrics.json", metrics)
     write_json(
         output / "run.json",
@@ -111,9 +121,24 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
             "run_id": f"ecv3-structure-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
             "candidate": "candidate-easychart-v3-structure-first",
             "engine": "NautilusTrader BacktestEngine",
-            "data": "Binance Vision USD-M 1m; Nautilus internal 5m/15m/60m composites",
+            "data": (
+                "checksum-verified Binance Vision USD-M 1m trade-price klines, "
+                "fundingRate archives and 1m markPriceKlines; Nautilus internal "
+                "5m/15m/60m composites"
+            ),
+            "funding": {
+                "native_nautilus_settlement": True,
+                "source": (
+                    "Binance Vision monthly fundingRate plus one-minute "
+                    "markPriceKlines open at each realized boundary"
+                ),
+                "checksum_verified": True,
+                "causal_mark_policy": "mark-price bar open at funding boundary",
+                "bar_before_mark_before_funding_at_same_boundary": True,
+                "by_symbol": funding_summaries,
+            },
             "scenario": (
-                "causal wick structure -> pre-existing objective -> "
+                "causal wick structure -> first unspent objective -> "
                 "rejection/acceptance/rotation/bounce -> event-local OB/FVG "
                 "where required -> first retest -> fixed entry/stop/target"
             ),
@@ -128,6 +153,7 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
                 "partial_management": False,
                 "daily_loss_limit": False,
                 "daily_trade_limit": False,
+                "historical_funding_applied_to_account": True,
             },
             "provenance_classes": [
                 "SOURCE_EXPLICIT",

@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from backtest_support import make_engine
+from funding_data import add_symbol_funding_data
 from instruments import CONTRACTS, make_instrument
 from mtf_backtest_support_structure_v3 import preserve_structure_results
 from mtf_data import add_symbol_mtf_data
@@ -53,10 +54,19 @@ def main() -> None:
     trigger_types = []
     decision_types = []
     higher_types = []
+    funding_summaries: dict[str, dict[str, object]] = {}
     load_start = args.start - timedelta(days=args.warmup_days)
     for symbol, instrument in zip(symbols, instruments, strict=True):
         engine.add_instrument(instrument)
         source_type, trigger_type, decision_type, higher_type = add_symbol_mtf_data(
+            engine,
+            symbol,
+            instrument,
+            load_start,
+            args.end,
+            args.cache,
+        )
+        funding_summaries[symbol] = add_symbol_funding_data(
             engine,
             symbol,
             instrument,
@@ -93,6 +103,7 @@ def main() -> None:
             symbols=symbols,
             start=args.start,
             end=args.end,
+            funding_summaries=funding_summaries,
         )
         print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
     finally:
