@@ -27,7 +27,13 @@ jobs:
         run: |
           set -euo pipefail
           payload_dir="research/candidate-easychart/.v15_fix_payload"
-          cat "$payload_dir"/part* | base64 -d > /tmp/easychart-v15-fix.tar.gz
+          wc -c "$payload_dir"/part*
+          sha256sum "$payload_dir"/part*
+          cat "$payload_dir"/part* > /tmp/easychart-v15-fix.b64
+          wc -c /tmp/easychart-v15-fix.b64
+          sha256sum /tmp/easychart-v15-fix.b64
+          base64 -d /tmp/easychart-v15-fix.b64 > /tmp/easychart-v15-fix.tar.gz
+          sha256sum /tmp/easychart-v15-fix.tar.gz
           mkdir -p /tmp/easychart-v15-fix
           tar -xzf /tmp/easychart-v15-fix.tar.gz -C /tmp/easychart-v15-fix
           cp /tmp/easychart-v15-fix/research/candidate-easychart/market_v15.py research/candidate-easychart/
