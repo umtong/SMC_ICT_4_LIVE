@@ -1,0 +1,203 @@
+name: candidate-easychart-v17-common-core
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v17_structure.py"
+      - "research/candidate-easychart/screen_v17_structure.py"
+      - "research/candidate-easychart/tests/test_market_v17_structure.py"
+      - ".github/workflows/candidate-easychart-v17-common-core.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v17-common-core
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  common-core-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v17-common-core
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify causal and source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Compare pair shelves with common-core identity on diagnostic weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --signal-minutes 5
+            --response-minutes 5
+            --structure-minutes 15
+            --dc-atr-period 14
+            --dc-atr-multiple 1.0
+            --cost-profile role
+          )
+          while IFS=: read -r name start end; do
+            mkdir -p "$ROOT/$name"
+            python research/candidate-easychart/screen_v16_structure.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name/v16-pair-shelves" "${common[@]}"
+            python research/candidate-easychart/screen_v17_structure.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name/v17-common-core" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-09-08:2025-09-08:2025-09-14
+          diag-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Audit every v17 recorded trade under both one-minute OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/semantic-audit.log") 2>&1
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/trade_semantic_audit.py \
+              --run-dir "$ROOT/$name/v17-common-core" \
+              --start "$start" --end "$end" \
+              --cache "$CACHE" \
+              --output "$ROOT/$name/v17-common-core/semantic-audit"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-09-08:2025-09-08:2025-09-14
+          diag-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Build semantic differential summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import csv
+          import json
+
+          root = Path("artifacts/candidate-easychart-v17-common-core")
+          windows = [
+              "dev-2024-02-19",
+              "diag-2025-09-08",
+              "diag-2026-04-06",
+          ]
+
+          def rows(path):
+              if not path.exists() or path.stat().st_size == 0:
+                  return []
+              with path.open(newline="", encoding="utf-8") as handle:
+                  return list(csv.DictReader(handle))
+
+          output = []
+          for name in windows:
+              base = root / name
+              v16 = json.loads((base / "v16-pair-shelves" / "metrics.json").read_text())
+              v17 = json.loads((base / "v17-common-core" / "metrics.json").read_text())
+              audit = json.loads(
+                  (base / "v17-common-core" / "semantic-audit" / "audit_summary.json").read_text()
+              )
+              versions = rows(base / "v17-common-core" / "structure_versions.csv")
+              setups = rows(base / "v17-common-core" / "setups.csv")
+              fvg_setups = [row for row in setups if "FVG" in row.get("family", "")]
+              loose_fvg_entries = [
+                  row for row in fvg_setups
+                  if float(row.get("body_ratio") or 0.0) < 2.0
+              ]
+              roots = {row.get("structure_id") for row in versions if row.get("structure_id")}
+              superseding = [row for row in versions if row.get("supersedes_version_ids")]
+              output.append({
+                  "window": name,
+                  "v16_raw_setups": v16["raw_setups_generated"],
+                  "v17_raw_setups": v17["raw_setups_generated"],
+                  "v16_setups": v16["setups_generated"],
+                  "v17_setups": v17["setups_generated"],
+                  "v16_trades": v16["trades"],
+                  "v17_trades": v17["trades"],
+                  "v16_geometric_daily_growth": v16["geometric_daily_growth"],
+                  "v17_geometric_daily_growth": v17["geometric_daily_growth"],
+                  "v16_profit_factor": v16["profit_factor"],
+                  "v17_profit_factor": v17["profit_factor"],
+                  "v16_max_drawdown": v16["max_drawdown"],
+                  "v17_max_drawdown": v17["max_drawdown"],
+                  "v17_structure_roots": len(roots),
+                  "v17_structure_versions": len(versions),
+                  "v17_superseding_versions": len(superseding),
+                  "v17_fvg_entry_setups": len(fvg_setups),
+                  "v17_loose_fvg_entry_setups": len(loose_fvg_entries),
+                  "v17_routed_cancellations": v17["routed_cancellation_events"],
+                  "v17_replay_matches": audit["recorded_trade_replay_matches"],
+                  "v17_path_ambiguous_trades": audit["path_ambiguous_recorded_trades"],
+                  "v17_unexplained_missing_trades": audit["unexplained_missing_trades"],
+              })
+
+          summary = {
+              "candidate": "candidate-easychart-v17-common-core-structure",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "purpose": "semantic differential: causal structure identity and source-valid FVG eligibility",
+              "windows": output,
+              "no_loose_fvg_used_as_entry": all(row["v17_loose_fvg_entry_setups"] == 0 for row in output),
+              "all_v17_recorded_trades_path_robust": all(
+                  row["v17_replay_matches"] == row["v17_trades"]
+                  and row["v17_path_ambiguous_trades"] == 0
+                  and row["v17_unexplained_missing_trades"] == 0
+                  for row in output
+              ),
+              "all_windows_reduced_or_equal_raw_setup_labels": all(
+                  row["v17_raw_setups"] <= row["v16_raw_setups"]
+                  for row in output
+              ),
+          }
+          (root / "semantic_differential_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/semantic_differential_summary.json" >/dev/null
+          for name in dev-2024-02-19 diag-2025-09-08 diag-2026-04-06; do
+            for version in v16-pair-shelves v17-common-core; do
+              test -s "$ROOT/$name/$version/metrics.json"
+              test -s "$ROOT/$name/$version/run.json"
+              test -e "$ROOT/$name/$version/setups.csv"
+              test -e "$ROOT/$name/$version/trades.csv"
+              test -e "$ROOT/$name/$version/equity.csv"
+            done
+            test -e "$ROOT/$name/v17-common-core/structure_versions.csv"
+            test -e "$ROOT/$name/v17-common-core/cancellations.csv"
+            test -s "$ROOT/$name/v17-common-core/semantic-audit/audit_summary.json"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v17-common-core-${{ github.sha }}
+          path: artifacts/candidate-easychart-v17-common-core/**
+          if-no-files-found: warn
+          retention-days: 90
