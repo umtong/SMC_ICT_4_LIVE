@@ -1,8 +1,10 @@
 """Causal swing-liquidity objectives for EasyChart v3.
 
 The EasyChart material repeatedly uses prior meaningful highs/lows as liquidity
-and as fixed objectives.  This detector exposes only *confirmed* wick pivots:
-a pivot is unavailable until the required bars on its right have closed.
+and as fixed objectives. This detector exposes only *confirmed* wick pivots: a
+pivot is unavailable until the required bars on its right have closed. A level
+is spent only after price trades beyond its one-tick band; an equal touch can
+still build the double-top/double-bottom liquidity described in Trap examples.
 """
 from __future__ import annotations
 
@@ -59,7 +61,7 @@ class ObjectiveZone:
 
 
 class CausalLiquidityDetector:
-    """Confirmed wick pivots with first-touch lifecycle.
+    """Confirmed wick pivots with first-breach lifecycle.
 
     No future bar is read before its close. Multiple spans are retained because
     a local swing and a larger auction objective solve different decisions.
@@ -92,19 +94,22 @@ class CausalLiquidityDetector:
         self.diagnostics[key] = self.diagnostics.get(key, 0) + 1
 
     def observe_price(self, bar: Candle) -> None:
-        """Consume objectives with any causally later bar, regardless of source TF."""
+        """Consume objectives only when a causally later bar sweeps beyond them."""
         if bar.ts_close_ns < self._last_observed_price_time_ns:
             raise ValueError("price observations must be nondecreasing")
         self._last_observed_price_time_ns = bar.ts_close_ns
         for zone_id, zone in list(self._active.items()):
+            if not zone.active:
+                self._active.pop(zone_id, None)
+                continue
             if bar.ts_close_ns <= zone.observed_time_ns:
                 continue
-            hit = bar.high >= zone.lower if zone.side is ZoneSide.RESISTANCE else bar.low <= zone.upper
-            if hit:
+            swept = bar.high >= zone.upper if zone.side is ZoneSide.RESISTANCE else bar.low <= zone.lower
+            if swept:
                 zone.consumed = True
                 zone.consumed_time_ns = bar.ts_close_ns
                 self._active.pop(zone_id, None)
-                self._inc(f"{zone.kind.value.lower()}_consumed")
+                self._inc(f"{zone.kind.value.lower()}_swept")
 
     def _zone_id(self, kind: ObjectiveKind, center: int, span: int) -> str:
         return f"{self.symbol}:{self.timeframe_minutes}m:{kind.value}:{center}:s{span}"
