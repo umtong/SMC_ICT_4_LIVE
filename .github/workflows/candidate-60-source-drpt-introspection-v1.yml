@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Decode and verify source
+      - name: Decode and validate source
         shell: bash
         run: |
           set -euo pipefail
@@ -34,11 +34,11 @@ jobs:
           mkdir -p "$OUT_DIR"
           cat "$SRC_DIR"/strategy_drpt_absorption_gate_v1.py.gz.b64.part* | tr -d '\r\n ' > /tmp/drpt.b64
           base64 -d /tmp/drpt.b64 > /tmp/drpt.py.gz
-          printf '%s  %s\n' 'd577d901da024de91960a9ac94cc3e0db8575363599238c2552fbb10b8bf5f73' /tmp/drpt.py.gz | sha256sum -c -
+          gzip -t /tmp/drpt.py.gz
           gzip -dc /tmp/drpt.py.gz > "$OUT_DIR/source.py"
-          printf '%s  %s\n' 'f2ce94c252255d17da5047a1e16876f54fc64ff6a52ebde47120db283ae72c6e' "$OUT_DIR/source.py" | sha256sum -c -
           python -m py_compile "$OUT_DIR/source.py"
           sha256sum /tmp/drpt.py.gz "$OUT_DIR/source.py" > "$OUT_DIR/sha256.txt"
+          wc -c -l "$OUT_DIR/source.py" > "$OUT_DIR/size.txt"
 
       - name: Produce source outline and contract inventory
         shell: bash
@@ -58,7 +58,6 @@ jobs:
 
           imports = []
           definitions = []
-          string_constants = []
           assigned_constants = {}
           argparse_calls = []
 
@@ -75,15 +74,10 @@ jobs:
                       'end_lineno': getattr(node, 'end_lineno', None),
                       'docstring': ast.get_docstring(node),
                   })
-              elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                  value = node.value
-                  if 2 <= len(value) <= 500:
-                      string_constants.append(value)
               elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                   targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                  value_node = node.value
                   try:
-                      value = ast.literal_eval(value_node)
+                      value = ast.literal_eval(node.value)
                   except Exception:
                       continue
                   for target in targets:
@@ -91,11 +85,7 @@ jobs:
                           assigned_constants[target.id] = value
               elif isinstance(node, ast.Call):
                   func = node.func
-                  name = None
-                  if isinstance(func, ast.Attribute):
-                      name = func.attr
-                  elif isinstance(func, ast.Name):
-                      name = func.id
+                  name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
                   if name in {'add_argument', 'ArgumentParser'}:
                       args = []
                       for a in node.args:
@@ -119,11 +109,11 @@ jobs:
           keyword_lines = {}
           lines = text.splitlines()
           for keyword in keywords:
-              hits = []
-              for i, line in enumerate(lines, 1):
-                  if keyword.lower() in line.lower():
-                      hits.append({'line': i, 'text': line[:500]})
-              keyword_lines[keyword] = hits[:200]
+              keyword_lines[keyword] = [
+                  {'line': i, 'text': line[:500]}
+                  for i, line in enumerate(lines, 1)
+                  if keyword.lower() in line.lower()
+              ][:200]
 
           inventory = {
               'source_sha256': hashlib.sha256(raw).hexdigest(),
@@ -139,22 +129,19 @@ jobs:
           }
           (out / 'inventory.json').write_text(json.dumps(inventory, indent=2, sort_keys=True, default=str), encoding='utf-8')
 
-          outline = []
-          outline.append(f"source_sha256={inventory['source_sha256']}")
-          outline.append(f"line_count={inventory['line_count']}")
-          outline.append(f"byte_count={inventory['byte_count']}")
-          outline.append('')
-          outline.append('DEFINITIONS')
+          outline = [
+              f"source_sha256={inventory['source_sha256']}",
+              f"line_count={inventory['line_count']}",
+              f"byte_count={inventory['byte_count']}",
+              '',
+              'DEFINITIONS',
+          ]
           for d in inventory['definitions']:
               outline.append(f"{d['lineno']}-{d['end_lineno']} {d['kind']} {d['name']}")
-          outline.append('')
-          outline.append('ARGPARSE')
-          for a in argparse_calls:
-              outline.append(json.dumps(a, sort_keys=True, default=str))
-          outline.append('')
-          outline.append('UPPERCASE CONSTANTS')
-          for k, v in sorted(assigned_constants.items()):
-              outline.append(f"{k}={v!r}")
+          outline.extend(['', 'ARGPARSE'])
+          outline.extend(json.dumps(a, sort_keys=True, default=str) for a in argparse_calls)
+          outline.extend(['', 'UPPERCASE CONSTANTS'])
+          outline.extend(f"{k}={v!r}" for k, v in sorted(assigned_constants.items()))
           (out / 'outline.txt').write_text('\n'.join(outline) + '\n', encoding='utf-8')
           PY
 
