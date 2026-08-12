@@ -1,0 +1,152 @@
+name: candidate-easychart-v15-role-options
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/role_graph_v15.py"
+      - "research/candidate-easychart/market_v15.py"
+      - "research/candidate-easychart/simulator_v15.py"
+      - "research/candidate-easychart/screen_v15.py"
+      - "research/candidate-easychart/CASE_ROLE_CONTRACT_V15.json"
+      - "research/candidate-easychart/tests/test_role_graph_v15.py"
+      - "research/candidate-easychart/tests/test_market_v15.py"
+      - ".github/workflows/candidate-easychart-v15.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v15-role-options
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  semantic-options:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v15
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify source and implementation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m json.tool research/candidate-easychart/CASE_ROLE_CONTRACT_V15.json >/dev/null
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run fixed role-complete policy on one development and two new diagnostic weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --families "$families"
+            --signal-minutes 5
+            --response-minutes 15
+            --target-minutes 5
+            --target-dc-atr 1.0
+            --continuation-cap-widths 10.0
+            --cost-profile role
+          )
+          python research/candidate-easychart/screen_v15.py \
+            --start 2024-02-19 --end 2024-02-25 \
+            --output "$ROOT/dev-2024-02-19" "${common[@]}"
+          python research/candidate-easychart/screen_v15.py \
+            --start 2025-07-07 --end 2025-07-13 \
+            --output "$ROOT/diag-2025-07-07" "${common[@]}"
+          python research/candidate-easychart/screen_v15.py \
+            --start 2026-02-02 --end 2026-02-08 \
+            --output "$ROOT/diag-2026-02-02" "${common[@]}"
+
+      - name: Build cross-window evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-easychart-v15")
+          windows = [
+              "dev-2024-02-19",
+              "diag-2025-07-07",
+              "diag-2026-02-02",
+          ]
+          rows = []
+          for name in windows:
+              metrics = json.loads((root / name / "metrics.json").read_text())
+              rows.append(
+                  {
+                      "window": name,
+                      "trades": metrics["trades"],
+                      "ending_nav": metrics["ending_nav"],
+                      "geometric_daily_growth": metrics["geometric_daily_growth"],
+                      "profit_factor": metrics["profit_factor"],
+                      "max_drawdown_fraction": metrics["max_drawdown_fraction"],
+                      "raw_setups_generated": metrics["raw_setups_generated"],
+                      "merged_setups": metrics["merged_setups"],
+                      "auction_routed_setups": metrics["auction_routed_setups"],
+                      "setups_generated": metrics["setups_generated"],
+                      "target_gate_passed": metrics["target_gate"]["passed"],
+                  }
+              )
+          summary = {
+              "candidate": "candidate-easychart-v15",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "windows": rows,
+              "all_windows_positive_growth": all(
+                  row["geometric_daily_growth"] > 0 for row in rows
+              ),
+              "all_windows_meet_target": all(
+                  row["target_gate_passed"] for row in rows
+              ),
+          }
+          (root / "cross_window_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/cross_window_summary.json" >/dev/null
+          for window in dev-2024-02-19 diag-2025-07-07 diag-2026-02-02; do
+            test -s "$ROOT/$window/metrics.json"
+            test -s "$ROOT/$window/run.json"
+            test -e "$ROOT/$window/raw_setups.csv"
+            test -e "$ROOT/$window/setups.csv"
+            test -e "$ROOT/$window/merge_audit.csv"
+            test -e "$ROOT/$window/auction_router_audit.csv"
+            test -e "$ROOT/$window/target_router_audit.csv"
+            test -e "$ROOT/$window/cancellations.csv"
+            test -e "$ROOT/$window/trades.csv"
+            test -e "$ROOT/$window/equity.csv"
+            test -e "$ROOT/$window/scenario_events.jsonl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v15-${{ github.sha }}
+          path: artifacts/candidate-easychart-v15/**
+          if-no-files-found: warn
+          retention-days: 90
