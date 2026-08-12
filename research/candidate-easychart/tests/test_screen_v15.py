@@ -61,7 +61,7 @@ class CausalMergeTests(unittest.TestCase):
             side=Side.LONG,
             entry=101.0,
             stop=96.0,
-            target=110.0,
+            target=112.0,
             pool="P1",
         )
         second = setup(
@@ -70,7 +70,7 @@ class CausalMergeTests(unittest.TestCase):
             side=Side.LONG,
             entry=102.0,
             stop=95.0,
-            target=108.0,
+            target=110.0,
             pool="P2",
         )
         merged, diagnostics, audit = merge_same_bar_options([first, second])
@@ -78,7 +78,7 @@ class CausalMergeTests(unittest.TestCase):
         item = merged[0]
         self.assertAlmostEqual(item.entry, 102.0)
         self.assertAlmostEqual(item.stop, 95.0)
-        self.assertAlmostEqual(item.initial_target, 108.0)
+        self.assertAlmostEqual(item.initial_target, 110.0)
         self.assertEqual(option_root(item.family), "FAILED_BREAK_REVERSAL")
         self.assertEqual(diagnostics["duplicate_setup_intents_removed"], 1)
         self.assertEqual(audit[0]["disposition"], "MERGED_ONE_CAUSAL_OPTION")
@@ -90,7 +90,7 @@ class CausalMergeTests(unittest.TestCase):
             side=Side.SHORT,
             entry=100.0,
             stop=106.0,
-            target=90.0,
+            target=88.0,
             pool="P1",
         )
         second = setup(
@@ -99,7 +99,7 @@ class CausalMergeTests(unittest.TestCase):
             side=Side.SHORT,
             entry=99.0,
             stop=107.0,
-            target=94.0,
+            target=90.0,
             pool="P2",
         )
         merged, _, _ = merge_same_bar_options([first, second])
@@ -107,7 +107,7 @@ class CausalMergeTests(unittest.TestCase):
         item = merged[0]
         self.assertAlmostEqual(item.entry, 99.0)
         self.assertAlmostEqual(item.stop, 107.0)
-        self.assertAlmostEqual(item.initial_target, 94.0)
+        self.assertAlmostEqual(item.initial_target, 90.0)
         self.assertEqual(option_root(item.family), "ACCEPTED_BREAK_CONTINUATION")
 
 
