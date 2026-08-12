@@ -1,0 +1,80 @@
+name: candidate-easychart-v5-regime-matrix
+
+on:
+  push:
+    branches: ["research/candidate-easychart-v5"]
+    paths:
+      - ".github/workflows/candidate-easychart-v5-regime-matrix.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v5-regime-matrix
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - label: 2024-05
+            start: 2024-05-01
+            end: 2024-05-14
+          - label: 2024-11
+            start: 2024-11-01
+            end: 2024-11-14
+          - label: 2025-02
+            start: 2025-02-01
+            end: 2025-02-14
+          - label: 2025-05
+            start: 2025-05-01
+            end: 2025-05-14
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-v5-${{ matrix.label }}
+      ROOT: artifacts/candidate-easychart-v5-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment and causal semantic tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart-v5
+          python -m unittest discover -s research/candidate-easychart-v5/tests -p 'test_*.py' -v
+
+      - name: Four-symbol continuous Nautilus regime diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/short-diagnostic"
+          exec > >(tee "$ROOT/run.log") 2>&1
+          python research/candidate-easychart-v5/run_mtf_backtest_v5.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT/short-diagnostic"
+
+      - name: Preserve regime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-v5-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-v5-${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 90
