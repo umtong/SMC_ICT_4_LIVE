@@ -36,15 +36,55 @@ class EasyChartOrderMixin:
         stop = tick * Decimal(self.config.estimated_stop_slippage_ticks)
         return entry, stop
 
-    def _quantity(self, instrument: Any, plan: TradePlan, nav: Decimal) -> Any | None:
+    def _estimated_geometry(self, instrument: Any, plan: Any) -> dict[str, Decimal]:
+        """Return fill-aware loss and target geometry known before submission."""
         entry = Decimal(str(plan.entry))
         stop = Decimal(str(plan.stop))
+        target = Decimal(str(plan.target))
+        direction = Decimal(int(plan.side.value))
         entry_slippage, stop_slippage = self._execution_reserves(instrument)
-        per_unit = abs(entry - stop)
-        per_unit += entry_slippage + stop_slippage
-        per_unit += entry * Decimal(str(self.config.estimated_entry_fee_rate))
-        per_unit += stop * Decimal(str(self.config.estimated_stop_fee_rate))
-        per_unit += entry * Decimal(str(self.config.estimated_funding_rate))
+        expected_entry = entry + direction * entry_slippage
+        expected_stop = stop - direction * stop_slippage
+        entry_fee_rate = Decimal(str(self.config.estimated_entry_fee_rate))
+        stop_fee_rate = Decimal(str(self.config.estimated_stop_fee_rate))
+        target_fee_rate = Decimal(
+            str(getattr(self.config, "estimated_target_fee_rate", self.config.estimated_entry_fee_rate)),
+        )
+        funding_rate = Decimal(str(self.config.estimated_funding_rate))
+
+        planned_loss_per_unit = abs(expected_entry - expected_stop)
+        planned_loss_per_unit += expected_entry * entry_fee_rate
+        planned_loss_per_unit += expected_stop * stop_fee_rate
+        planned_loss_per_unit += expected_entry * funding_rate
+
+        gross_reward_per_unit = direction * (target - expected_entry)
+        net_reward_per_unit = gross_reward_per_unit
+        net_reward_per_unit -= expected_entry * entry_fee_rate
+        net_reward_per_unit -= target * target_fee_rate
+        net_reward_per_unit -= expected_entry * funding_rate
+        cost_after_rr = (
+            net_reward_per_unit / planned_loss_per_unit
+            if planned_loss_per_unit > 0
+            else Decimal("-Infinity")
+        )
+        return {
+            "expected_entry": expected_entry,
+            "expected_stop_fill": expected_stop,
+            "planned_loss_per_unit": planned_loss_per_unit,
+            "gross_reward_per_unit": gross_reward_per_unit,
+            "net_reward_per_unit": net_reward_per_unit,
+            "cost_after_rr": cost_after_rr,
+            "entry_slippage": entry_slippage,
+            "stop_slippage": stop_slippage,
+        }
+
+    def _quantity(
+        self,
+        instrument: Any,
+        nav: Decimal,
+        geometry: dict[str, Decimal],
+    ) -> Any | None:
+        per_unit = geometry["planned_loss_per_unit"]
         if per_unit <= 0:
             return None
         raw = nav * Decimal(str(self.config.risk_fraction)) / per_unit
@@ -58,19 +98,31 @@ class EasyChartOrderMixin:
             return None
         return instrument.make_qty(floored)
 
-    def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> bool:
+    def _submit_plan(self, instrument_id: InstrumentId, plan: Any) -> bool:
         instrument = self.instruments[instrument_id]
         nav = self._current_nav()
-        entry_slippage, stop_slippage = self._execution_reserves(instrument)
-        quantity = self._quantity(instrument, plan, nav)
+        geometry = self._estimated_geometry(instrument, plan)
+        if geometry["gross_reward_per_unit"] <= 0 or geometry["net_reward_per_unit"] <= 0:
+            self._record(
+                "plan_rejected_nonpositive_cost_after_target",
+                plan_id=plan.plan_id,
+                instrument_id=str(instrument_id),
+                nav_at_submission=float(nav),
+                gross_reward_per_unit=float(geometry["gross_reward_per_unit"]),
+                estimated_net_reward_per_unit=float(geometry["net_reward_per_unit"]),
+                estimated_cost_after_rr=float(geometry["cost_after_rr"]),
+            )
+            return False
+        quantity = self._quantity(instrument, nav, geometry)
         if quantity is None:
             self._record(
                 "plan_rejected_quantity",
                 plan_id=plan.plan_id,
                 instrument_id=str(instrument_id),
                 nav_at_submission=float(nav),
-                estimated_entry_slippage=float(entry_slippage),
-                estimated_stop_slippage=float(stop_slippage),
+                estimated_entry_slippage=float(geometry["entry_slippage"]),
+                estimated_stop_slippage=float(geometry["stop_slippage"]),
+                estimated_cost_after_rr=float(geometry["cost_after_rr"]),
             )
             return False
         plan_tag = f"PLAN:{plan.plan_id}"
@@ -106,8 +158,13 @@ class EasyChartOrderMixin:
             entry_client_order_id=str(self.active_entry_id),
             nav_at_submission=float(nav),
             risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
-            estimated_entry_slippage=float(entry_slippage),
-            estimated_stop_slippage=float(stop_slippage),
+            estimated_entry_price=float(geometry["expected_entry"]),
+            estimated_stop_fill=float(geometry["expected_stop_fill"]),
+            estimated_entry_slippage=float(geometry["entry_slippage"]),
+            estimated_stop_slippage=float(geometry["stop_slippage"]),
+            estimated_planned_loss_per_unit=float(geometry["planned_loss_per_unit"]),
+            estimated_net_reward_per_unit=float(geometry["net_reward_per_unit"]),
+            estimated_cost_after_rr=float(geometry["cost_after_rr"]),
         )
         return True
 
