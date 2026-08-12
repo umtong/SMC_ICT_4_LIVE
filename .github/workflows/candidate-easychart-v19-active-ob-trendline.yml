@@ -1,0 +1,224 @@
+name: candidate-easychart-v19-active-ob-trendline
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v19_trendline.py"
+      - "research/candidate-easychart/screen_v19_trendline.py"
+      - "research/candidate-easychart/tests/test_market_v19_trendline.py"
+      - ".github/workflows/candidate-easychart-v19-active-ob-trendline.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v19-active-ob-trendline
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  active-ob-semantic-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v19-active-ob
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify source and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Compare post-break-only and source-correct active-OB policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --signal-minutes 5
+            --response-minutes 5
+            --structure-minutes 15
+            --dc-atr-period 14
+            --dc-atr-multiple 1.0
+            --cost-profile role
+          )
+          while IFS=: read -r name start end; do
+            mkdir -p "$ROOT/$name"
+            python research/candidate-easychart/screen_v18_trendline.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name/v18-postbreak-ob" "${common[@]}"
+            python research/candidate-easychart/screen_v19_trendline.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name/v19-active-ob" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          predeclared-2024-10-07:2024-10-07:2024-10-13
+          predeclared-2025-09-08:2025-09-08:2025-09-14
+          predeclared-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Audit v19 recorded trades under both one-minute OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/semantic-audit.log") 2>&1
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/trade_semantic_audit.py \
+              --run-dir "$ROOT/$name/v19-active-ob" \
+              --start "$start" --end "$end" \
+              --cache "$CACHE" \
+              --output "$ROOT/$name/v19-active-ob/semantic-audit"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          predeclared-2024-10-07:2024-10-07:2024-10-13
+          predeclared-2025-09-08:2025-09-08:2025-09-14
+          predeclared-2026-04-06:2026-04-06:2026-04-12
+          EOF
+
+      - name: Build active-OB semantic differential
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import csv
+          import json
+
+          root = Path("artifacts/candidate-easychart-v19-active-ob")
+          names = [
+              "dev-2024-02-19",
+              "predeclared-2024-10-07",
+              "predeclared-2025-09-08",
+              "predeclared-2026-04-06",
+          ]
+
+          def csv_rows(path):
+              if not path.exists() or path.stat().st_size == 0:
+                  return []
+              with path.open(newline="", encoding="utf-8") as handle:
+                  return list(csv.DictReader(handle))
+
+          rows = []
+          for name in names:
+              base = root / name
+              v18 = json.loads((base / "v18-postbreak-ob" / "metrics.json").read_text())
+              v19 = json.loads((base / "v19-active-ob" / "metrics.json").read_text())
+              audit = json.loads(
+                  (base / "v19-active-ob" / "semantic-audit" / "audit_summary.json").read_text()
+              )
+              setups = csv_rows(base / "v19-active-ob" / "setups.csv")
+              attempts = csv_rows(base / "v19-active-ob" / "trendline_setup_audit.csv")
+              relation = Counter()
+              for row in attempts:
+                  key = row.get("order_block_relation") or "NO_ELIGIBLE_OB"
+                  relation[key] += 1
+              setup_relation = Counter()
+              for row in setups:
+                  bias = row.get("context_bias", "")
+                  if "OB_TEMPORAL_ROLE=PREEXISTING_ACTIVE_OB" in bias:
+                      setup_relation["PREEXISTING_ACTIVE_OB"] += 1
+                  elif "OB_TEMPORAL_ROLE=BREAK_RESPONSE_OB" in bias:
+                      setup_relation["BREAK_RESPONSE_OB"] += 1
+                  else:
+                      setup_relation["UNCLASSIFIED"] += 1
+              rows.append({
+                  "window": name,
+                  "calendar_days": v19["calendar_days"],
+                  "v18_setups": v18["setups_generated"],
+                  "v19_setups": v19["setups_generated"],
+                  "additional_active_ob_setups": v19["setups_generated"] - v18["setups_generated"],
+                  "v18_trades": v18["trades"],
+                  "v19_trades": v19["trades"],
+                  "v18_geometric_daily_growth": v18["geometric_daily_growth"],
+                  "v19_geometric_daily_growth": v19["geometric_daily_growth"],
+                  "v18_profit_factor": v18["profit_factor"],
+                  "v19_profit_factor": v19["profit_factor"],
+                  "v18_max_drawdown": v18["max_drawdown"],
+                  "v19_max_drawdown": v19["max_drawdown"],
+                  "v19_ending_nav": v19["ending_nav"],
+                  "v19_open_position_at_end": v19["open_position_at_end"],
+                  "v19_target_gate_passed": v19["target_gate"]["passed"],
+                  "v19_setup_relation": dict(sorted(setup_relation.items())),
+                  "v19_attempt_relation": dict(sorted(relation.items())),
+                  "v19_recorded_trade_replay_matches": audit["recorded_trade_replay_matches"],
+                  "v19_path_ambiguous_recorded_trades": audit["path_ambiguous_recorded_trades"],
+                  "v19_unexplained_missing_trades": audit["unexplained_missing_trades"],
+                  "v19_simulator_diagnostics": v19["diagnostics"],
+              })
+
+          predeclared = [row for row in rows if row["window"].startswith("predeclared-")]
+          summary = {
+              "candidate": "candidate-easychart-v19-active-ob-trendline-role-flip",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "source_correction": "At the narrated first retest, the bullish OB is visible to the left; eligibility is active-and-fresh, not post-break-only.",
+              "windows": rows,
+              "preexisting_active_ob_adds_opportunity": any(
+                  row["v19_setup_relation"].get("PREEXISTING_ACTIVE_OB", 0) > 0
+                  for row in rows
+              ),
+              "all_v19_closed_trades_robust_under_both_minute_paths": all(
+                  row["v19_recorded_trade_replay_matches"] == row["v19_trades"]
+                  and row["v19_path_ambiguous_recorded_trades"] == 0
+                  for row in rows
+              ),
+              "predeclared_positive_windows": sum(
+                  row["v19_geometric_daily_growth"] > 0.0 for row in predeclared
+              ),
+              "predeclared_total_setups": sum(row["v19_setups"] for row in predeclared),
+              "predeclared_total_completed_trades": sum(row["v19_trades"] for row in predeclared),
+              "predeclared_all_meet_target": all(
+                  row["v19_target_gate_passed"] for row in predeclared
+              ),
+              "decision_rule": "Preserve the semantic correction regardless of PnL; promote only if opportunity and after-cost geometry justify finer execution work.",
+          }
+          (root / "active_ob_semantic_differential.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/active_ob_semantic_differential.json" >/dev/null
+          for name in \
+            dev-2024-02-19 \
+            predeclared-2024-10-07 \
+            predeclared-2025-09-08 \
+            predeclared-2026-04-06; do
+            for version in v18-postbreak-ob v19-active-ob; do
+              test -s "$ROOT/$name/$version/metrics.json"
+              test -s "$ROOT/$name/$version/run.json"
+              test -e "$ROOT/$name/$version/setups.csv"
+              test -e "$ROOT/$name/$version/trades.csv"
+              test -e "$ROOT/$name/$version/equity.csv"
+            done
+            test -s "$ROOT/$name/v19-active-ob/semantic-audit/audit_summary.json"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v19-active-ob-${{ github.sha }}
+          path: artifacts/candidate-easychart-v19-active-ob/**
+          if-no-files-found: warn
+          retention-days: 90
