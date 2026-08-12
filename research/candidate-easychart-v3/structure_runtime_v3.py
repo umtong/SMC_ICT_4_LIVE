@@ -1,6 +1,7 @@
 """Runtime repair and semantic binding for the EasyChart v3 structure-first policy."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import contracts_v5
@@ -32,6 +33,50 @@ if not getattr(ScenarioExecutionMixin, "_ecv3_return_patch", False):
 
     ScenarioExecutionMixin._advance_footprint_retests = _advance_footprint_retests_with_result
     ScenarioExecutionMixin._ecv3_return_patch = True
+
+
+if not getattr(ScenarioExecutionMixin, "_ecv3_owner_scale_patch", False):
+    _original_make_plan = ScenarioExecutionMixin._make_plan
+
+    def _make_plan_with_structure_owner_scale(
+        self: Any,
+        setup: Any,
+        bar: Any,
+        *,
+        entry: float,
+        stop: float,
+        trigger_zone: Any,
+        trigger_kind: Any,
+        trigger_strength: float,
+    ) -> Any | None:
+        """Bind episode width and audit labels to the structure-owning timeframe.
+
+        The integrated v3 policy lets the 60m/15m structure candle resolve its
+        own rejection or acceptance state.  The reused plan contract previously
+        retained the 15m/5m intermediate timeframe, which under-sized causal
+        episode overlap and could let a lower-scale duplicate survive routing.
+        This replacement changes only metadata and duplicate-episode geometry;
+        entry, stop, target and ordering remain exactly as constructed.
+        """
+        plan = _original_make_plan(
+            self,
+            setup,
+            bar,
+            entry=entry,
+            stop=stop,
+            trigger_zone=trigger_zone,
+            trigger_kind=trigger_kind,
+            trigger_strength=trigger_strength,
+        )
+        if plan is None or plan.decision_timeframe_minutes == self.interaction_minutes:
+            return plan
+        updated = replace(plan, decision_timeframe_minutes=self.interaction_minutes)
+        if self.plans and self.plans[-1] is plan:
+            self.plans[-1] = updated
+        return updated
+
+    ScenarioExecutionMixin._make_plan = _make_plan_with_structure_owner_scale
+    ScenarioExecutionMixin._ecv3_owner_scale_patch = True
 
 
 if not getattr(CausalStructureBook, "_ecv3_sweep_lifecycle_patch", False):
@@ -73,7 +118,7 @@ if not getattr(ScenarioExecutionMixin, "_ecv3_acceptance_stop_patch", False):
         setup: Any,
         time_ns: int,
     ) -> float | None:
-        """Place the imutable protective stop beyond the pre-break causal origin.
+        """Place the immutable protective stop beyond the pre-break causal origin.
 
         The prior channel implementation used a one-tick stop immediately
         inside the projected edge, while the source's channel invalidation is based
@@ -101,5 +146,6 @@ if not getattr(ScenarioExecutionMixin, "_ecv3_acceptance_stop_patch", False):
 _translation = (
     "SOURCE_AMBIGUITY_TRANSLATION:EQUAL_HIGH_LOW_REMAINS_LIQUIDITY_UNTIL_ONE_TICK_SWEEP",
     "SOURCE_AMBIGUITY_TRANSLATION:ACCEPTANCE_NATIVE_STOP_USES_PREBREAK_CAUSAL_ORIGIN",
+    "SOURCE_AMBIGUITY_TRANSLATION:STRUCTURE_OWNER_TIMEFRAME_OWNS_CAUSAL_EPISODE_WIDTH",
 )
 contracts_v5.TRANSLATION_RULES = tuple(dict.fromkeys(contracts_v5.TRANSLATION_RULES + _translation))
