@@ -141,7 +141,7 @@ class BoundaryState:
         ]
         return max(candidates, key=lambda item: item.level, default=None)
 
-    def _latest_origin(self, side: Side, before_ns: int, min_span: int = 1) -> float | None:
+    def _latest_origin(self, side: Side, before_ns: int, min_span: int = 1) -> Boundary | None:
         opposite = "LOW" if side is Side.LONG else "HIGH"
         candidates = [
             boundary
@@ -150,8 +150,7 @@ class BoundaryState:
         ]
         if not candidates:
             return None
-        latest = max(candidates, key=lambda item: (item.observed_time_ns, item.span, item.prominence_atr))
-        return latest.level
+        return max(candidates, key=lambda item: (item.observed_time_ns, item.span, item.prominence_atr))
 
     def _plan(
         self,
@@ -164,6 +163,10 @@ class BoundaryState:
         stop: float,
         target: Boundary | None,
         event_suffix: str,
+        interaction_index: int,
+        confirmation_index: int,
+        trigger_extreme: float,
+        origin: Boundary | None = None,
     ) -> TradePlan | None:
         if target is None:
             self._inc("no_preexisting_opposite_target")
@@ -184,6 +187,10 @@ class BoundaryState:
         causal_event_id = f"{family.value}:{source.boundary_id}:{event_suffix}"
         if causal_event_id in self.used_events:
             return None
+        if not 0 <= interaction_index < len(self.bars):
+            raise RuntimeError(f"interaction index out of range: {interaction_index}")
+        if not 0 <= confirmation_index < len(self.bars):
+            raise RuntimeError(f"confirmation index out of range: {confirmation_index}")
         self.sequence += 1
         self.used_events.add(causal_event_id)
         self._inc(f"plan_{family.value.lower()}")
@@ -200,6 +207,20 @@ class BoundaryState:
             gross_rr=rr,
             source_boundary_id=source.boundary_id,
             target_boundary_id=target.boundary_id,
+            source_level=source.level,
+            source_event_time_ns=source.event_time_ns,
+            source_observed_time_ns=source.observed_time_ns,
             source_span=source.span,
             source_prominence_atr=source.prominence_atr,
+            target_event_time_ns=target.event_time_ns,
+            target_observed_time_ns=target.observed_time_ns,
+            target_span=target.span,
+            target_prominence_atr=target.prominence_atr,
+            interaction_index=interaction_index,
+            confirmation_index=confirmation_index,
+            interaction_time_ns=self.bars[interaction_index].ts_close_ns,
+            confirmation_time_ns=self.bars[confirmation_index].ts_close_ns,
+            trigger_extreme=trigger_extreme,
+            origin_boundary_id=None if origin is None else origin.boundary_id,
+            origin_level=None if origin is None else origin.level,
         )
