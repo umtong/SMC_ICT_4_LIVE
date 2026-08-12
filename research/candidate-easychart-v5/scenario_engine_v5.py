@@ -1,4 +1,4 @@
-"""Structure-first EasyChart v5 engine composed from focused causal mixins."""
+"""Structure-first EasyChart engine composed from focused causal mixins."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +6,8 @@ from typing import Any
 from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
+from objective_ladder_v5 import CausalObjectiveLadder
+from objective_policy_v5 import ObjectiveLadderScenarioMixin
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
@@ -13,6 +15,7 @@ from scenario_transitions_v5 import ScenarioTransitionMixin
 
 
 class StructureScenarioEngine(
+    ObjectiveLadderScenarioMixin,
     ScenarioContextMixin,
     ScenarioTransitionMixin,
     ScenarioExecutionMixin,
@@ -38,6 +41,13 @@ class StructureScenarioEngine(
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
         self.structure = LifecycleAwareStructureBook(symbol, higher_minutes, tick_size)
+        self.objectives = CausalObjectiveLadder(
+            self.structure,
+            symbol=symbol,
+            decision_minutes=decision_minutes,
+            trigger_minutes=trigger_minutes,
+            tick_size=tick_size,
+        )
         self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
         self.decision_bars: list[Candle] = []
         self.setups: list[ScenarioSetup] = []
@@ -129,15 +139,7 @@ class StructureScenarioEngine(
         self._trace(reason, time_ns, setup, **values)
 
     def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
-        """Translate close-confirmed retest invalidation into one causal stop.
-
-        The source allows entry only after the retest bar has completed. A stop
-        inside that already-observed bar would have been crossed before the
-        entry decision existed, and in live trading it turns normal retest wick
-        noise into an immediate stop. Keep the structural invalidation from the
-        base policy, but place the executable stop beyond the completed retest
-        bar as well.
-        """
+        """Keep the executable stop beyond the completed acceptance-retest bar."""
         structural_stop = super()._acceptance_stop(setup, time_ns)
         if structural_stop is None:
             return None
@@ -162,7 +164,6 @@ class StructureScenarioEngine(
         return executable_stop
 
     def _advance_acceptance_retests(self, bar: Candle, index: int) -> list[V5TradePlan]:
-        """Keep direct diagnostic calls causally bound to their supplied bar."""
         previous = self._current_trigger_bar
         if previous is None:
             self._current_trigger_bar = bar
@@ -185,7 +186,7 @@ class StructureScenarioEngine(
         trigger_kind: Any,
         trigger_strength: float,
     ) -> V5TradePlan | None:
-        """Reject any plan whose stop was already traded before bar-close entry."""
+        """Reject a stop which was already traded before bar-close entry."""
         stop_inside_completed_bar = (
             stop >= bar.low if setup.side is Side.LONG else stop <= bar.high
         )
@@ -223,22 +224,26 @@ class StructureScenarioEngine(
                 channels=len(channels),
             )
             return []
+
         if timeframe_minutes == self.decision_minutes:
             if self.decision_bars and bar.ts_close_ns <= self.decision_bars[-1].ts_close_ns:
                 raise ValueError("decision bars must arrive in increasing close time")
             self.decision_bars.append(bar)
-            index = len(self.decision_bars) - 1
-            self._advance_decision_setups(bar, index)
-            if index >= 1:
-                self._discover_interactions(bar, self.decision_bars[index - 1], index)
-            # The designated decision bar first owns the interaction. Only
-            # after classification do diagonal boundaries leave the fresh
-            # opportunity set, including crossed lookalikes which were not
-            # selected for a setup.
-            self.structure.observe_price(bar)
-            return []
+            self.objectives.on_decision_bar(bar)
+            try:
+                index = len(self.decision_bars) - 1
+                self._advance_decision_setups(bar, index)
+                if index >= 1:
+                    self._discover_interactions(bar, self.decision_bars[index - 1], index)
+                return []
+            finally:
+                self.structure.observe_price(bar)
+                self.objectives.observe_decision_bar(bar)
+
         if timeframe_minutes != self.trigger_minutes:
             raise ValueError(f"unsupported timeframe {timeframe_minutes} for {self.scale_name}")
+
+        self.objectives.on_trigger_bar(bar)
         self._current_trigger_bar = bar
         try:
             created = self.trigger_detector.on_bar(bar)
@@ -250,8 +255,6 @@ class StructureScenarioEngine(
             plan_count_before_retest = len(self.plans)
             footprint_plans = self._advance_footprint_retests(bar, index)
             if footprint_plans is None:
-                # Compatibility guard for the prior method version which appended
-                # plans to self.plans but accidentally omitted its return statement.
                 footprint_plans = self.plans[plan_count_before_retest:]
             plans.extend(footprint_plans)
             return sorted(
@@ -264,6 +267,7 @@ class StructureScenarioEngine(
                 ),
             )
         finally:
+            self.objectives.observe_trigger_bar(bar)
             self._current_trigger_bar = None
 
     def find_zone(self, zone_id: str) -> Any | None:
