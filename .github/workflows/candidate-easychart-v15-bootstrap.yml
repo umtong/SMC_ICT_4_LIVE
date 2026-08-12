@@ -1,0 +1,60 @@
+name: candidate-easychart-v15-bootstrap
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/.v15_payload/**"
+      - ".github/workflows/candidate-easychart-v15-bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-easychart-v15-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize and commit v15
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload_dir="research/candidate-easychart/.v15_payload"
+          cat "$payload_dir"/part* | base64 -d > /tmp/easychart-v15.tar.gz
+          mkdir -p /tmp/easychart-v15 research/candidate-easychart/tests
+          tar -xzf /tmp/easychart-v15.tar.gz -C /tmp/easychart-v15
+          cp /tmp/easychart-v15/role_graph_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15/market_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15/simulator_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15/screen_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15/CASE_ROLE_CONTRACT_V15.json research/candidate-easychart/
+          cp /tmp/easychart-v15/tests/test_role_graph_v15.py research/candidate-easychart/tests/
+          cp /tmp/easychart-v15/tests/test_market_v15.py research/candidate-easychart/tests/
+          python -m py_compile \
+            research/candidate-easychart/role_graph_v15.py \
+            research/candidate-easychart/market_v15.py \
+            research/candidate-easychart/simulator_v15.py \
+            research/candidate-easychart/screen_v15.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            research/candidate-easychart/role_graph_v15.py \
+            research/candidate-easychart/market_v15.py \
+            research/candidate-easychart/simulator_v15.py \
+            research/candidate-easychart/screen_v15.py \
+            research/candidate-easychart/CASE_ROLE_CONTRACT_V15.json \
+            research/candidate-easychart/tests/test_role_graph_v15.py \
+            research/candidate-easychart/tests/test_market_v15.py
+          if git diff --cached --quiet; then
+            echo "v15 sources already materialized"
+            exit 0
+          fi
+          git commit -m "candidate-easychart: materialize hierarchical role options v15"
+          git push origin HEAD:research/candidate-easychart
