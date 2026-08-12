@@ -6,6 +6,7 @@ from typing import Any
 from domain import Candle, Side
 from contracts_v5 import V5TradePlan
 from learned_horizontal_v7 import LearnedHorizontalScenarioEngine
+import learned_horizontal_v7_runtime  # noqa: F401 - applies causal lifecycle repair
 from scenario_engine_v5 import StructureScenarioEngine
 
 
