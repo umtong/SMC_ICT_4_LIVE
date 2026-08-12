@@ -16,6 +16,11 @@ from nautilus_trader.model.identifiers import InstrumentId
 import mtf_strategy as _base
 from auction_context_v5 import AuctionContextSnapshot, AuctionState
 from contracts_v5 import V5TradePlan
+from cost_geometry_v5 import (
+    NONPOSITIVE_TARGET_RULE,
+    AfterCostTargetGeometry,
+    conservative_after_cost_target,
+)
 from scenario_bundle_v5 import ResearchScenarioBundleV5
 
 
@@ -152,6 +157,40 @@ class EasyChartMTFStrategy(_base.EasyChartMTFStrategy):
             all_market_contexts=all_contexts,
         )
 
+    def _after_cost_target_geometry(
+        self,
+        instrument_id: InstrumentId,
+        plan: V5TradePlan,
+    ) -> AfterCostTargetGeometry:
+        instrument = self.instruments[instrument_id]
+        return conservative_after_cost_target(
+            is_long=plan.side.name == "LONG",
+            entry=plan.entry,
+            target=plan.target,
+            price_increment=instrument.price_increment,
+            entry_slippage_ticks=self.config.estimated_entry_slippage_ticks,
+            entry_fee_rate=self.config.estimated_entry_fee_rate,
+            # The native target is not post-only. Use the same conservative
+            # exit fee already reserved for a stop rather than inventing a
+            # favorable maker fill.
+            target_fee_rate=self.config.estimated_stop_fee_rate,
+            funding_rate=self.config.estimated_funding_rate,
+        )
+
+    def _submit_plan(self, instrument_id: InstrumentId, plan: V5TradePlan) -> bool:
+        geometry = self._after_cost_target_geometry(instrument_id, plan)
+        if not geometry.positive:
+            self._record(
+                "plan_rejected_nonpositive_net_target",
+                plan_id=plan.plan_id,
+                instrument_id=str(instrument_id),
+                side=plan.side.name,
+                rule_provenance=NONPOSITIVE_TARGET_RULE,
+                **geometry.to_float_dict(),
+            )
+            return False
+        return super()._submit_plan(instrument_id, plan)
+
     def _flush_bar_bucket(self) -> None:
         if self.bar_bucket_ts is None:
             return
@@ -180,7 +219,7 @@ class EasyChartMTFStrategy(_base.EasyChartMTFStrategy):
         # All symbols at this timestamp have now updated their corresponding
         # decision-timeframe contexts. Preserve the whole observable market
         # state before selecting one account-level opportunity. These fields
-        # are diagnostics only in this commit; they do not filter or rescale.
+        # are diagnostics only here; they do not filter or rescale risk.
         for instrument_id, plan in plans:
             self._record_plan_market_context(instrument_id, plan)
 
