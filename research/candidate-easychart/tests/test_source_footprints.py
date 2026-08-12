@@ -39,8 +39,14 @@ class TestSourceOrderBlocks(unittest.TestCase):
             bar(2, 102.5, 103.5, 98.0, 98.5),
         ]
         blocks = detect_order_blocks("BTCUSDT", candles, 5)
-        self.assertEqual(len(blocks), 1)
-        block = blocks[0]
+        # At candle two the bullish two-candle OB was genuinely known.  The
+        # final bearish engulf then invalidates that earlier premise and creates
+        # the stronger three-candle bearish OB. A batch detector must not erase
+        # information that was causally available one candle earlier.
+        self.assertEqual(len(blocks), 2)
+        prior, block = blocks
+        self.assertEqual(prior.side, Side.LONG)
+        self.assertEqual(prior.pattern, "TWO_CANDLE_BODY_ENGULF")
         self.assertEqual(block.side, Side.SHORT)
         self.assertEqual(block.pattern, "THREE_CANDLE_DOUBLE_ENGULF_MIDDLE_BODY")
         self.assertEqual(block.zone_low, 99.5)
@@ -59,6 +65,16 @@ class TestSourceOrderBlocks(unittest.TestCase):
             block.numeric_doji_boundary_status,
             "SOURCE_GIVES_NO_NUMERIC_NEAR_DOJI_BOUNDARY",
         )
+
+    def test_exact_doji_does_not_create_nonfinite_ratio_evidence(self):
+        candles = [
+            bar(0, 100.0, 101.0, 99.0, 100.0),
+            bar(1, 99.5, 102.0, 99.2, 101.0),
+        ]
+        # The doji itself has no direction, so it is not an OB formation. The
+        # test protects the evidence model directly through a later directional
+        # pair whose engulfed body is finite.
+        self.assertEqual(detect_order_blocks("BTCUSDT", candles, 5), [])
 
 
 class TestSourceFVG(unittest.TestCase):
