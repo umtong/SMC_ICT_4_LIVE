@@ -1,4 +1,4 @@
-"""Run the demonstrated 60m/15m/5m OB scenario under the fixed contract."""
+"""Run the demonstrated 15m/5m OB-overlap touch under the fixed contract."""
 from __future__ import annotations
 
 import argparse
@@ -9,12 +9,12 @@ from pathlib import Path
 import pandas as pd
 
 from backtest_support import make_engine, write_json
+from direct_mtf_ob_v25 import DIRECT_MTF_OB_RULE, DIRECT_TOUCH_RULE
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
 from mtf_backtest_support_v5 import preserve_mtf_results_v5
 from mtf_data import add_symbol_mtf_data
 from mtf_ob_strategy_v24 import EasyChartMTFConfig, EasyChartMTFOBStrategy
-from mtf_ob_v24 import MTF_OB_SOURCE_RULE
 from simple_contract_v14 import FIXED_RISK_FRACTION, MINIMUM_GROSS_RR, contract_record
 
 
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
-    parser.add_argument("--warmup-days", type=int, default=45)
+    parser.add_argument("--warmup-days", type=int, default=30)
     parser.add_argument("--symbols", nargs="+", default=list(CONTRACTS))
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -100,9 +100,9 @@ def main() -> None:
             end=args.end,
         )
         metadata = {
-            "candidate": "candidate-easychart-v24-mtf-ob",
-            "scenario_policy": "60M_OB_15M_OB_OVERLAP_5M_OB_FIRST_RETEST",
-            "scenario_policy_provenance": MTF_OB_SOURCE_RULE,
+            "candidate": "candidate-easychart-v25-direct-mtf-ob",
+            "scenario_policy": "15M_OB_5M_OB_OVERLAP_FIRST_1M_TOUCH",
+            "scenario_policy_provenance": (DIRECT_MTF_OB_RULE, DIRECT_TOUCH_RULE),
             "fee_profile": profile.name,
             "maker_fee_rate": float(profile.maker_rate),
             "taker_fee_rate": float(profile.taker_rate),
