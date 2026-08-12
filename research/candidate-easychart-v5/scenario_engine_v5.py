@@ -277,7 +277,8 @@ class StructureScenarioEngine(
                 self._audit(zone)
             index = len(self.trigger_detector.bars) - 1
             self._arm_displacements(bar, index, created)
-            plans = self._advance_acceptance_retests(bar, index)
+            plans = self._advance_rejection_retests(bar, index)
+            plans.extend(self._advance_acceptance_retests(bar, index))
             plan_count_before_retest = len(self.plans)
             footprint_plans = self._advance_footprint_retests(bar, index)
             if footprint_plans is None:
