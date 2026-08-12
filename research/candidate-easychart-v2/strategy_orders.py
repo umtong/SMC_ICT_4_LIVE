@@ -30,7 +30,7 @@ class EasyChartOrderMixin:
             raise RuntimeError("USDT balance unavailable")
         return Decimal(str(money.as_double()))
 
-    def _quantity(self, instrument: Any, plan: TradePlan) -> Any | None:
+    def _quantity(self, instrument: Any, plan: TradePlan, nav: Decimal) -> Any | None:
         entry = Decimal(str(plan.entry))
         stop = Decimal(str(plan.stop))
         per_unit = abs(entry - stop)
@@ -39,7 +39,7 @@ class EasyChartOrderMixin:
         per_unit += entry * Decimal(str(self.config.estimated_funding_rate))
         if per_unit <= 0:
             return None
-        raw = self._current_nav() * Decimal(str(self.config.risk_fraction)) / per_unit
+        raw = nav * Decimal(str(self.config.risk_fraction)) / per_unit
         step = Decimal(str(instrument.size_increment))
         floored = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
         minimum = Decimal(str(instrument.min_quantity))
@@ -52,9 +52,15 @@ class EasyChartOrderMixin:
 
     def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> bool:
         instrument = self.instruments[instrument_id]
-        quantity = self._quantity(instrument, plan)
+        nav = self._current_nav()
+        quantity = self._quantity(instrument, plan, nav)
         if quantity is None:
-            self._record("plan_rejected_quantity", plan_id=plan.plan_id, instrument_id=str(instrument_id))
+            self._record(
+                "plan_rejected_quantity",
+                plan_id=plan.plan_id,
+                instrument_id=str(instrument_id),
+                nav_at_submission=float(nav),
+            )
             return False
         plan_tag = f"PLAN:{plan.plan_id}"
         order_list: OrderList = self.order_factory.bracket(
@@ -87,6 +93,8 @@ class EasyChartOrderMixin:
             instrument_id=str(instrument_id),
             quantity=str(quantity),
             entry_client_order_id=str(self.active_entry_id),
+            nav_at_submission=float(nav),
+            risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
         )
         return True
 
