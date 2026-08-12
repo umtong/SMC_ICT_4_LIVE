@@ -1,0 +1,185 @@
+name: candidate-easychart-v17-multiscale
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v17_trendline.py"
+      - "research/candidate-easychart/screen_v17_integrated.py"
+      - "research/candidate-easychart/tests/test_market_v17_trendline.py"
+      - ".github/workflows/candidate-easychart-v17-multiscale.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v17-multiscale
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  multiscale-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v17-multiscale
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify causal source implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest \
+            discover -s research/candidate-easychart/tests \
+            -p 'test_market_v17_trendline.py' -v
+
+      - name: Run integrated and isolated microscopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --families "$families"
+            --signal-minutes 5
+            --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5
+            --target-dc-atr 1.0
+            --continuation-cap-widths 10.0
+            --cost-profile role
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v17_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/integrated-$name" "${common[@]}"
+            python research/candidate-easychart/screen_v17_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/trendline-only-$name" "${common[@]}" \
+              --disable-immediate --disable-wm --disable-predictive --disable-accepted-break
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          diag-2026-02-02:2026-02-02:2026-02-08
+          EOF
+
+      - name: Build decision summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("artifacts/candidate-easychart-v17-multiscale")
+          names = [
+              "dev-2024-02-19",
+              "diag-2025-07-07",
+              "diag-2026-02-02",
+          ]
+
+          def flatten(value, output):
+              if isinstance(value, dict):
+                  for item in value.values():
+                      flatten(item, output)
+              elif isinstance(value, (int, float)):
+                  output["__numeric_values__"] += int(value)
+
+          rows = []
+          for mode in ("integrated", "trendline-only"):
+              for name in names:
+                  run = root / f"{mode}-{name}"
+                  metrics = json.loads((run / "metrics.json").read_text())
+                  diagnostics = Counter()
+                  nested = metrics.get("trendline_diagnostics", {})
+                  for symbol_values in nested.values():
+                      for scale, values in symbol_values.items():
+                          for key, value in values.items():
+                              diagnostics[f"tf{scale}:{key}"] += int(value)
+                  trades_path = run / "trades.csv"
+                  trades = pd.read_csv(trades_path) if trades_path.stat().st_size else pd.DataFrame()
+                  family_counts = (
+                      {}
+                      if trades.empty or "family" not in trades.columns
+                      else {str(k): int(v) for k, v in trades["family"].value_counts().items()}
+                  )
+                  rows.append({
+                      "mode": mode,
+                      "window": name,
+                      "calendar_days": metrics["calendar_days"],
+                      "raw_setups": metrics["raw_setups_generated"],
+                      "direct_structure_candidates": metrics["direct_structure_candidates"],
+                      "routed_setups": metrics["setups_generated"],
+                      "trades": metrics["trades"],
+                      "ending_nav": metrics["ending_nav"],
+                      "geometric_daily_growth": metrics["geometric_daily_growth"],
+                      "profit_factor": metrics["profit_factor"],
+                      "max_drawdown": metrics["max_drawdown"],
+                      "target_gate_passed": metrics["target_gate"]["passed"],
+                      "trade_families": family_counts,
+                      "trendline_diagnostics": dict(sorted(diagnostics.items())),
+                  })
+
+          isolated = [row for row in rows if row["mode"] == "trendline-only"]
+          integrated = [row for row in rows if row["mode"] == "integrated"]
+          complete = sum(row["direct_structure_candidates"] for row in isolated)
+          trades = sum(row["trades"] for row in isolated)
+          summary = {
+              "candidate": "candidate-easychart-v17-multiscale",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "policy_change": "same source role-complete trendline option observed independently on 5m, 15m and 60m; no role loosened and no confluence score",
+              "windows": rows,
+              "isolated_complete_setups": complete,
+              "isolated_completed_trades": trades,
+              "trendline_generated_any_complete_setup": complete > 0,
+              "trendline_completed_any_trade": trades > 0,
+              "all_integrated_windows_positive": all(row["geometric_daily_growth"] > 0 for row in integrated),
+              "all_integrated_windows_meet_target": all(row["target_gate_passed"] for row in integrated),
+          }
+          target = root / "cross_window_summary.json"
+          target.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(target.read_text())
+          PY
+
+      - name: Publish compact research memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" \
+            research/candidate-easychart/results/V17_MULTISCALE_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V17_MULTISCALE_LATEST.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart: record v17 multiscale diagnostic"
+          git push origin HEAD:research/candidate-easychart
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v17-multiscale-${{ github.sha }}
+          path: artifacts/candidate-easychart-v17-multiscale/**
+          if-no-files-found: warn
+          retention-days: 90
