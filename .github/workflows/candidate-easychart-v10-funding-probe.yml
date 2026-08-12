@@ -45,7 +45,30 @@ jobs:
         run: |
           set -euo pipefail
           python research/candidate-easychart-v5/funding_settlement_smoke_v10.py \
-            | tee "$ROOT/native_settlement_smoke.json"
+            --mode control > "$ROOT/native_settlement_control.json"
+          python research/candidate-easychart-v5/funding_settlement_smoke_v10.py \
+            --mode funded > "$ROOT/native_settlement_funded.json"
+          python - <<'PY' | tee "$ROOT/native_settlement_smoke.json"
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-easychart-v10-funding-probe")
+          control = json.loads((root / "native_settlement_control.json").read_text())
+          funded = json.loads((root / "native_settlement_funded.json").read_text())
+          observed = funded["final_nav"] - control["final_nav"]
+          expected = funded["expected_funding_delta"]
+          if abs(observed - expected) > 1e-8:
+              raise SystemExit(
+                  f"native funding mismatch: observed={observed}, expected={expected}",
+              )
+          result = {
+              "control_nav": control["final_nav"],
+              "funded_nav": funded["final_nav"],
+              "observed_funding_delta": observed,
+              "expected_funding_delta": expected,
+          }
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
 
       - name: Checksum-verified live archive contract
         shell: bash
