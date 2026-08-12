@@ -5,7 +5,7 @@ The scenario separates roles rather than stacking synonymous filters:
     60m context zone
     -> 15m overlapping decision zone
     -> first interaction
-    -> 5m same-direction engulfing order block
+    -> later 5m same-direction engulfing order block
     -> entry / trigger invalidation / pre-existing opposite-zone target
 
 It is a pure state engine. NautilusTrader wiring is added only after the
@@ -138,9 +138,9 @@ class MTFOverlapScenarioEngine:
         lower_detector = self.detectors[self.decision_minutes]
         existing = {setup.setup_id for setup in self.setups}
         for higher in higher_detector.active_zones():
-            # A source-explicit 2x expansion on at least one member prevents an
-            # overlap of two marginal engulfing candles from being called strong.
             for lower in lower_detector.active_zones():
+                # A source-explicit 2x expansion on at least one member prevents
+                # an overlap of two marginal engulfing candles being called strong.
                 if not (higher.high_quality_by_size or lower.high_quality_by_size):
                     continue
                 # The first return is the auditable opportunity. Already touched
@@ -215,6 +215,7 @@ class MTFOverlapScenarioEngine:
                 self._inc("setup_invalidated_before_entry")
                 continue
 
+            newly_interacted = False
             if setup.state is SetupState.WAITING_INTERACTION and self._bar_touches_zone(
                 bar,
                 setup.overlap.lower,
@@ -223,14 +224,17 @@ class MTFOverlapScenarioEngine:
                 setup.state = SetupState.WAITING_TRIGGER
                 setup.interaction_time_ns = bar.ts_close_ns
                 setup.interaction_trigger_index = trigger_index
+                newly_interacted = True
                 self._inc("setup_interaction")
 
-            if setup.state is not SetupState.WAITING_TRIGGER:
+            if setup.state is not SetupState.WAITING_TRIGGER or newly_interacted:
+                # Zone contact and reversal confirmation must be two separately
+                # observable closed-bar events, not one candle confirming itself.
                 continue
             for trigger in created:
                 if trigger.kind is not ZoneKind.ORDER_BLOCK or trigger.side is not setup.overlap.side:
                     continue
-                if trigger.observed_time_ns < (setup.interaction_time_ns or 0):
+                if trigger.observed_time_ns <= (setup.interaction_time_ns or 0):
                     continue
                 if not self._trigger_formation_touched_setup(trigger, setup):
                     continue
