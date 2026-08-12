@@ -11,6 +11,7 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 
 from backtest_support import STARTING_NAV, USDT, VENUE
+import funding_evidence_timefix  # noqa: F401 - pandas datetime unit repair
 from funding_module import HistoricalPerpetualFundingModule
 
 
