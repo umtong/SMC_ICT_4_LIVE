@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from auction_context_v5 import AuctionContextSnapshot, CausalAuctionContext
 from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
@@ -38,6 +39,7 @@ class StructureScenarioEngine(
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
         self.structure = LifecycleAwareStructureBook(symbol, higher_minutes, tick_size)
+        self.decision_context = CausalAuctionContext(symbol, decision_minutes)
         self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
         self.decision_bars: list[Candle] = []
         self.setups: list[ScenarioSetup] = []
@@ -128,6 +130,11 @@ class StructureScenarioEngine(
         self._inc(reason)
         self._trace(reason, time_ns, setup, **values)
 
+    def auction_context_snapshot(self) -> AuctionContextSnapshot | None:
+        if not self.decision_context.bars:
+            return None
+        return self.decision_context.snapshot()
+
     def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
         """Translate close-confirmed retest invalidation into one causal stop.
 
@@ -185,7 +192,7 @@ class StructureScenarioEngine(
         trigger_kind: Any,
         trigger_strength: float,
     ) -> V5TradePlan | None:
-        """Reject any plan whose stop was already traded before bar-close entry."""
+        """Reject already-traded stops and preserve the pre-entry context."""
         stop_inside_completed_bar = (
             stop >= bar.low if setup.side is Side.LONG else stop <= bar.high
         )
@@ -201,7 +208,7 @@ class StructureScenarioEngine(
                 entry_bar_high=bar.high,
             )
             return None
-        return super()._make_plan(
+        plan = super()._make_plan(
             setup,
             bar,
             entry=entry,
@@ -210,6 +217,18 @@ class StructureScenarioEngine(
             trigger_kind=trigger_kind,
             trigger_strength=trigger_strength,
         )
+        if plan is not None:
+            snapshot = self.auction_context_snapshot()
+            if snapshot is None:
+                raise RuntimeError("plan emitted without an observable decision context")
+            self._trace(
+                "plan_auction_context",
+                bar.ts_close_ns,
+                setup,
+                plan_id=plan.plan_id,
+                auction_context=snapshot.to_dict(),
+            )
+        return plan
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
         if timeframe_minutes == self.higher_minutes:
@@ -227,14 +246,19 @@ class StructureScenarioEngine(
             if self.decision_bars and bar.ts_close_ns <= self.decision_bars[-1].ts_close_ns:
                 raise ValueError("decision bars must arrive in increasing close time")
             self.decision_bars.append(bar)
+            snapshot = self.decision_context.on_bar(bar)
+            self._trace(
+                "decision_auction_context",
+                bar.ts_close_ns,
+                auction_context=snapshot.to_dict(),
+            )
             index = len(self.decision_bars) - 1
             self._advance_decision_setups(bar, index)
             if index >= 1:
                 self._discover_interactions(bar, self.decision_bars[index - 1], index)
-            # The designated decision bar first owns the interaction. Only
-            # after classification do diagonal boundaries leave the fresh
-            # opportunity set, including crossed lookalikes which were not
-            # selected for a setup.
+            # The designated decision bar first owns the interaction. After
+            # classification, a body-confirmed break retires a diagonal from
+            # the future fresh-opportunity set; a wick rejection does not.
             self.structure.observe_price(bar)
             return []
         if timeframe_minutes != self.trigger_minutes:
