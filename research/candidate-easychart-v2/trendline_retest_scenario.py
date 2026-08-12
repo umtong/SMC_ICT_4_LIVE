@@ -1,15 +1,23 @@
 """Case-derived trendline break, first retest and OB confirmation family.
 
-The family is based on repeated source episodes (notably cases 02 and 14):
+Repeated source episodes contain two related but distinct executions:
+
+    A. a bullish/bearish OB already exists at the projected first-retest area;
+       the first retest touches that pre-existing OB and the trendline together.
+    B. no usable OB exists beforehand; the first same-direction engulfing OB is
+       formed by the retest reaction itself.
+
+Both share one causal thesis:
 
     causal wick trendline
     -> directional close break
     -> first later retest
-    -> same-direction engulfing OB formed at that retest
-    -> one entry / formation invalidation / nearest pre-existing objective
+    -> one of the two source-supported OB confirmations
+    -> one entry / OB invalidation / nearest pre-existing objective
 
-A local liquidity sweep is intentionally not required.  It may define another
-family, but the reviewed source episodes did not make it a universal condition.
+A local liquidity sweep is deliberately not a universal prerequisite.  It may
+belong to another family, but the reviewed trendline-retest episodes did not
+require it.
 """
 from __future__ import annotations
 
@@ -38,6 +46,11 @@ class TrendlineRetestState(str, Enum):
     DUPLICATE_EPISODE = "DUPLICATE_EPISODE"
 
 
+class RetestConfirmationKind(str, Enum):
+    PREEXISTING_OB_AT_FIRST_RETEST = "PREEXISTING_OB_AT_FIRST_RETEST"
+    OB_FORMED_DURING_RETEST = "OB_FORMED_DURING_RETEST"
+
+
 @dataclass(slots=True)
 class TrendlineRetestSetup:
     setup_id: str
@@ -50,6 +63,7 @@ class TrendlineRetestSetup:
     retest_low: float
     state: TrendlineRetestState = TrendlineRetestState.WAITING_CONFIRMATION
     trigger_zone_id: str | None = None
+    confirmation_kind: RetestConfirmationKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,12 +73,14 @@ class TrendlineRetestTradePlan:
     symbol: str
     family: str
     side: Side
+    timeframe_minutes: int
     observed_time_ns: int
     entry: float
     stop: float
     target: float
     gross_rr: float
     setup_id: str
+    confirmation_kind: RetestConfirmationKind
     line_id: str
     line_side: TrendLineSide
     line_first_swing_id: str
@@ -77,6 +93,7 @@ class TrendlineRetestTradePlan:
     retest_time_ns: int
     retest_level: float
     trigger_zone_id: str
+    trigger_zone_observed_time_ns: int
     trigger_strength_ratio: float
     target_id: str
     target_kind: str
@@ -94,9 +111,9 @@ class Objective:
 class TrendlineFirstRetestScenarioEngine:
     """One-timeframe causal trendline breakout/retest family.
 
-    The initial implementation keeps the reviewed episode small and auditable.
-    Multi-timeframe context can route this family later; it is not silently
-    invented inside the entry detector.
+    Multi-timeframe context may route this family later.  It is not silently
+    invented inside the entry detector, which keeps source/implementation
+    disagreements visible in the trade windows.
     """
 
     FAMILY = "TRENDLINE_BREAK_FIRST_RETEST_OB"
@@ -163,6 +180,18 @@ class TrendlineFirstRetestScenarioEngine:
             if bar.low <= level + line.tolerance and bar.high >= level - line.tolerance:
                 return True
         return False
+
+    @staticmethod
+    def _zone_contains_retest_level(
+        zone: PriceZone,
+        line: CausalTrendLine,
+        retest_level: float,
+    ) -> bool:
+        return (
+            zone.lower - line.tolerance
+            <= retest_level
+            <= zone.upper + line.tolerance
+        )
 
     def _create_setups(self, events: list[TrendLineEvent]) -> None:
         existing = {setup.setup_id for setup in self.setups}
@@ -243,8 +272,7 @@ class TrendlineFirstRetestScenarioEngine:
 
     @staticmethod
     def _setup_rank(setup: TrendlineRetestSetup, line: CausalTrendLine) -> tuple[int, int, str]:
-        # No learned score: prefer the line which the market touched more often,
-        # then the longer-lived geometry, then a stable identifier.
+        # This is historical geometry only, not a learned performance score.
         return (-line.touch_count, -line.anchor_span_bars, line.line_id)
 
     def _invalidated_before_confirmation(
@@ -268,6 +296,73 @@ class TrendlineFirstRetestScenarioEngine:
         if side is Side.LONG:
             return bar.close > setup.retest_high
         return bar.close < setup.retest_low
+
+    def _preexisting_retest_ob(
+        self,
+        setup: TrendlineRetestSetup,
+        line: CausalTrendLine,
+        side: Side,
+    ) -> PriceZone | None:
+        """Return the source case-02 form: an old OB first touched by retest."""
+        candidates = [
+            zone
+            for zone in self.zone_detector.active_zones(
+                side=self._zone_side(side),
+                kind=ZoneKind.ORDER_BLOCK,
+            )
+            if not zone.consumed
+            and zone.observed_time_ns < setup.retest_time_ns
+            and zone.first_touch_index == setup.retest_index
+            and self._zone_contains_retest_level(zone, line, setup.retest_level)
+        ]
+        if not candidates:
+            return None
+        # The most recently formed still-fresh zone is the one immediately left
+        # of the retest in the reviewed chart, not an arbitrary ancient OB.
+        return max(
+            candidates,
+            key=lambda zone: (zone.observed_time_ns, zone.formed_index, zone.zone_id),
+        )
+
+    def _formed_during_retest_ob(
+        self,
+        setup: TrendlineRetestSetup,
+        line: CausalTrendLine,
+        side: Side,
+        created_zones: list[PriceZone],
+    ) -> PriceZone | None:
+        """Return the source case-14 form: a strong OB made by the reaction."""
+        for zone in created_zones:
+            if zone.consumed:
+                continue
+            if zone.kind is not ZoneKind.ORDER_BLOCK:
+                continue
+            if zone.side is not self._zone_side(side):
+                continue
+            if zone.observed_time_ns < setup.retest_time_ns:
+                continue
+            if not zone.high_quality_by_size:
+                self._inc("retest_order_block_below_two_x")
+                continue
+            if not self._formation_touches_line(zone, line, self.zone_detector.bars):
+                continue
+            return zone
+        return None
+
+    def _confirmation(
+        self,
+        setup: TrendlineRetestSetup,
+        line: CausalTrendLine,
+        side: Side,
+        created_zones: list[PriceZone],
+    ) -> tuple[PriceZone, RetestConfirmationKind] | None:
+        preexisting = self._preexisting_retest_ob(setup, line, side)
+        if preexisting is not None:
+            return preexisting, RetestConfirmationKind.PREEXISTING_OB_AT_FIRST_RETEST
+        formed = self._formed_during_retest_ob(setup, line, side, created_zones)
+        if formed is not None:
+            return formed, RetestConfirmationKind.OB_FORMED_DURING_RETEST
+        return None
 
     def _advance(
         self,
@@ -298,25 +393,8 @@ class TrendlineFirstRetestScenarioEngine:
                 self._inc("setup_invalidated_before_confirmation")
                 continue
 
-            trigger: PriceZone | None = None
-            for zone in created_zones:
-                if zone.consumed:
-                    continue
-                if zone.kind is not ZoneKind.ORDER_BLOCK:
-                    continue
-                if zone.side is not self._zone_side(side):
-                    continue
-                if zone.observed_time_ns < setup.retest_time_ns:
-                    continue
-                if not zone.high_quality_by_size:
-                    self._inc("retest_order_block_below_two_x")
-                    continue
-                if not self._formation_touches_line(zone, line, self.zone_detector.bars):
-                    continue
-                trigger = zone
-                break
-
-            if trigger is None:
+            confirmation = self._confirmation(setup, line, side, created_zones)
+            if confirmation is None:
                 if index > setup.retest_index and self._departed_without_confirmation(
                     setup,
                     side,
@@ -325,6 +403,7 @@ class TrendlineFirstRetestScenarioEngine:
                     setup.state = TrendlineRetestState.MISSED_WITHOUT_CONFIRMATION
                     self._inc("setup_missed_without_confirmation")
                 continue
+            trigger, confirmation_kind = confirmation
 
             entry = bar.close
             stop = trigger.invalidation
@@ -363,19 +442,24 @@ class TrendlineFirstRetestScenarioEngine:
                 raise RuntimeError("retested line lost break lineage")
 
             self.sequence += 1
-            causal_event_id = f"{self.FAMILY}:{line.line_id}:{setup.retest_index}:{trigger.zone_id}"
+            causal_event_id = (
+                f"{self.FAMILY}:{confirmation_kind.value}:"
+                f"{line.line_id}:{setup.retest_index}:{trigger.zone_id}"
+            )
             plan = TrendlineRetestTradePlan(
-                plan_id=f"ecv2-tl-{self.symbol}-{self.sequence:08d}",
+                plan_id=f"ecv2-tl-{self.timeframe_minutes}m-{self.symbol}-{self.sequence:08d}",
                 causal_event_id=causal_event_id,
                 symbol=self.symbol,
                 family=self.FAMILY,
                 side=side,
+                timeframe_minutes=self.timeframe_minutes,
                 observed_time_ns=bar.ts_close_ns,
                 entry=entry,
                 stop=stop,
                 target=objective.price,
                 gross_rr=gross_rr,
                 setup_id=setup.setup_id,
+                confirmation_kind=confirmation_kind,
                 line_id=line.line_id,
                 line_side=line.side,
                 line_first_swing_id=line.first_swing_id,
@@ -388,6 +472,7 @@ class TrendlineFirstRetestScenarioEngine:
                 retest_time_ns=setup.retest_time_ns,
                 retest_level=setup.retest_level,
                 trigger_zone_id=trigger.zone_id,
+                trigger_zone_observed_time_ns=trigger.observed_time_ns,
                 trigger_strength_ratio=trigger.strength_ratio,
                 target_id=objective.objective_id,
                 target_kind=objective.kind,
@@ -395,13 +480,15 @@ class TrendlineFirstRetestScenarioEngine:
             )
             setup.state = TrendlineRetestState.PLANNED
             setup.trigger_zone_id = trigger.zone_id
+            setup.confirmation_kind = confirmation_kind
             trigger.consumed = True
             self.plans.append(plan)
             plans.append(plan)
             self._inc("plan_created")
+            self._inc(f"plan_{confirmation_kind.value.lower()}")
 
-            # The same OB/retest episode must not become several trades merely
-            # because several near-identical pivot pairs describe the line.
+            # Several near-identical pivot pairs can describe one visible line.
+            # The one retest/OB episode is still one causal trading opportunity.
             for other in waiting:
                 if other is setup or other.state is not TrendlineRetestState.WAITING_CONFIRMATION:
                     continue
