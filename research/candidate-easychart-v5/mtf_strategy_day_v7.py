@@ -15,6 +15,7 @@ expires.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.model.enums import OrderSide, PositionSide, TimeInForce
@@ -46,6 +47,19 @@ def closing_order_side(position_side: PositionSide) -> OrderSide:
     raise ValueError(f"cannot close flat position side {position_side}")
 
 
+def active_timer_names(clock: Any) -> tuple[str, ...]:
+    """Normalize the Nautilus clock surface across pinned/binding variants.
+
+    NautilusTrader's newer unified clock exposes ``timer_names()`` as a method,
+    while the pinned 1.230 Cython clock returns ``timer_names`` as a list
+    property.  This is execution compatibility only; no trading state is
+    inferred or modified.
+    """
+    value = clock.timer_names
+    names = value() if callable(value) else value
+    return tuple(str(name) for name in names)
+
+
 class EasyChartDayTradeStrategy(_base.EasyChartMTFStrategy):
     """One native bracket plus a full source-aligned 24-hour terminal exit."""
 
@@ -59,7 +73,7 @@ class EasyChartDayTradeStrategy(_base.EasyChartMTFStrategy):
 
     def _reset_daytrade_lifecycle(self) -> None:
         alert_name = self._max_hold_alert_name
-        if alert_name is not None and alert_name in self.clock.timer_names():
+        if alert_name is not None and alert_name in active_timer_names(self.clock):
             self.clock.cancel_timer(alert_name)
         self._first_entry_fill_ts_ns = None
         self._max_hold_deadline_ns = None
