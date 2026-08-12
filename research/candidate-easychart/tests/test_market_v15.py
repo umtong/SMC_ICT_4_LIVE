@@ -57,8 +57,8 @@ class BoundaryEngineTests(unittest.TestCase):
 
     def test_wm_requires_rebound_distinct_second_leg_then_reclaim(self):
         engine = self.engine(enable_immediate_fakeout=False)
-        engine.on_close(c(0, 101, 102, 98, 99), 0)       # outside
-        engine.on_close(c(1, 99, 99.8, 98.6, 99.6), 1)  # rebound, still outside
+        engine.on_close(c(0, 101, 102, 98, 99), 0)        # outside
+        engine.on_close(c(1, 99, 99.8, 98.6, 99.6), 1)   # rebound, still outside
         engine.on_close(c(2, 99.6, 99.7, 97.5, 98.4), 2) # second leg
         update = engine.on_close(c(3, 98.4, 101, 98.2, 100.4), 3) # separate reclaim
         self.assertEqual(len(update.setups), 1)
@@ -73,13 +73,24 @@ class BoundaryEngineTests(unittest.TestCase):
         engine.on_close(c(0, 101, 102, 97, 99), 0)
         ob = SourceOrderBlock(
             footprint_id="OB1",
+            symbol="BTCUSDT",
             side=Side.LONG,
+            pattern="TWO_CANDLE_BODY_ENGULF",
+            timeframe_minutes=15,
             observed_time_ns=19,
+            formation_start_ns=0,
+            formation_end_ns=19,
             zone_low=98.0,
             zone_high=99.0,
             invalidation=97.0,
+            formation_low=97.0,
+            formation_high=102.0,
+            engulfed_body=0.5,
+            engulfing_body=1.2,
+            body_ratio=2.4,
             source_two_x_quality=True,
-            timeframe_minutes=15,
+            exact_doji_exception=False,
+            numeric_doji_boundary_status="SOURCE_UNDEFINED",
         )
         engine.ingest_footprints([ob])
         update = engine.on_close(c(1, 99, 99.5, 97.5, 99.2), 1)
