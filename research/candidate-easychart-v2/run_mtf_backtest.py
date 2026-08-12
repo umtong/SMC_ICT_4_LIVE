@@ -10,7 +10,8 @@ import pandas as pd
 
 from backtest_support import make_engine
 from instruments import CONTRACTS, make_instrument
-from mtf_backtest_support import add_symbol_mtf_data, preserve_mtf_results
+from mtf_backtest_support import preserve_mtf_results
+from mtf_data import add_symbol_mtf_data
 from mtf_strategy import EasyChartMTFConfig, EasyChartMTFStrategy
 
 
