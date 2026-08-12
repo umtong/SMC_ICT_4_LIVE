@@ -15,9 +15,8 @@ expires.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
-from nautilus_trader.common import TimeEvent
+from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.model.enums import OrderSide, PositionSide, TimeInForce
 from nautilus_trader.model.events import OrderFilled, PositionClosed
 from nautilus_trader.model.identifiers import ClientOrderId
