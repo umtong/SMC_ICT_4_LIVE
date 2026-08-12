@@ -12,8 +12,6 @@ fill, fee, position, and account state. A state mismatch fails closed.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.events import OrderFilled, PositionClosed
@@ -53,7 +51,10 @@ class OpposingOrderBlockExitStrategy(EasyChartDayTradeStrategy):
 
     def on_start(self) -> None:
         super().on_start()
-        if not self.is_running:
+        # Component state is STARTING while on_start executes, so is_running is
+        # intentionally not used here. A failed base initialization leaves the
+        # instrument map incomplete and the detector layer remains disabled.
+        if len(self.instruments) != len(self.config.instrument_ids):
             return
         self._opposing_detectors = {
             instrument_id: EventLocalZoneDetector(
