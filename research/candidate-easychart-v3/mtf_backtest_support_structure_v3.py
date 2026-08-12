@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 import mtf_backtest_support as _base
 from backtest_support import _jsonable, write_json
 
@@ -87,6 +89,59 @@ def _write_structure_trade_windows(strategy: Any, output: Path) -> int:
     return count
 
 
+def _concentration_metrics(output: Path, calendar_days: int) -> dict[str, Any]:
+    """Measure whether one lucky trade or one long hold dominates the account path."""
+    path = output / "trade_audit.csv"
+    if not path.exists():
+        raise RuntimeError("trade_audit.csv unavailable for concentration evidence")
+    audit = pd.read_csv(path)
+    if audit.empty:
+        return {
+            "positive_pnl_total": 0.0,
+            "largest_winner_pnl": None,
+            "largest_winner_share_of_positive_pnl": None,
+            "top3_winner_share_of_positive_pnl": None,
+            "largest_abs_pnl_share_of_gross_abs_pnl": None,
+            "median_duration_hours": None,
+            "maximum_duration_hours": None,
+            "trades_longer_than_24h": 0,
+            "single_slot_occupancy_fraction": 0.0,
+        }
+    pnl = pd.to_numeric(audit["realized_pnl"], errors="coerce").dropna()
+    positive = pnl[pnl > 0.0].sort_values(ascending=False)
+    gross_abs = float(pnl.abs().sum())
+    duration_ns = pd.to_numeric(audit["duration_ns"], errors="coerce").dropna()
+    duration_hours = duration_ns / 3_600_000_000_000.0
+    positive_total = float(positive.sum())
+    return {
+        "positive_pnl_total": positive_total,
+        "largest_winner_pnl": None if positive.empty else float(positive.iloc[0]),
+        "largest_winner_share_of_positive_pnl": (
+            None if positive_total <= 0.0 else float(positive.iloc[0] / positive_total)
+        ),
+        "top3_winner_share_of_positive_pnl": (
+            None if positive_total <= 0.0 else float(positive.iloc[:3].sum() / positive_total)
+        ),
+        "largest_abs_pnl_share_of_gross_abs_pnl": (
+            None if gross_abs <= 0.0 else float(pnl.abs().max() / gross_abs)
+        ),
+        "median_duration_hours": (
+            None if duration_hours.empty else float(duration_hours.median())
+        ),
+        "maximum_duration_hours": (
+            None if duration_hours.empty else float(duration_hours.max())
+        ),
+        "trades_longer_than_24h": int((duration_hours > 24.0).sum()),
+        # The project has one global position slot, so summed position time is
+        # true slot occupation rather than a multi-position approximation.
+        "single_slot_occupancy_fraction": (
+            0.0
+            if calendar_days <= 0
+            else float(duration_hours.sum() / (calendar_days * 24.0))
+        ),
+    }
+
+
 def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
     # The base writer knows nothing about historical funding provenance. Keep
     # this metadata here while reusing its validated order/position joins and
@@ -113,6 +168,10 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
     metrics["funding_data_by_symbol"] = funding_summaries
     metrics["funding_records_loaded"] = sum(
         int(summary["records"]) for summary in funding_summaries.values()
+    )
+    metrics["concentration"] = _concentration_metrics(
+        output,
+        int(metrics["calendar_days"]),
     )
     write_json(output / "metrics.json", metrics)
     write_json(
@@ -154,6 +213,7 @@ def preserve_structure_results(*args: Any, **kwargs: Any) -> dict[str, Any]:
                 "daily_loss_limit": False,
                 "daily_trade_limit": False,
                 "historical_funding_applied_to_account": True,
+                "outlier_concentration_measured": True,
             },
             "provenance_classes": [
                 "SOURCE_EXPLICIT",
