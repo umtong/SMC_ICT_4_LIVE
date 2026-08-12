@@ -1,4 +1,4 @@
-"""Audit compatibility and cross-scale episode routing for EasyChart v5."""
+"""Audit compatibility and cross-scale episode routing for EasyChart v3."""
 from __future__ import annotations
 
 from typing import Any
@@ -47,7 +47,13 @@ class AuditFrame:
 
 
 class ResearchScenarioBundleV5:
-    """One symbol, two causal structure scales, one plan stream."""
+    """One symbol, two causal structure scales, one plan stream.
+
+    The 60-minute and 15-minute candles own the structures drawn on them.
+    Their respective 15/5-minute intermediate frames cannot resolve a fakeout
+    or acceptance before the owner candle closes; 5/1-minute data are reserved
+    for event-local execution evidence.
+    """
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         self.symbol = symbol
@@ -59,6 +65,7 @@ class ResearchScenarioBundleV5:
             higher_minutes=60,
             decision_minutes=15,
             trigger_minutes=5,
+            interaction_minutes=60,
             minimum_gross_rr=minimum_gross_rr,
         )
         self.micro = StructureScenarioEngine(
@@ -68,6 +75,7 @@ class ResearchScenarioBundleV5:
             higher_minutes=15,
             decision_minutes=5,
             trigger_minutes=1,
+            interaction_minutes=15,
             minimum_gross_rr=minimum_gross_rr,
         )
         self.detectors = {60: AuditFrame(60), 15: AuditFrame(15), 5: AuditFrame(5), 1: AuditFrame(1)}
@@ -109,19 +117,14 @@ class ResearchScenarioBundleV5:
         start, end = self._episode_interval(plan)
         for side, old_start, old_end, old_lower, old_upper in self._claimed_episodes:
             time_overlap = max(start, old_start) < min(end, old_end)
-            price_overlap = (
-                max(plan.overlap_lower, old_lower)
-                <= min(plan.overlap_upper, old_upper) + self.tick_size
-            )
+            price_overlap = max(plan.overlap_lower, old_lower) <= min(plan.overlap_upper, old_upper) + self.tick_size
             if side is plan.side and time_overlap and price_overlap:
                 return True
         return False
 
     def _claim_episode(self, plan: V5TradePlan) -> None:
         start, end = self._episode_interval(plan)
-        self._claimed_episodes.append(
-            (plan.side, start, end, plan.overlap_lower, plan.overlap_upper),
-        )
+        self._claimed_episodes.append((plan.side, start, end, plan.overlap_lower, plan.overlap_upper))
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
         if timeframe_minutes in self.detectors:
@@ -176,5 +179,4 @@ class ResearchScenarioBundleV5:
         return self.macro.find_zone(zone_id) or self.micro.find_zone(zone_id)
 
 
-# Compatibility name consumed by mtf_strategy.py after monkey-patching.
 MultiScaleScenarioBundle = ResearchScenarioBundleV5

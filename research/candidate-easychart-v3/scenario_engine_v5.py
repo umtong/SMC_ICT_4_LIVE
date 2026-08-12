@@ -1,4 +1,9 @@
-"""Structure-first EasyChart v5 engine composed from focused causal mixins."""
+"""Structure-first EasyChart engine composed from focused causal mixins.
+
+The timeframe which owns a structure also owns rejection/acceptance decisions.
+Lower timeframes may refine execution, but cannot declare a higher-timeframe
+channel or trendline fakeout before that structure's candle has closed.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -27,18 +32,25 @@ class StructureScenarioEngine(
         decision_minutes: int,
         trigger_minutes: int,
         minimum_gross_rr: float,
+        interaction_minutes: int | None = None,
     ) -> None:
         if not higher_minutes > decision_minutes > trigger_minutes:
             raise ValueError("scenario timeframes must descend")
+        owner = decision_minutes if interaction_minutes is None else interaction_minutes
+        if owner not in {higher_minutes, decision_minutes}:
+            raise ValueError("interaction_minutes must be the structure or intermediate timeframe")
         self.symbol = symbol
         self.tick_size = tick_size
         self.scale_name = scale_name
         self.higher_minutes = higher_minutes
         self.decision_minutes = decision_minutes
         self.trigger_minutes = trigger_minutes
+        self.interaction_minutes = owner
         self.minimum_gross_rr = minimum_gross_rr
         self.structure = CausalStructureBook(symbol, higher_minutes, tick_size)
         self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
+        # Retained name for compatibility with the focused transition mixin.
+        # These bars are the bars which actually own the interaction state.
         self.decision_bars: list[Candle] = []
         self.setups: list[ScenarioSetup] = []
         self._active: dict[str, ScenarioSetup] = {}
@@ -50,20 +62,24 @@ class StructureScenarioEngine(
         self._claimed_structures: set[str] = set()
         self._claimed_episodes: set[str] = set()
         self.sequence = 0
+
     def _inc(self, key: str) -> None:
         self.diagnostics[key] = self.diagnostics.get(key, 0) + 1
+
     def _audit(self, zone: Any) -> None:
         zone_id = getattr(zone, "zone_id", None)
         if zone_id and zone_id not in self._audit_zone_ids:
             self._audit_zone_ids.add(zone_id)
             self.audit_zones.append(zone)
+
     def _trace(self, kind: str, time_ns: int, setup: ScenarioSetup | None = None, **values: Any) -> None:
         event: dict[str, Any] = {
             "scenario_kind": kind,
             "event_time_ns": time_ns,
             "scale_name": self.scale_name,
             "higher_timeframe_minutes": self.higher_minutes,
-            "decision_timeframe_minutes": self.decision_minutes,
+            "decision_timeframe_minutes": self.interaction_minutes,
+            "intermediate_timeframe_minutes": self.decision_minutes,
             "trigger_timeframe_minutes": self.trigger_minutes,
             **values,
         }
@@ -82,9 +98,11 @@ class StructureScenarioEngine(
                 },
             )
         self.trace_events.append(event)
+
     def drain_trace(self) -> list[dict[str, Any]]:
         output, self.trace_events = self.trace_events, []
         return output
+
     @staticmethod
     def _terminal(state: SetupState) -> bool:
         return state in {
@@ -96,6 +114,7 @@ class StructureScenarioEngine(
             SetupState.UNRESOLVED,
             SetupState.DUPLICATE_EPISODE,
         }
+
     def _finish(
         self,
         setup: ScenarioSetup,
@@ -112,9 +131,29 @@ class StructureScenarioEngine(
         self._inc(reason)
         self._trace(reason, time_ns, setup, **values)
 
+    def _process_interaction_bar(self, bar: Candle) -> None:
+        if self.decision_bars and bar.ts_close_ns <= self.decision_bars[-1].ts_close_ns:
+            raise ValueError("interaction bars must arrive in increasing close time")
+        self.decision_bars.append(bar)
+        index = len(self.decision_bars) - 1
+        # Existing episodes are advanced before a new episode can claim this
+        # same close. This prevents one bar from both terminating and recreating
+        # the same causal structure opportunity.
+        self._advance_decision_setups(bar, index)
+        if index >= 1:
+            self._discover_interactions(bar, self.decision_bars[index - 1], index)
+        self._inc("interaction_owner_bar")
+
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
         if timeframe_minutes == self.higher_minutes:
+            # Classify against structures known before this close. Only after
+            # the decision is made may this bar confirm new pivots/lines/channels.
+            if self.interaction_minutes == self.higher_minutes:
+                self._process_interaction_bar(bar)
             pivots, lines, channels = self.structure.on_bar(bar)
+            # Lifecycle updates occur after scenario classification. A pivot
+            # first confirmed by this close cannot consume itself.
+            self.structure.observe_price(bar)
             self._inc("context_bar")
             self._trace(
                 "context_structure_update",
@@ -124,16 +163,19 @@ class StructureScenarioEngine(
                 channels=len(channels),
             )
             return []
+
         if timeframe_minutes == self.decision_minutes:
-            if self.decision_bars and bar.ts_close_ns <= self.decision_bars[-1].ts_close_ns:
-                raise ValueError("decision bars must arrive in increasing close time")
-            self.decision_bars.append(bar)
-            index = len(self.decision_bars) - 1
-            self._advance_decision_setups(bar, index)
-            if index >= 1:
-                self._discover_interactions(bar, self.decision_bars[index - 1], index)
-            self.structure.observe_price(bar)
+            if self.interaction_minutes == self.decision_minutes:
+                # Compatibility mode retained for focused historical tests.
+                self._process_interaction_bar(bar)
+                self.structure.observe_price(bar)
+            else:
+                # The intermediate frame is observable evidence only. It may
+                # later host its own structure/footprint role, but it cannot
+                # resolve the higher structure before that candle closes.
+                self._inc("intermediate_bar_observed")
             return []
+
         if timeframe_minutes != self.trigger_minutes:
             raise ValueError(f"unsupported timeframe {timeframe_minutes} for {self.scale_name}")
         created = self.trigger_detector.on_bar(bar)
@@ -158,5 +200,6 @@ class StructureScenarioEngine(
                 plan.plan_id,
             ),
         )
+
     def find_zone(self, zone_id: str) -> Any | None:
         return next((zone for zone in self.audit_zones if zone.zone_id == zone_id), None)
