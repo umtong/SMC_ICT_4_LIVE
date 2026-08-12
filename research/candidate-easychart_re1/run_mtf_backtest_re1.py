@@ -19,12 +19,12 @@ from easychart_re1_flips import (
     HORIZONTAL_FLIP_OBJECTIVE_RULE,
 )
 from easychart_re1_fresh import FRESH_HTF_FOOTPRINT_RULE
+from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy, LIVE_PROTECTION_POLICY
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
 from mtf_backtest_support_v5 import preserve_mtf_results_v5
 from mtf_data import add_symbol_mtf_data
 import mtf_strategy as _base_strategy
-from mtf_strategy_v5 import EasyChartMTFConfig, EasyChartMTFStrategy
 from scenario_channel_extension_v16 import CHANNEL_EXTENSION_RULE
 from scenario_close_detached_v14 import CLOSE_DETACHED_RETEST_RULE
 from simple_contract_v14 import FIXED_RISK_FRACTION, MINIMUM_GROSS_RR, contract_record
@@ -87,7 +87,7 @@ def main() -> None:
         higher_types.append(higher_type)
     engine.sort_data()
 
-    strategy = EasyChartMTFStrategy(
+    strategy = EasyChartRE1Strategy(
         EasyChartMTFConfig(
             instrument_ids=tuple(item.id for item in instruments),
             higher_bar_types=tuple(higher_types),
@@ -143,11 +143,14 @@ def main() -> None:
             ],
             "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
             "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
+            "execution_policy": LIVE_PROTECTION_POLICY,
             "fee_profile": profile.name,
             "maker_fee_rate": float(profile.maker_rate),
             "taker_fee_rate": float(profile.taker_rate),
             "fee_profile_provenance": profile.provenance,
-            "strategy_exit_policy": "PREDECLARED_NATIVE_FULL_STOP_OR_FULL_TARGET",
+            "strategy_exit_policy": (
+                "PREDECLARED_REDUCE_ONLY_STOP_MARKET_OR_LIMIT_TARGET_WITH_STRATEGY_SIBLING_CANCEL"
+            ),
             **contract_record(),
         }
         metrics.update(metadata)
