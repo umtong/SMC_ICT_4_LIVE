@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from auction_context_v5 import AuctionContextSnapshot
 from domain import Candle, Side
 from contracts_v5 import ScenarioSetup, V5TradePlan
 from scenario_engine_v5 import StructureScenarioEngine
@@ -85,12 +86,30 @@ class ResearchScenarioBundleV5:
 
     @property
     def diagnostics(self) -> dict[str, Any]:
+        macro_snapshot = self.macro.auction_context_snapshot()
+        micro_snapshot = self.micro.auction_context_snapshot()
         return {
             "macro": self.macro.diagnostics,
             "macro_structure": self.macro.structure.diagnostics,
+            "macro_auction_context": {
+                "diagnostics": self.macro.decision_context.diagnostics,
+                "latest": None if macro_snapshot is None else macro_snapshot.to_dict(),
+            },
             "micro": self.micro.diagnostics,
             "micro_structure": self.micro.structure.diagnostics,
+            "micro_auction_context": {
+                "diagnostics": self.micro.decision_context.diagnostics,
+                "latest": None if micro_snapshot is None else micro_snapshot.to_dict(),
+            },
         }
+
+    def context_snapshot(self, timeframe_minutes: int) -> AuctionContextSnapshot | None:
+        """Return the completed-bar context used by a plan at this scale."""
+        if timeframe_minutes == self.macro.decision_minutes:
+            return self.macro.auction_context_snapshot()
+        if timeframe_minutes == self.micro.decision_minutes:
+            return self.micro.auction_context_snapshot()
+        return None
 
     def _sync_audit(self, key: str, engine: StructureScenarioEngine) -> None:
         start = self._audit_offsets[key]
