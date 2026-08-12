@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 import math
 from typing import Iterable, Sequence
 
@@ -211,23 +212,41 @@ class _ObservedReaction:
 def feasible_slope_interval(
     anchors: Sequence[ReactionInterval],
 ) -> tuple[float, float] | None:
+    """Return the exact feasible slope projection of all interval anchors.
+
+    Prices arrive as binary floats. Converting each endpoint through
+    ``as_integer_ratio`` preserves that observed value exactly, while integer
+    nanosecond deltas make every pair constraint rational. Intersecting those
+    rational intervals avoids an absolute epsilon which can otherwise return a
+    numerically reversed interval at crypto price/time scales.
+    """
     if len(anchors) < 2:
         return None
     ordered = sorted(anchors, key=lambda item: item.pivot.event_time_ns)
-    low = -math.inf
-    high = math.inf
+    low: Fraction | None = None
+    high: Fraction | None = None
     for i, first in enumerate(ordered):
+        first_low = Fraction(*float(first.low).as_integer_ratio())
+        first_high = Fraction(*float(first.high).as_integer_ratio())
         for second in ordered[i + 1 :]:
             elapsed = second.pivot.event_time_ns - first.pivot.event_time_ns
             if elapsed <= 0:
                 return None
-            pair_low = (second.low - first.high) / elapsed
-            pair_high = (second.high - first.low) / elapsed
-            low = max(low, pair_low)
-            high = min(high, pair_high)
-            if high + 1e-18 < low:
+            second_low = Fraction(*float(second.low).as_integer_ratio())
+            second_high = Fraction(*float(second.high).as_integer_ratio())
+            pair_low = (second_low - first_high) / elapsed
+            pair_high = (second_high - first_low) / elapsed
+            low = pair_low if low is None else max(low, pair_low)
+            high = pair_high if high is None else min(high, pair_high)
+            if high < low:
                 return None
-    return float(low), float(high)
+    assert low is not None and high is not None
+    output = float(low), float(high)
+    if output[1] < output[0]:
+        raise AssertionError(
+            "exact ordered slope interval became reversed as floats"
+        )
+    return output
 
 
 def _line_direction(

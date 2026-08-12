@@ -80,6 +80,17 @@ class FeasibleTrendlineGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(low, 5.0)
         self.assertAlmostEqual(high, 8.0)
 
+    def test_exact_intersection_never_returns_epsilon_reversed_interval(self) -> None:
+        anchors = (
+            interval(0, 1, "HIGH", -5e-18, 2e-18),
+            interval(1, 2, "HIGH", -5e-18, -1e-18),
+            interval(2, 3, "HIGH", 4e-18, 4e-18),
+        )
+        # The former absolute-epsilon intersection returned (5e-18, 4e-18),
+        # which later crashed FeasibleTrendlineVersion. These exact binary
+        # endpoint constraints have an empty intersection and must return None.
+        self.assertIsNone(feasible_slope_interval(anchors))
+
     def test_ambiguous_flat_or_sloped_family_is_not_directional(self) -> None:
         bars = [
             candle(0, 10.0, 11.0, 9.0, 10.0),
