@@ -1,0 +1,53 @@
+name: candidate-easychart-v12-half-be-smoke
+
+on:
+  push:
+    branches: ["research/candidate-easychart-v12-half-be"]
+    paths:
+      - "research/candidate-easychart-v5/**"
+      - ".github/workflows/candidate-easychart-v12-half-be-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v12-half-be-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  partial-management-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v12-half-be-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment and source-management tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart-v5
+          python -m unittest discover -s research/candidate-easychart-v5/tests -p 'test_*.py' -v
+      - name: Native bracket half-profit and breakeven protection smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart-v5/partial_management_smoke_v12.py \
+            | tee "$ROOT/partial_management_smoke.json"
+      - name: Preserve research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-v12-half-be-smoke-${{ github.sha }}
+          path: artifacts/candidate-easychart-v12-half-be-smoke/**
+          if-no-files-found: warn
+          retention-days: 90
