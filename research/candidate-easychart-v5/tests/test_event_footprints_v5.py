@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from contracts_v5 import Pivot, SetupState
+from contracts_v5 import Pivot, ScenarioPath, SetupState
 from domain import Candle
 from event_footprints_v5 import EventLocalZoneDetector
 from scenario_engine_v5 import StructureScenarioEngine
@@ -67,10 +67,13 @@ class EventLocalFootprintTests(unittest.TestCase):
         target = pivot("HIGH_TARGET", "HIGH", 120.0, 0, 2)
         add_pivots(engine, target, source)
         engine.on_bar(15, candle(10, 105, 106, 104, 105))
-        engine.on_bar(15, candle(11, 101, 102, 99.5, 101))
+        # A valid support touch without a sweep is the family which still uses
+        # an event-local OB/FVG before entry.
+        engine.on_bar(15, candle(11, 101, 102, 100.0, 101))
         setup = list(engine._active.values())[0]
-        engine.on_bar(5, candle(12, 101.0, 101.2, 99.8, 100.5))
-        engine.on_bar(5, candle(13, 100.4, 102.2, 99.7, 102.0))
+        self.assertIs(setup.path, ScenarioPath.BOUNCE)
+        engine.on_bar(5, candle(12, 101.0, 101.2, 99.95, 100.2))
+        engine.on_bar(5, candle(13, 100.1, 101.5, 99.95, 101.3))
         self.assertIs(setup.state, SetupState.WAITING_FOOTPRINT_RETEST)
         assert setup.trigger_zone is not None
         invalidation = setup.trigger_zone.invalidation
