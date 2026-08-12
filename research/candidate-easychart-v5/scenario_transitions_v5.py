@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from domain import Candle, Side
-from contracts_v5 import ScenarioSetup, SetupState, StructureFamily, StructureZone
+from contracts_v5 import ScenarioSetup, SetupState, StructureZone
 
 
 class ScenarioTransitionMixin:
@@ -20,6 +20,7 @@ class ScenarioTransitionMixin:
         zone = self.structure.channel_edge_snapshot(channel, edge, time_ns)
         price = channel.upper_at(time_ns) if setup.side is Side.LONG else channel.lower_at(time_ns)
         return zone, price
+
     def _target_is_spent(self, setup: ScenarioSetup, bar: Candle) -> bool:
         dynamic = self._channel_target_at(setup, bar.ts_close_ns)
         if dynamic is not None:
@@ -35,12 +36,14 @@ class ScenarioTransitionMixin:
         if touched and bar.ts_close_ns > setup.interaction_time_ns:
             return True
         return self.structure.target_spent_after(setup.target_zone, setup.interaction_time_ns)
+
     def _extreme_breached(self, setup: ScenarioSetup, bar: Candle) -> bool:
         return (
             bar.low <= setup.interaction_extreme - self.tick_size
             if setup.side is Side.LONG
             else bar.high >= setup.interaction_extreme + self.tick_size
         )
+
     def _advance_decision_setups(self, bar: Candle, index: int) -> None:
         for setup in list(self._active.values()):
             if self._target_is_spent(setup, bar):
@@ -56,9 +59,14 @@ class ScenarioTransitionMixin:
                 reclaimed = bar.close > upper if setup.side is Side.LONG else bar.close < lower
                 if reclaimed:
                     setup.confirmation_time_ns = bar.ts_close_ns
-                    setup.state = SetupState.WAITING_DISPLACEMENT
+                    setup.state = SetupState.WAITING_REJECTION_RETEST
                     self._inc("reclaim_confirmed")
-                    self._trace("reclaim_confirmed", bar.ts_close_ns, setup)
+                    self._trace(
+                        "reclaim_confirmed",
+                        bar.ts_close_ns,
+                        setup,
+                        next_state=SetupState.WAITING_REJECTION_RETEST.value,
+                    )
                 continue
             if setup.state is SetupState.WAITING_ACCEPTANCE_HOLD:
                 expected = (setup.acceptance_break_index or -1) + 1
@@ -89,7 +97,11 @@ class ScenarioTransitionMixin:
                 self._inc("acceptance_confirmed")
                 self._trace("acceptance_confirmed", bar.ts_close_ns, setup)
                 continue
-            if setup.state in {SetupState.WAITING_DISPLACEMENT, SetupState.WAITING_FOOTPRINT_RETEST}:
+            if setup.state in {
+                SetupState.WAITING_REJECTION_RETEST,
+                SetupState.WAITING_DISPLACEMENT,
+                SetupState.WAITING_FOOTPRINT_RETEST,
+            }:
                 if self._extreme_breached(setup, bar):
                     self._finish(
                         setup,
