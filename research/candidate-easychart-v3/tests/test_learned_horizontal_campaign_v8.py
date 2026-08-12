@@ -200,7 +200,7 @@ class LearnedHorizontalCampaignTests(unittest.TestCase):
 
         later, intervals = learned_zone("AFTER_RESET", 103.0, 104.0, 5, (4, 5))
         inject(engine, later, intervals)
-        plans = engine.on_bar(15, candle(40, 103.5, 104.5, 102.0, 103.0))
+        plans = engine.on_bar(15, candle(40, 103.5, 104.5, 102.0, 102.9))
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].higher_zone_id, "AFTER_RESET")
 
