@@ -142,7 +142,13 @@ class StructureScenarioEngine(
         index = len(self.trigger_detector.bars) - 1
         self._arm_displacements(bar, index, created)
         plans = self._advance_acceptance_retests(bar, index)
-        plans.extend(self._advance_footprint_retests(bar, index))
+        plan_count_before_retest = len(self.plans)
+        footprint_plans = self._advance_footprint_retests(bar, index)
+        if footprint_plans is None:
+            # Compatibility guard for the prior method version which appended
+            # plans to self.plans but accidentally omitted its return statement.
+            footprint_plans = self.plans[plan_count_before_retest:]
+        plans.extend(footprint_plans)
         return sorted(
             plans,
             key=lambda plan: (
