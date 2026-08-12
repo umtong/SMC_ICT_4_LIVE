@@ -12,54 +12,90 @@ from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar, BarType, FundingRateUpdate, MarkPriceUpdate
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.trading.strategy import Strategy
 
-from backtest_support import final_nav, make_engine
-from funding_data import (
-    NS_PER_MS,
-    _read_funding_month,
-    _read_mark_month,
-    load_funding_history,
-)
+from backtest_support import make_engine
+from funding_data import _read_funding_month, _read_mark_month, load_funding_history
 from instruments import make_instrument
 
 NS_PER_MINUTE = 60_000_000_000
 
 
 class FundingProbeConfig(StrategyConfig, frozen=True):
-    instrument_id: InstrumentId
-    bar_type: BarType
-    side: OrderSide
+    instrument_ids: tuple[InstrumentId, ...]
+    bar_types: tuple[BarType, ...]
+    sides: tuple[OrderSide, ...]
+    clock_instrument_id: InstrumentId
+    capture_times_ns: tuple[int, ...]
 
 
 class FundingProbeStrategy(Strategy):
     def __init__(self, config: FundingProbeConfig) -> None:
         super().__init__(config)
-        self.submitted = False
-        self.instrument = None
+        if not len(config.instrument_ids) == len(config.bar_types) == len(config.sides):
+            raise ValueError("probe routes must have equal lengths")
+        self.route = {
+            bar_type.id_spec_key(): (instrument_id, side)
+            for instrument_id, bar_type, side in zip(
+                config.instrument_ids,
+                config.bar_types,
+                config.sides,
+                strict=True,
+            )
+        }
+        self.instruments = {}
+        self.submitted: set[InstrumentId] = set()
+        self.balances: dict[int, float] = {}
 
     def on_start(self) -> None:
-        self.instrument = self.cache.instrument(self.config.instrument_id)
-        if self.instrument is None:
-            raise RuntimeError("probe instrument unavailable")
-        self.subscribe_bars(self.config.bar_type)
+        for instrument_id, bar_type in zip(
+            self.config.instrument_ids,
+            self.config.bar_types,
+            strict=True,
+        ):
+            instrument = self.cache.instrument(instrument_id)
+            if instrument is None:
+                raise RuntimeError("probe instrument unavailable")
+            self.instruments[instrument_id] = instrument
+            self.subscribe_bars(bar_type)
+
+    def _balance(self) -> float:
+        account = self.portfolio.account(self.instruments[self.config.clock_instrument_id].venue)
+        if account is None:
+            raise RuntimeError("probe account unavailable")
+        value = account.balance_total(Currency.from_str("USDT"))
+        if value is None:
+            raise RuntimeError("probe USDT balance unavailable")
+        return float(value.as_double())
 
     def on_bar(self, bar: Bar) -> None:
-        if self.submitted:
+        route = self.route.get(bar.bar_type.id_spec_key())
+        if route is None:
             return
-        self.submitted = True
-        self.submit_order(
-            self.order_factory.market(
-                instrument_id=self.config.instrument_id,
-                order_side=self.config.side,
-                quantity=self.instrument.make_qty(1),
-            ),
-        )
+        instrument_id, side = route
+        if instrument_id not in self.submitted:
+            self.submitted.add(instrument_id)
+            self.submit_order(
+                self.order_factory.market(
+                    instrument_id=instrument_id,
+                    order_side=side,
+                    quantity=self.instruments[instrument_id].make_qty(1),
+                ),
+            )
+        if (
+            instrument_id == self.config.clock_instrument_id
+            and bar.ts_event in self.config.capture_times_ns
+        ):
+            if any(self.portfolio.is_flat(item) for item in self.config.instrument_ids):
+                raise RuntimeError("probe funding capture occurred before both entries filled")
+            self.balances[bar.ts_event] = self._balance()
 
     def on_stop(self) -> None:
-        # Leave the constant-price position open so paired runs differ only by
-        # native funding, not by another close commission.
-        self.unsubscribe_bars(self.config.bar_type)
+        # Leave constant-price positions open so balance differences between
+        # captures are funding only, not exit commissions.
+        for bar_type in self.config.bar_types:
+            self.unsubscribe_bars(bar_type)
 
 
 class FundingHistoryTests(unittest.TestCase):
@@ -127,75 +163,98 @@ class FundingHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["markPrice"], Decimal("101.0"))
         self.assertEqual(rows[-1]["fundingTime"], 1706832000000)
 
-    def _run_probe(self, side: OrderSide, funding_rate: Decimal | None) -> float:
+    def test_native_funding_debits_long_then_credits_short_in_one_engine(self) -> None:
         engine = make_engine()
-        instrument = make_instrument("BTCUSDT")
-        engine.add_instrument(instrument)
-        bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
-        bars = [
-            Bar(
-                bar_type=bar_type,
-                open=instrument.make_price(100.0),
-                high=instrument.make_price(100.0),
-                low=instrument.make_price(100.0),
-                close=instrument.make_price(100.0),
-                volume=instrument.make_qty(100),
-                ts_event=index * NS_PER_MINUTE,
-                ts_init=index * NS_PER_MINUTE,
+        btc = make_instrument("BTCUSDT")
+        eth = make_instrument("ETHUSDT")
+        engine.add_instrument(btc)
+        engine.add_instrument(eth)
+        btc_type = BarType.from_str(f"{btc.id}-1-MINUTE-LAST-EXTERNAL")
+        eth_type = BarType.from_str(f"{eth.id}-1-MINUTE-LAST-EXTERNAL")
+        bar_times = (1, 2, 3, 5, 7)
+        for instrument, bar_type in ((btc, btc_type), (eth, eth_type)):
+            engine.add_data(
+                [
+                    Bar(
+                        bar_type=bar_type,
+                        open=instrument.make_price(100.0),
+                        high=instrument.make_price(100.0),
+                        low=instrument.make_price(100.0),
+                        close=instrument.make_price(100.0),
+                        volume=instrument.make_qty(100),
+                        ts_event=index * NS_PER_MINUTE,
+                        ts_init=index * NS_PER_MINUTE,
+                    )
+                    for index in bar_times
+                ],
+                sort=False,
             )
-            for index in (1, 2, 4)
-        ]
-        engine.add_data(bars, sort=False)
-        boundary = 3 * NS_PER_MINUTE
+
+        long_boundary = 4 * NS_PER_MINUTE
+        short_boundary = 6 * NS_PER_MINUTE
         engine.add_data(
             [
                 MarkPriceUpdate(
-                    instrument_id=instrument.id,
-                    value=instrument.make_price(100.0),
-                    ts_event=boundary,
-                    ts_init=boundary + 1,
+                    instrument_id=btc.id,
+                    value=btc.make_price(100.0),
+                    ts_event=long_boundary,
+                    ts_init=long_boundary + 1,
+                ),
+                MarkPriceUpdate(
+                    instrument_id=eth.id,
+                    value=eth.make_price(100.0),
+                    ts_event=short_boundary,
+                    ts_init=short_boundary + 1,
                 ),
             ],
             sort=False,
         )
-        if funding_rate is not None:
-            engine.add_data(
-                [
-                    FundingRateUpdate(
-                        instrument_id=instrument.id,
-                        rate=funding_rate,
-                        ts_event=boundary,
-                        ts_init=boundary + 2,
-                        interval=1,
-                        next_funding_ns=boundary,
-                    ),
-                ],
-                sort=False,
-            )
+        engine.add_data(
+            [
+                FundingRateUpdate(
+                    instrument_id=btc.id,
+                    rate=Decimal("0.01"),
+                    ts_event=long_boundary,
+                    ts_init=long_boundary + 2,
+                    interval=1,
+                    next_funding_ns=long_boundary,
+                ),
+                FundingRateUpdate(
+                    instrument_id=eth.id,
+                    rate=Decimal("0.02"),
+                    ts_event=short_boundary,
+                    ts_init=short_boundary + 2,
+                    interval=1,
+                    next_funding_ns=short_boundary,
+                ),
+            ],
+            sort=False,
+        )
         engine.sort_data()
-        engine.add_strategy(
-            FundingProbeStrategy(
-                FundingProbeConfig(
-                    instrument_id=instrument.id,
-                    bar_type=bar_type,
-                    side=side,
+        strategy = FundingProbeStrategy(
+            FundingProbeConfig(
+                instrument_ids=(btc.id, eth.id),
+                bar_types=(btc_type, eth_type),
+                sides=(OrderSide.BUY, OrderSide.SELL),
+                clock_instrument_id=btc.id,
+                capture_times_ns=(
+                    3 * NS_PER_MINUTE,
+                    5 * NS_PER_MINUTE,
+                    7 * NS_PER_MINUTE,
                 ),
             ),
         )
+        engine.add_strategy(strategy)
         try:
             engine.run()
-            return final_nav(engine)
         finally:
             engine.dispose()
 
-    def test_native_funding_debits_long_and_credits_short(self) -> None:
-        rate = Decimal("0.01")
-        baseline_long = self._run_probe(OrderSide.BUY, None)
-        funded_long = self._run_probe(OrderSide.BUY, rate)
-        baseline_short = self._run_probe(OrderSide.SELL, None)
-        funded_short = self._run_probe(OrderSide.SELL, rate)
-        self.assertAlmostEqual(funded_long - baseline_long, -1.0, places=6)
-        self.assertAlmostEqual(funded_short - baseline_short, 1.0, places=6)
+        before = strategy.balances[3 * NS_PER_MINUTE]
+        after_long = strategy.balances[5 * NS_PER_MINUTE]
+        after_short = strategy.balances[7 * NS_PER_MINUTE]
+        self.assertAlmostEqual(after_long - before, -1.0, places=6)
+        self.assertAlmostEqual(after_short - after_long, 2.0, places=6)
 
 
 if __name__ == "__main__":
