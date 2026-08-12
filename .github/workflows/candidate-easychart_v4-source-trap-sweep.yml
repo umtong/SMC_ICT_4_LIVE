@@ -1,0 +1,128 @@
+name: candidate-easychart_v4-source-faithful-trap-sweep
+
+on:
+  push:
+    branches:
+      - research/candidate-easychart_v4-source-trap
+    paths:
+      - .github/workflows/candidate-easychart_v4-source-trap-sweep.yml
+      - research/candidate-easychart_v4/market_structure_trap_v4.py
+      - research/candidate-easychart_v4/scenario_runtime_v4_source_trap.py
+      - research/candidate-easychart_v4/run_v4_source_trap_backtest.py
+      - research/candidate-easychart_v4/tests/test_source_faithful_trap_v4.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-development-regime:
+    name: ${{ matrix.policy }}-${{ matrix.regime }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        policy:
+          - retest
+          - same-side
+        regime:
+          - 2024-03-a
+          - 2024-08-a
+          - 2025-02-a
+          - 2025-08-a
+          - 2026-02-a
+    env:
+      PYTHONPATH: research/candidate-easychart_v4
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart_v4-source-trap-${{ matrix.policy }}-${{ matrix.regime }}
+      ROOT: artifacts/candidate-easychart_v4-source-trap/${{ matrix.policy }}/${{ matrix.regime }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal state tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart_v4
+          python -m unittest discover -s research/candidate-easychart_v4/tests -p 'test_*.py' -v
+
+      - name: Resolve committed development window
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.regime }}" in
+            2024-03-a) START=2024-03-01; END=2024-03-14 ;;
+            2024-08-a) START=2024-08-01; END=2024-08-14 ;;
+            2025-02-a) START=2025-02-01; END=2025-02-14 ;;
+            2025-08-a) START=2025-08-01; END=2025-08-14 ;;
+            2026-02-a) START=2026-02-01; END=2026-02-14 ;;
+            *) echo "unknown regime" >&2; exit 2 ;;
+          esac
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+
+      - name: Run one four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/mtf"
+          exec > >(tee "$ROOT/run.log") 2>&1
+          python research/candidate-easychart_v4/run_v4_source_trap_backtest.py \
+            --start "${{ steps.window.outputs.start }}" \
+            --end "${{ steps.window.outputs.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --context-policy "${{ matrix.policy }}" \
+            --cache "$CACHE" \
+            --output "$ROOT/mtf"
+
+      - name: Surface paired-regime outcome
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["ROOT"]) / "mtf" / "metrics.json"
+          if not path.exists():
+              raise SystemExit(0)
+          metrics = json.loads(path.read_text())
+          lines = [
+              f"## source-faithful Trap: ${{ matrix.policy }} / ${{ matrix.regime }}",
+              "",
+              f"- Final NAV: {metrics['final_nav']:.4f}",
+              f"- Total return: {metrics['total_return']:.4%}",
+              f"- Daily geometric growth: {metrics['daily_geometric_growth']:.4%}",
+              f"- Closed positions: {metrics['closed_positions']}",
+              f"- Independent trades/day: {metrics['independent_trades_per_day']:.4f}",
+              f"- Risk-budget breaches: {metrics['risk_budget_breaches']}",
+          ]
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          print(
+              "::notice title=Source-faithful Trap regime::"
+              f"policy=${{ matrix.policy }}, regime=${{ matrix.regime }}, "
+              f"NAV={metrics['final_nav']:.4f}, "
+              f"daily_geo={metrics['daily_geometric_growth']:.4%}, "
+              f"trades={metrics['closed_positions']}"
+          )
+          PY
+
+      - name: Preserve paired-regime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-trap-${{ matrix.policy }}-${{ matrix.regime }}-${{ github.sha }}
+          path: artifacts/candidate-easychart_v4-source-trap/${{ matrix.policy }}/${{ matrix.regime }}/**
+          if-no-files-found: warn
+          retention-days: 90
