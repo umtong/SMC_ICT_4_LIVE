@@ -95,7 +95,7 @@ class MTFOverlapScenarioEngineTest(unittest.TestCase):
         plan = plans[0]
         self.assertIs(plan.side, Side.LONG)
         self.assertEqual(plan.entry, 101.0)
-        self.assertEqual(plan.stop, 98.6)
+        self.assertAlmostEqual(plan.stop, 98.6)
         self.assertEqual(plan.target, 106.0)
         self.assertGreaterEqual(plan.gross_rr, 1.0)
         self.assertEqual(plan.higher_zone_id, "higher-support")
