@@ -1,0 +1,230 @@
+name: candidate-easychart-v18-context
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v18_context.py"
+      - "research/candidate-easychart/screen_v18_integrated.py"
+      - "research/candidate-easychart/tests/test_market_v18_context.py"
+      - ".github/workflows/candidate-easychart-v18-context.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v18-context
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  context-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v18-context
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify causal context implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest \
+            discover -s research/candidate-easychart/tests \
+            -p 'test_market_v18_context.py' -v
+
+      - name: Run context-only and integrated microscopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --families "$families"
+            --signal-minutes 5
+            --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5
+            --target-dc-atr 1.0
+            --continuation-cap-widths 10.0
+            --cost-profile role
+            --context-minutes 240
+            --value-minutes 240,720,1440
+            --context-response-minutes 15
+            --context-objective-minutes 60
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v18_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/context-only-$name" "${common[@]}" \
+              --disable-immediate --disable-wm --disable-predictive \
+              --disable-accepted-break --disable-trendline
+            python research/candidate-easychart/screen_v18_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/integrated-$name" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          diag-2026-02-02:2026-02-02:2026-02-08
+          EOF
+
+      - name: Expand only if a complete context option exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          complete=$(python - <<'PY'
+          from pathlib import Path
+          import json
+          total = 0
+          for path in Path("artifacts/candidate-easychart-v18-context").glob("context-only-*/metrics.json"):
+              metrics = json.loads(path.read_text())
+              for values in metrics.get("context_diagnostics", {}).values():
+                  total += int(values.get("complete_context_options", 0))
+          print(total)
+          PY
+          )
+          echo "$complete" > "$ROOT/complete_context_options.txt"
+          if [ "$complete" -le 0 ]; then
+            echo "No complete option; retain short diagnostic and improve market representation."
+            exit 0
+          fi
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --start 2024-09-02 --end 2024-09-29
+            --warmup-days 35 --cache "$CACHE" --families "$families"
+            --signal-minutes 5 --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5 --target-dc-atr 1.0
+            --continuation-cap-widths 10.0 --cost-profile role
+            --context-minutes 240 --value-minutes 240,720,1440
+            --context-response-minutes 15 --context-objective-minutes 60
+          )
+          python research/candidate-easychart/screen_v18_integrated.py \
+            --output "$ROOT/context-only-expansion-2024-09" "${common[@]}" \
+            --disable-immediate --disable-wm --disable-predictive \
+            --disable-accepted-break --disable-trendline
+          python research/candidate-easychart/screen_v18_integrated.py \
+            --output "$ROOT/integrated-expansion-2024-09" "${common[@]}"
+
+      - name: Build decision summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("artifacts/candidate-easychart-v18-context")
+          rows = []
+          for path in sorted(root.glob("*/metrics.json")):
+              metrics = json.loads(path.read_text())
+              diagnostics = Counter()
+              for values in metrics.get("context_diagnostics", {}).values():
+                  diagnostics.update({key: int(value) for key, value in values.items()})
+              trades_path = path.parent / "trades.csv"
+              trades = pd.read_csv(trades_path) if trades_path.stat().st_size else pd.DataFrame()
+              family_counts = (
+                  {}
+                  if trades.empty or "family" not in trades.columns
+                  else {str(k): int(v) for k, v in trades["family"].value_counts().items()}
+              )
+              rows.append({
+                  "run": path.parent.name,
+                  "calendar_days": metrics["calendar_days"],
+                  "direct_structure_candidates": metrics["direct_structure_candidates"],
+                  "setups": metrics["setups_generated"],
+                  "trades": metrics["trades"],
+                  "ending_nav": metrics["ending_nav"],
+                  "geometric_daily_growth": metrics["geometric_daily_growth"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "target_gate_passed": metrics["target_gate"]["passed"],
+                  "trade_families": family_counts,
+                  "context_diagnostics": dict(sorted(diagnostics.items())),
+              })
+
+          isolated = [row for row in rows if row["run"].startswith("context-only-")]
+          microscope = [row for row in isolated if "expansion" not in row["run"]]
+          expansion = [row for row in isolated if "expansion" in row["run"]]
+          complete = sum(row["context_diagnostics"].get("complete_context_options", 0) for row in microscope)
+          trades = sum(row["trades"] for row in microscope)
+          diagnostics = Counter()
+          for row in microscope:
+              diagnostics.update(row["context_diagnostics"])
+          if complete > 0 and trades > 0:
+              disposition = "EXECUTABLE_CONTEXT_FAMILY"
+          elif complete > 0:
+              disposition = "ENTRY_REACH_OR_EXPIRY_GEOMETRY"
+          elif diagnostics.get("positioning_segments", 0) == 0:
+              disposition = "MACRO_STATE_REPRESENTATION"
+          elif (
+              diagnostics.get("response_without_active_overlapping_value", 0)
+              + diagnostics.get("response_not_linked_to_value_leg", 0)
+              > 0
+          ):
+              disposition = "VALUE_RESPONSE_CAUSAL_LINK"
+          elif diagnostics.get("missing_active_first_objective", 0) > 0:
+              disposition = "OBJECTIVE_LIFECYCLE"
+          elif diagnostics.get("first_objective_rr_lt_1", 0) > 0:
+              disposition = "FIRST_OBJECTIVE_RR_REJECTION"
+          else:
+              disposition = "UNCLASSIFIED_CONTEXT_REPRESENTATION"
+          summary = {
+              "candidate": "candidate-easychart-v18-context",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "policy_change": "macro positioning persists through local opposite pullbacks; first active HTF value interaction sponsors one lower-TF response entry",
+              "disposition": disposition,
+              "microscope_complete_options": complete,
+              "microscope_completed_trades": trades,
+              "expansion_ran": bool(expansion),
+              "windows": rows,
+              "expansion_positive": bool(expansion) and all(row["geometric_daily_growth"] > 0 for row in expansion),
+              "expansion_meets_target": bool(expansion) and all(row["target_gate_passed"] for row in expansion),
+          }
+          target = root / "cross_window_summary.json"
+          target.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(target.read_text())
+          PY
+
+      - name: Publish compact research memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" \
+            research/candidate-easychart/results/V18_CONTEXT_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V18_CONTEXT_LATEST.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart: record dominant-context diagnostic"
+          git push origin HEAD:research/candidate-easychart
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v18-context-${{ github.sha }}
+          path: artifacts/candidate-easychart-v18-context/**
+          if-no-files-found: warn
+          retention-days: 90
