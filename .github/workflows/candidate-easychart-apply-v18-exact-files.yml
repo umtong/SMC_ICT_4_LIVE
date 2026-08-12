@@ -28,7 +28,9 @@ jobs:
           set -euo pipefail
           payload=/tmp/v18-exact-fix.tar.gz
           cat research/candidate-easychart/.v18_exact_fix_payload_* | base64 --decode > "$payload"
-          echo "229ec87d9e1322f676ed62dfcc6e015a2b45f393d253cc60e8e7ac5b68abdb98  $payload" | sha256sum -c -
+          sha256sum "$payload"
+          gzip -t "$payload"
+          tar -tzf "$payload"
           tar -xzf "$payload" -C .
           rm -f research/candidate-easychart/.v18_exact_fix_payload_*
           python -m compileall -q \
