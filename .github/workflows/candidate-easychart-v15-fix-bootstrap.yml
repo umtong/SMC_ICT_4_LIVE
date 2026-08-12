@@ -1,0 +1,53 @@
+name: candidate-easychart-v15-fix-bootstrap
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/.v15_fix_payload/**"
+      - ".github/workflows/candidate-easychart-v15-fix-bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-easychart-v15-fix-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize semantic-routing and structural-invalidation fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload_dir="research/candidate-easychart/.v15_fix_payload"
+          cat "$payload_dir"/part* | base64 -d > /tmp/easychart-v15-fix.tar.gz
+          mkdir -p /tmp/easychart-v15-fix
+          tar -xzf /tmp/easychart-v15-fix.tar.gz -C /tmp/easychart-v15-fix
+          cp /tmp/easychart-v15-fix/research/candidate-easychart/market_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15-fix/research/candidate-easychart/screen_v15.py research/candidate-easychart/
+          cp /tmp/easychart-v15-fix/research/candidate-easychart/tests/test_market_v15.py research/candidate-easychart/tests/
+          cp /tmp/easychart-v15-fix/research/candidate-easychart/tests/test_screen_v15.py research/candidate-easychart/tests/
+          cp /tmp/easychart-v15-fix/.github/workflows/candidate-easychart-v15.yml .github/workflows/
+          python -m py_compile \
+            research/candidate-easychart/market_v15.py \
+            research/candidate-easychart/screen_v15.py \
+            research/candidate-easychart/tests/test_market_v15.py \
+            research/candidate-easychart/tests/test_screen_v15.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            research/candidate-easychart/market_v15.py \
+            research/candidate-easychart/screen_v15.py \
+            research/candidate-easychart/tests/test_market_v15.py \
+            research/candidate-easychart/tests/test_screen_v15.py \
+            .github/workflows/candidate-easychart-v15.yml
+          git rm -r "$payload_dir" .github/workflows/candidate-easychart-v15-fix-bootstrap.yml
+          git commit -m "candidate-easychart: fix semantic routing and structural invalidation v15"
+          git push origin HEAD:research/candidate-easychart
