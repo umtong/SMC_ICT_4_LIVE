@@ -4,12 +4,15 @@ from __future__ import annotations
 from datetime import date, timedelta
 from hashlib import sha256
 from pathlib import Path
+import random
+import time
+import urllib.error
 import urllib.request
 
 import pandas as pd
 
 # NautilusTrader 1.230.0 maps ``DataFrame.values`` into a writable Cython
-# memoryview.  Pandas copy-on-write exposes that array as read-only, so keep
+# memoryview. Pandas copy-on-write exposes that array as read-only, so keep
 # the documented wrangler input mutable rather than rebuilding Nautilus bars.
 pd.options.mode.copy_on_write = False
 
@@ -33,10 +36,38 @@ def _timestamp_unit(values: pd.Series) -> str:
     return "us" if abs(first) >= 10**15 else "ms"
 
 
-def _download(url: str, path: Path) -> None:
+def _download(url: str, path: Path, attempts: int = 6) -> None:
+    """Download once to a temporary path, retrying only transient failures."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        urllib.request.urlretrieve(url, path)
+    if path.exists() and path.stat().st_size > 0:
+        return
+    temporary = path.with_suffix(path.suffix + ".part")
+    temporary.unlink(missing_ok=True)
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "SMC-ICT-4-LIVE-research/1.0"},
+    )
+    retryable_status = {408, 425, 429, 500, 502, 503, 504}
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as stream:
+                while chunk := response.read(1 << 20):
+                    stream.write(chunk)
+            if temporary.stat().st_size <= 0:
+                raise RuntimeError(f"empty download from {url}")
+            temporary.replace(path)
+            return
+        except urllib.error.HTTPError as exc:
+            temporary.unlink(missing_ok=True)
+            if exc.code not in retryable_status or attempt == attempts:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            temporary.unlink(missing_ok=True)
+            if attempt == attempts:
+                raise
+        delay = min(30.0, 2.0 ** (attempt - 1)) + random.uniform(0.0, 0.5)
+        time.sleep(delay)
+    raise RuntimeError(f"unreachable download failure for {url}")
 
 
 def load_day(symbol: str, day: date, cache: Path) -> pd.DataFrame:
@@ -50,6 +81,7 @@ def load_day(symbol: str, day: date, cache: Path) -> pd.DataFrame:
     expected = checksum.read_text(encoding="utf-8").strip().split()[0].lower()
     actual = sha256_file(archive)
     if actual != expected:
+        archive.unlink(missing_ok=True)
         raise RuntimeError(f"checksum mismatch {archive}: {actual} != {expected}")
     raw = pd.read_csv(archive, compression="zip", header=None)
     if raw.shape[1] != len(COLUMNS):
@@ -79,7 +111,7 @@ def load_range(symbol: str, start: date, end: date, cache: Path) -> pd.DataFrame
         raise RuntimeError(f"duplicate one-minute bars for {symbol}")
     expected_days = (end - start).days + 1
     if len(frame) < expected_days * 1430:
-        raise RuntimeError(b"incomplete one-minute data for {symbol}: {len(frame)}")
+        raise RuntimeError(f"incomplete one-minute data for {symbol}: {len(frame)}")
     return frame
 
 
