@@ -1,0 +1,102 @@
+"""Run the EasyChart MTF overlap scenario through one continuous account."""
+from __future__ import annotations
+
+import argparse
+from datetime import date, timedelta
+import json
+from pathlib import Path
+
+import pandas as pd
+
+from backtest_support import make_engine
+from instruments import CONTRACTS, make_instrument
+from mtf_backtest_support import preserve_mtf_results
+from mtf_data import add_symbol_mtf_data
+from mtf_strategy import EasyChartMTFConfig, EasyChartMTFStrategy
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=date.fromisoformat, required=True)
+    parser.add_argument("--end", type=date.fromisoformat, required=True)
+    parser.add_argument("--warmup-days", type=int, default=30)
+    parser.add_argument("--symbols", nargs="+", default=list(CONTRACTS))
+    parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--min-gross-rr", type=float, default=1.0)
+    parser.add_argument("--entry-slippage-ticks", type=int, default=2)
+    parser.add_argument("--stop-slippage-ticks", type=int, default=2)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.end < args.start:
+        raise SystemExit("--end must be >= --start")
+    if args.warmup_days < 1:
+        raise SystemExit("--warmup-days must be positive")
+    if args.min_gross_rr <= 0.0:
+        raise SystemExit("--min-gross-rr must be positive")
+    if args.entry_slippage_ticks < 0 or args.stop_slippage_ticks < 0:
+        raise SystemExit("slippage ticks cannot be negative")
+    symbols = tuple(args.symbols)
+    unknown = sorted(set(symbols) - set(CONTRACTS))
+    if unknown:
+        raise SystemExit(f"unknown symbols: {unknown}")
+    args.output.mkdir(parents=True, exist_ok=True)
+    args.cache.mkdir(parents=True, exist_ok=True)
+
+    engine = make_engine()
+    instruments = [make_instrument(symbol) for symbol in symbols]
+    source_types = []
+    trigger_types = []
+    decision_types = []
+    higher_types = []
+    load_start = args.start - timedelta(days=args.warmup_days)
+    for symbol, instrument in zip(symbols, instruments, strict=True):
+        engine.add_instrument(instrument)
+        source_type, trigger_type, decision_type, higher_type = add_symbol_mtf_data(
+            engine,
+            symbol,
+            instrument,
+            load_start,
+            args.end,
+            args.cache,
+        )
+        source_types.append(source_type)
+        trigger_types.append(trigger_type)
+        decision_types.append(decision_type)
+        higher_types.append(higher_type)
+    engine.sort_data()
+
+    strategy = EasyChartMTFStrategy(
+        EasyChartMTFConfig(
+            instrument_ids=tuple(item.id for item in instruments),
+            higher_bar_types=tuple(higher_types),
+            decision_bar_types=tuple(decision_types),
+            trigger_bar_types=tuple(trigger_types),
+            execution_bar_types=tuple(source_types),
+            min_gross_rr=args.min_gross_rr,
+            estimated_entry_slippage_ticks=args.entry_slippage_ticks,
+            estimated_stop_slippage_ticks=args.stop_slippage_ticks,
+            trading_start_ns=int(pd.Timestamp(args.start, tz="UTC").value),
+        ),
+    )
+    engine.add_strategy(strategy)
+    try:
+        engine.run()
+        metrics = preserve_mtf_results(
+            engine,
+            strategy,
+            args.output,
+            symbols=symbols,
+            start=args.start,
+            end=args.end,
+        )
+        print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
+    finally:
+        engine.dispose()
+
+
+if __name__ == "__main__":
+    main()
