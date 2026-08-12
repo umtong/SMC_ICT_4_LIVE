@@ -2,8 +2,8 @@
 
 Execution management is fixed: one full entry, one full stop, one full target,
 three-percent account risk, no daily governor, no time exit, and no trade-count
-limit.  The selected signal policy requires a distinct departure from a
-structure or footprint before its first later return can be called a retest.
+limit.  A retest requires a distinct departure and first later return, while
+60m structure supplies the directional role for 5m acceptance/retest entries.
 """
 from __future__ import annotations
 
@@ -21,9 +21,11 @@ from mtf_backtest_support_v5 import preserve_mtf_results_v5
 from mtf_data import add_symbol_mtf_data
 import mtf_strategy as _base_strategy
 from mtf_strategy_v5 import EasyChartMTFConfig, EasyChartMTFStrategy
-from scenario_close_detached_v14 import (
-    CLOSE_DETACHED_RETEST_RULE,
-    MicroCloseDetachedRetestBundleV14,
+from scenario_close_detached_v14 import CLOSE_DETACHED_RETEST_RULE
+from scenario_higher_timeframe_v15 import (
+    HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
+    HIGHER_TIMEFRAME_STATE_TRANSLATION,
+    HigherTimeframeAcceptanceBundleV15,
 )
 from simple_contract_v14 import (
     FIXED_RISK_FRACTION,
@@ -64,7 +66,7 @@ def main() -> None:
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
 
-    _base_strategy.MultiScaleScenarioBundle = MicroCloseDetachedRetestBundleV14
+    _base_strategy.MultiScaleScenarioBundle = HigherTimeframeAcceptanceBundleV15
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -118,40 +120,27 @@ def main() -> None:
             start=args.start,
             end=args.end,
         )
-        metrics.update(
-            {
-                "candidate": "candidate-easychart-v14-simple-contract",
-                "scale_policy": "micro_only",
-                "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
-                "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
-                "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
-                "fee_profile": profile.name,
-                "maker_fee_rate": float(profile.maker_rate),
-                "taker_fee_rate": float(profile.taker_rate),
-                "fee_profile_provenance": profile.provenance,
-                "strategy_exit_policy": "PREDECLARED_NATIVE_FULL_STOP_OR_FULL_TARGET",
-                **contract_record(),
-            },
-        )
+        policy = {
+            "candidate": "candidate-easychart-v15-higher-timeframe-roles",
+            "scale_policy": "60m_context__15m_5m_1m_execution",
+            "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
+            "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
+            "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
+            "higher_timeframe_acceptance_rule": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
+            "higher_timeframe_state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
+            "fee_profile": profile.name,
+            "maker_fee_rate": float(profile.maker_rate),
+            "taker_fee_rate": float(profile.taker_rate),
+            "fee_profile_provenance": profile.provenance,
+            "strategy_exit_policy": "PREDECLARED_NATIVE_FULL_STOP_OR_FULL_TARGET",
+            **contract_record(),
+        }
+        metrics.update(policy)
         write_json(args.output / "metrics.json", metrics)
 
         run_path = args.output / "run.json"
         run_record = json.loads(run_path.read_text(encoding="utf-8"))
-        run_record.update(
-            {
-                "candidate": "candidate-easychart-v14-simple-contract",
-                "scale_policy": "micro_only",
-                "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
-                "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
-                "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
-                "fee_profile": profile.name,
-                "maker_fee_rate": float(profile.maker_rate),
-                "taker_fee_rate": float(profile.taker_rate),
-                "fee_profile_provenance": profile.provenance,
-                "strategy_exit_policy": "PREDECLARED_NATIVE_FULL_STOP_OR_FULL_TARGET",
-                **contract_record(),
-            },
-        )
+        run_record.update(policy)
         write_json(run_path, run_record)
         print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
     finally:
