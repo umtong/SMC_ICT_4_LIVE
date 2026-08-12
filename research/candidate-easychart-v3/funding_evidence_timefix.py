@@ -7,21 +7,23 @@ import funding_evidence_v2 as _funding
 
 
 def _as_ns(values: pd.Series, name: str) -> pd.Series:
-    """Return integer nanoseconds regardless of pandas' internal datetime unit.
+    """Return integer nanoseconds with the trade audit's exact row index.
 
     Pandas may store parsed timestamps as ``datetime64[us, UTC]``. Casting that
     array to ``int64`` then returns microseconds, while Nautilus event times are
-    nanoseconds. ``Timestamp.value`` is explicitly nanoseconds and therefore
-    preserves the time-unit contract across pandas versions.
+    nanoseconds. Constructing an explicit Series from ``Timestamp.value`` both
+    fixes the unit and prevents pandas from substituting a datetime dtype or a
+    different index during ``map`` inference.
     """
     parsed = pd.to_datetime(values, utc=True, errors="coerce")
     if parsed.isna().any():
         bad = values[parsed.isna()].astype(str).tolist()
         raise RuntimeError(f"invalid {name} timestamps in trade audit: {bad}")
-    return parsed.map(lambda item: int(item.value)).astype("int64")
+    return pd.Series(
+        [int(pd.Timestamp(item).value) for item in parsed.tolist()],
+        index=values.index,
+        dtype="int64",
+    )
 
 
-# Preserve one implementation of the funding ledger join while repairing the
-# environment-specific timestamp conversion before either tests or the runner
-# call it. This can be folded into the base module after the current diagnostic.
 _funding._as_ns = _as_ns
