@@ -10,15 +10,18 @@ class ScenarioContextMixin:
     @staticmethod
     def _side_for_zone(zone: StructureZone) -> Side:
         return Side.LONG if zone.side is ZoneSide.SUPPORT else Side.SHORT
+
     @staticmethod
     def _touches(bar: Candle, zone: StructureZone) -> bool:
         return bar.low <= zone.upper and bar.high >= zone.lower
+
     def _projected_members(
         self,
         setup: ScenarioSetup,
         time_ns: int,
     ) -> tuple[StructureZone, ...]:
         return tuple(self.structure.snapshot_for(member, time_ns) for member in setup.context_members)
+
     def _projected_bounds(
         self,
         setup: ScenarioSetup,
@@ -26,6 +29,7 @@ class ScenarioContextMixin:
     ) -> tuple[tuple[StructureZone, ...], float, float]:
         members = self._projected_members(setup, time_ns)
         return members, min(item.lower for item in members), max(item.upper for item in members)
+
     def _cluster(self, zones: list[StructureZone]) -> list[tuple[StructureZone, ...]]:
         if not zones:
             return []
@@ -43,6 +47,7 @@ class ScenarioContextMixin:
             else:
                 output.append([zone])
         return [tuple(group) for group in output]
+
     @staticmethod
     def _family_priority(zone: StructureZone) -> int:
         return {
@@ -50,6 +55,7 @@ class ScenarioContextMixin:
             StructureFamily.TREND_LINE: 2,
             StructureFamily.HORIZONTAL: 1,
         }[zone.family]
+
     def _primary(self, members: tuple[StructureZone, ...]) -> StructureZone:
         return max(
             members,
@@ -60,6 +66,7 @@ class ScenarioContextMixin:
                 item.zone_id,
             ),
         )
+
     def _selected_clusters(
         self,
         bar: Candle,
@@ -98,6 +105,7 @@ class ScenarioContextMixin:
             )
             return []
         return selected
+
     def _channel_target(
         self,
         context: StructureZone,
@@ -113,6 +121,7 @@ class ScenarioContextMixin:
         target = self.structure.channel_edge_snapshot(channel, edge, time_ns)
         price = channel.upper_at(time_ns) if side is Side.LONG else channel.lower_at(time_ns)
         return target, price, channel.channel_id, channel.mid_at(time_ns)
+
     def _select_target(
         self,
         context: StructureZone,
@@ -136,6 +145,7 @@ class ScenarioContextMixin:
             return None
         zone, price = target
         return zone, price, None, None
+
     def _create_setup(
         self,
         *,
@@ -230,6 +240,10 @@ class ScenarioContextMixin:
             self._inc("acceptance_no_causal_origin")
             self._trace("acceptance_no_causal_origin", bar.ts_close_ns, setup)
             return None
+        confirmed_states = {
+            SetupState.WAITING_DISPLACEMENT,
+            SetupState.WAITING_REJECTION_RETEST,
+        }
         setup = ScenarioSetup(
             setup_id=f"{episode_id}:{path.value}",
             scale_name=self.scale_name,
@@ -244,7 +258,7 @@ class ScenarioContextMixin:
             interaction_extreme=bar.low if side is Side.LONG else bar.high,
             target_zone=target_zone,
             target_price=target_price,
-            confirmation_time_ns=(bar.ts_close_ns if state is SetupState.WAITING_DISPLACEMENT else None),
+            confirmation_time_ns=(bar.ts_close_ns if state in confirmed_states else None),
             acceptance_break_index=(decision_index if path is ScenarioPath.ACCEPTANCE else None),
             acceptance_origin=origin,
             channel_id=channel_id,
@@ -267,6 +281,7 @@ class ScenarioContextMixin:
             target_price=target_price,
         )
         return setup
+
     def _discover_interactions(self, bar: Candle, previous: Candle, index: int) -> None:
         for context, members, previous_zone in self._selected_clusters(bar, previous):
             side = self._side_for_zone(context)
@@ -290,7 +305,7 @@ class ScenarioContextMixin:
                     members=members,
                     bar=bar,
                     decision_index=index,
-                    state=SetupState.WAITING_DISPLACEMENT,
+                    state=SetupState.WAITING_REJECTION_RETEST,
                 )
                 continue
             if breached and outside_close and previous_inside:
