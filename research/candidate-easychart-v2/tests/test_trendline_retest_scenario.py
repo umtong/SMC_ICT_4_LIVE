@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 
 from domain import Candle, Side
+from easychart_zones import PriceZone, ZoneKind, ZoneSide
 from trendline_retest_scenario import (
+    RetestConfirmationKind,
     TrendlineFirstRetestScenarioEngine,
     TrendlineRetestState,
 )
@@ -43,7 +45,33 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
             self.bar(6, 10.0, 10.2, 9.8, 10.0),
         ]
 
-    def test_break_first_retest_and_later_ob_create_one_complete_plan(self) -> None:
+    def seed_preexisting_support_ob(self, engine: TrendlineFirstRetestScenarioEngine) -> None:
+        # This old body zone lies exactly at the projected first retest but is
+        # not touched by the breakout bar. Its modest 1.2x ratio is intentional:
+        # case 02 used a pre-existing OB as location, whereas the source's 2x
+        # language is an extra reliability cue for a newly formed trigger.
+        engine.zone_detector.zones.append(
+            PriceZone(
+                zone_id="old-support-ob",
+                kind=ZoneKind.ORDER_BLOCK,
+                side=ZoneSide.SUPPORT,
+                timeframe_minutes=5,
+                lower=9.6,
+                upper=9.8,
+                invalidation=9.4,
+                impulse_extreme=10.4,
+                formed_index=4,
+                formed_time_ns=self.bar(3, 0, 0, 0, 0).ts_close_ns,
+                observed_time_ns=self.bar(4, 0, 0, 0, 0).ts_close_ns,
+                formation_indices=(3, 4),
+                strength_ratio=1.2,
+                source_body_lower=9.6,
+                source_body_upper=9.8,
+                source_body_to_average_range=0.2,
+            ),
+        )
+
+    def test_break_first_retest_and_new_ob_create_one_complete_plan(self) -> None:
         engine = self.engine()
         for bar in self.pre_break_bars():
             self.assertEqual(engine.on_bar(bar), [])
@@ -66,6 +94,11 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         plan = plans[0]
         self.assertIs(plan.side, Side.LONG)
         self.assertEqual(plan.family, "TRENDLINE_BREAK_FIRST_RETEST_OB")
+        self.assertEqual(plan.timeframe_minutes, 5)
+        self.assertIs(
+            plan.confirmation_kind,
+            RetestConfirmationKind.OB_FORMED_DURING_RETEST,
+        )
         self.assertAlmostEqual(plan.entry, 10.5)
         self.assertAlmostEqual(plan.stop, 9.4)
         self.assertAlmostEqual(plan.target, 11.8)
@@ -75,6 +108,46 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         self.assertLess(plan.break_time_ns, plan.retest_time_ns)
         self.assertLessEqual(plan.retest_time_ns, plan.observed_time_ns)
         self.assertIs(engine.setups[0].state, TrendlineRetestState.PLANNED)
+
+    def test_preexisting_ob_first_touched_at_retest_confirms_immediately(self) -> None:
+        engine = self.engine()
+        for bar in self.pre_break_bars():
+            engine.on_bar(bar)
+        self.seed_preexisting_support_ob(engine)
+
+        engine.on_bar(self.bar(7, 10.0, 11.8, 9.9, 11.2))
+        plans = engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9))
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        self.assertIs(
+            plan.confirmation_kind,
+            RetestConfirmationKind.PREEXISTING_OB_AT_FIRST_RETEST,
+        )
+        self.assertEqual(plan.trigger_zone_id, "old-support-ob")
+        self.assertAlmostEqual(plan.entry, 9.9)
+        self.assertAlmostEqual(plan.stop, 9.4)
+        self.assertAlmostEqual(plan.target, 11.8)
+        self.assertLess(plan.trigger_strength_ratio, 2.0)
+        self.assertEqual(
+            engine.zone_detector.zones[-1].first_touch_index,
+            8,
+        )
+
+    def test_old_ob_touched_before_retest_cannot_be_relabelled_as_fresh_confluence(self) -> None:
+        engine = self.engine()
+        for bar in self.pre_break_bars():
+            engine.on_bar(bar)
+        self.seed_preexisting_support_ob(engine)
+        engine.zone_detector.zones[-1].first_touch_index = 6
+        engine.zone_detector.zones[-1].first_touch_time_ns = self.bar(6, 0, 0, 0, 0).ts_close_ns
+
+        engine.on_bar(self.bar(7, 10.0, 11.8, 9.9, 11.2))
+        plans = engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9))
+        self.assertEqual(plans, [])
+        self.assertIs(
+            engine.setups[0].state,
+            TrendlineRetestState.WAITING_CONFIRMATION,
+        )
 
     def test_sweep_is_not_a_universal_prerequisite_for_this_family(self) -> None:
         engine = self.engine()
@@ -87,18 +160,12 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         for bar in bars:
             plans.extend(engine.on_bar(bar))
         self.assertEqual(len(plans), 1)
-        # The engine has no mandatory local-sweep state; its causal lineage is
-        # trendline break -> first retest -> OB confirmation.
         self.assertNotIn("sweep", plans[0].causal_event_id.lower())
 
     def test_nearest_low_rr_objective_blocks_skipping_to_farther_high(self) -> None:
         engine = self.engine()
         for bar in self.pre_break_bars():
             engine.on_bar(bar)
-        # The close breaks the trendline and trades through the old 11.0 high.
-        # The new 11.0 impulse high is causally known before entry but offers
-        # less than 1R. The fixed contract rejects the trade instead of choosing
-        # the farther 12.0 high to manufacture acceptable RR.
         engine.on_bar(self.bar(7, 10.0, 11.0, 9.9, 10.9))
         engine.on_bar(self.bar(8, 10.2, 10.3, 9.6, 9.9))
         plans = engine.on_bar(self.bar(9, 9.8, 10.6, 9.5, 10.5))
@@ -106,7 +173,7 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
         self.assertIs(engine.setups[0].state, TrendlineRetestState.RR_BELOW_MINIMUM)
         self.assertEqual(engine.diagnostics.get("trigger_rr_below_minimum"), 1)
 
-    def test_weak_engulfing_at_retest_is_not_relabelled_as_strong_ob(self) -> None:
+    def test_weak_new_engulfing_is_not_relabelled_as_strong_ob(self) -> None:
         engine = self.engine()
         for bar in self.pre_break_bars():
             engine.on_bar(bar)
@@ -120,8 +187,6 @@ class TrendlineFirstRetestScenarioEngineTest(unittest.TestCase):
             engine.setups[0].state,
             TrendlineRetestState.WAITING_CONFIRMATION,
         )
-        # Once price leaves the first-retest episode without confirmation, a
-        # prettier OB days later cannot retroactively become the same trade.
         engine.on_bar(self.bar(10, 10.3, 10.9, 10.2, 10.8))
         self.assertIs(
             engine.setups[0].state,
