@@ -7,6 +7,8 @@ on:
       - "research/candidate-easychart/screen_v14.py"
       - "research/candidate-easychart/market_v12.py"
       - "research/candidate-easychart/screen_v13.py"
+      - "research/candidate-easychart/trade_semantic_audit_safe.py"
+      - "research/candidate-easychart/compare_v14.py"
       - "research/candidate-easychart/EXPERIMENT_COVERAGE.json"
       - ".github/workflows/candidate-easychart-v14.yml"
   workflow_dispatch:
@@ -51,45 +53,14 @@ jobs:
           common=(--start 2024-02-19 --end 2024-02-25 --warmup-days 5 --cache "$CACHE" --signal-minutes 5 --accepted-break-widths 1.0 --cost-profile role --disable-fakeout --families "$leader" --cross-state isolated)
           python research/candidate-easychart/screen_v10.py "${common[@]}" --output "$ROOT/v10-generic"
           python research/candidate-easychart/screen_v14.py "${common[@]}" --output "$ROOT/v14-integrated"
-          python research/candidate-easychart/trade_semantic_audit.py --run-dir "$ROOT/v10-generic" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v10" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
-          python research/candidate-easychart/trade_semantic_audit.py --run-dir "$ROOT/v14-integrated" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v14" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+          python research/candidate-easychart/trade_semantic_audit_safe.py --run-dir "$ROOT/v10-generic" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v10" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
+          python research/candidate-easychart/trade_semantic_audit_safe.py --run-dir "$ROOT/v14-integrated" --start 2024-02-19 --end 2024-02-25 --cache "$CACHE" --output "$ROOT/audit-v14" --coverage research/candidate-easychart/EXPERIMENT_COVERAGE.json
       - name: Compare opportunity survival and concentration
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          import pandas as pd
-
-          root = Path("artifacts/candidate-easychart-v14")
-          variants = {}
-          for name in ("v10-generic", "v14-integrated"):
-              metrics = json.loads((root / name / "metrics.json").read_text())
-              setups = pd.read_csv(root / name / "setups.csv")
-              trades = pd.read_csv(root / name / "trades.csv")
-              by_symbol = trades.groupby("symbol")["net_pnl"].agg(["count", "sum"]).to_dict("index") if not trades.empty else {}
-              variants[name] = {
-                  "metrics": {key: metrics.get(key) for key in ("trades", "ending_nav", "geometric_daily_growth", "profit_factor", "win_rate", "max_drawdown")},
-                  "setups": len(setups),
-                  "trades": len(trades),
-                  "by_symbol": by_symbol,
-                  "families": sorted(set(trades.get("family", pd.Series(dtype=str)).astype(str))),
-                  "source_pool_ids": sorted(set(setups.get("source_pool_id", pd.Series(dtype=str)).astype(str))),
-                  "largest_trade_net_pnl": float(trades["net_pnl"].max()) if not trades.empty else None,
-                  "total_net_pnl": float(trades["net_pnl"].sum()) if not trades.empty else 0.0,
-              }
-          generic = set(variants["v10-generic"]["source_pool_ids"])
-          integrated = set(variants["v14-integrated"]["source_pool_ids"])
-          output = {
-              "variants": variants,
-              "setup_source_pool_overlap": sorted(generic & integrated),
-              "generic_only_source_pools": sorted(generic - integrated),
-              "integrated_only_source_pools": sorted(integrated - generic),
-          }
-          (root / "comparison.json").write_text(json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n")
-          print(json.dumps(output, indent=2, sort_keys=True, allow_nan=False))
-          PY
+          python research/candidate-easychart/compare_v14.py \
+            --root "$ROOT" --output "$ROOT/comparison.json"
       - name: Verify evidence
         shell: bash
         run: |
@@ -101,8 +72,11 @@ jobs:
             test -e "$ROOT/$variant/setups.csv"
             test -e "$ROOT/$variant/trades.csv"
           done
+          test -s "$ROOT/v14-integrated/target_router_audit.csv"
+          test -s "$ROOT/v14-integrated/target_router_audit.jsonl"
           for audit in audit-v10 audit-v14; do
             test -s "$ROOT/$audit/audit_summary.json"
+            test -s "$ROOT/$audit/setup_semantic_audit.csv"
             test -s "$ROOT/$audit/trade_path_audit.csv"
           done
       - uses: actions/upload-artifact@v4
