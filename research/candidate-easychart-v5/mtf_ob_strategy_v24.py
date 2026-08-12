@@ -1,19 +1,19 @@
-"""Nautilus binding for the source-case MTF order-block scenario.
+"""Nautilus binding for the direct 15m/5m order-block overlap scenario.
 
-The existing v3 NautilusTrader order, fill, position and NAV implementation is
-reused unchanged.  This wrapper changes only the decision bundle and removes
-the old preference for mixed indicator-kind diversity.
+The audited v3 NautilusTrader order, fill, position and NAV implementation is
+reused unchanged. This wrapper changes only the decision bundle and routes
+simultaneous plans by causal time rather than indicator counts.
 """
 from __future__ import annotations
 
 from nautilus_trader.model.identifiers import InstrumentId
 
 import mtf_strategy as _base
+from direct_mtf_ob_v25 import DirectMTFOrderBlockBundleV25
 from easychart_mtf_scenario import MTFTradePlan
-from mtf_ob_v24 import SourceMTFOrderBlockBundleV24
 
 
-_base.MultiScaleScenarioBundle = SourceMTFOrderBlockBundleV24
+_base.MultiScaleScenarioBundle = DirectMTFOrderBlockBundleV25
 EasyChartMTFConfig = _base.EasyChartMTFConfig
 
 
