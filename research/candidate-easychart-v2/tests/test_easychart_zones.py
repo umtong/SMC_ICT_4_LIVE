@@ -21,6 +21,7 @@ class EasyChartZoneDetectorTest(unittest.TestCase):
         self.assertEqual((zone.lower, zone.upper), (98.0, 100.0))
         self.assertEqual(zone.invalidation, 95.9)
         self.assertEqual(zone.formed_index, 1)
+        self.assertEqual(zone.formation_indices, (0, 1))
         self.assertEqual(zone.observed_time_ns, self.bar(2, 97.0, 103.0, 96.0, 102.0).ts_close_ns)
         self.assertTrue(zone.high_quality_by_size)
 
@@ -32,6 +33,34 @@ class EasyChartZoneDetectorTest(unittest.TestCase):
         self.assertIs(zone.side, ZoneSide.RESISTANCE)
         self.assertEqual((zone.lower, zone.upper), (100.0, 102.0))
         self.assertAlmostEqual(zone.invalidation, 104.01)
+
+    def test_bullish_three_candle_double_engulf_uses_middle_body_and_all_wicks(self) -> None:
+        detector = EasyChartZoneDetector("BTCUSDT", 5, 0.1)
+        # bullish -> bearish which engulfs it -> large bullish which engulfs the bearish
+        detector.on_bar(self.bar(1, 100.0, 102.0, 99.5, 101.0))
+        detector.on_bar(self.bar(2, 101.5, 102.5, 98.5, 99.5))
+        created = detector.on_bar(self.bar(3, 99.0, 104.0, 98.0, 103.5))
+        order_blocks = [zone for zone in created if zone.kind is ZoneKind.ORDER_BLOCK]
+        self.assertEqual(len(order_blocks), 1)
+        zone = order_blocks[0]
+        self.assertIs(zone.side, ZoneSide.SUPPORT)
+        self.assertEqual(zone.formation_indices, (0, 1, 2))
+        self.assertEqual((zone.lower, zone.upper), (99.5, 101.5))
+        self.assertAlmostEqual(zone.invalidation, 97.9)
+        self.assertEqual(detector.diagnostics.get("order_block_three_candle_detected"), 1)
+        # The final pair also engulfs, but one visual formation remains one zone.
+        self.assertEqual(detector.diagnostics.get("order_block_two_candle_detected", 0), 0)
+
+    def test_bearish_three_candle_double_engulf_uses_middle_body_and_all_wicks(self) -> None:
+        detector = EasyChartZoneDetector("ETHUSDT", 5, 0.01)
+        detector.on_bar(self.bar(1, 101.0, 101.5, 99.0, 100.0))
+        detector.on_bar(self.bar(2, 99.5, 102.5, 98.5, 101.5))
+        created = detector.on_bar(self.bar(3, 102.0, 103.0, 97.0, 98.0))
+        zone = next(zone for zone in created if zone.kind is ZoneKind.ORDER_BLOCK)
+        self.assertIs(zone.side, ZoneSide.RESISTANCE)
+        self.assertEqual(zone.formation_indices, (0, 1, 2))
+        self.assertEqual((zone.lower, zone.upper), (99.5, 101.5))
+        self.assertAlmostEqual(zone.invalidation, 103.01)
 
     def test_order_block_formation_candle_does_not_mitigate_itself(self) -> None:
         detector = EasyChartZoneDetector("BTCUSDT", 15, 0.1)
