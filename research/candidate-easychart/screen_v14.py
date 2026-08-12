@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 import screen_v10 as _base
 from market_v12 import EasyChartWMTrapEngine
 
@@ -19,7 +21,7 @@ from market_v12 import EasyChartWMTrapEngine
 # The source interaction is selected before importing v13, whose router wraps
 # the existing v10 cross-sectional policy with the first-objective policy.
 _base.EasyChartSessionTrapEngine = EasyChartWMTrapEngine
-import screen_v13 as _target_router  # noqa: E402,F401
+import screen_v13 as _target_router  # noqa: E402
 
 _ORIGINAL_RUN = _base.run
 
@@ -37,6 +39,15 @@ def run(args):
         json.dumps(metrics, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+    audit_rows = list(_target_router.LAST_TARGET_AUDIT_ROWS)
+    pd.DataFrame(audit_rows).to_csv(output / "target_router_audit.csv", index=False)
+    (output / "target_router_audit.jsonl").write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, default=str) + "\n"
+            for row in audit_rows
+        ),
+        encoding="utf-8",
+    )
     run_document = json.loads((output / "run.json").read_text(encoding="utf-8"))
     run_document["candidate"] = "candidate-easychart-v14"
     run_document["engine"] = "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE_V14"
@@ -45,6 +56,7 @@ def run(args):
         "screen_v10.cross_sectional_router",
         "screen_v13.first_directional_objective",
     ]
+    run_document["target_router_audit_rows"] = len(audit_rows)
     (output / "run.json").write_text(
         json.dumps(run_document, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
