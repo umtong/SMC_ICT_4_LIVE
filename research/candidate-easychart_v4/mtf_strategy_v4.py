@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 import mtf_strategy as _base
-from scenario_runtime_v4 import ResearchScenarioBundleV4
+from scenario_runtime_v4_refined import ResearchScenarioBundleV4
 
 _base.MultiScaleScenarioBundle = ResearchScenarioBundleV4
 EasyChartMTFConfig = _base.EasyChartMTFConfig
