@@ -1,6 +1,6 @@
 """Source-faithful OB and FVG observations for semantic diagnostics.
 
-These detectors do not trade.  They enumerate what the EasyChart PDFs and VTT
+These detectors do not trade. They enumerate what the EasyChart PDFs and VTT
 actually describe so an experiment can answer whether it contained the claimed
 institutional footprint.
 
@@ -21,6 +21,11 @@ Fair-value gaps
 * directional middle candle;
 * middle body relative to both neighboring bodies is recorded, with the
   source-suggested 2x threshold exposed separately.
+
+An exact zero-body denominator is represented by ``None`` rather than infinity.
+This matters because the source explicitly exempts pathological/doji OB candles
+from a mechanical ratio rule, and because non-finite values would silently
+corrupt JSON evidence.
 """
 from __future__ import annotations
 
@@ -48,7 +53,7 @@ class SourceOrderBlock:
     formation_high: float
     engulfed_body: float
     engulfing_body: float
-    body_ratio: float
+    body_ratio: float | None
     source_two_x_quality: bool
     exact_doji_exception: bool
     numeric_doji_boundary_status: str
@@ -62,10 +67,11 @@ class SourceOrderBlock:
             self.formation_high,
             self.engulfed_body,
             self.engulfing_body,
-            self.body_ratio,
         )
         if not all(math.isfinite(float(value)) for value in values):
             raise ValueError("order-block values must be finite")
+        if self.body_ratio is not None and not math.isfinite(self.body_ratio):
+            raise ValueError("defined order-block ratio must be finite")
         if self.zone_high < self.zone_low:
             raise ValueError("invalid OB zone")
 
@@ -86,14 +92,32 @@ class SourceFVG:
     middle_body: float
     first_body: float
     third_body: float
-    ratio_to_first: float
-    ratio_to_third: float
-    minimum_neighbor_ratio: float
+    ratio_to_first: float | None
+    ratio_to_third: float | None
+    minimum_neighbor_ratio: float | None
     source_two_x_quality: bool
 
     def __post_init__(self) -> None:
         if not self.zone_high > self.zone_low:
             raise ValueError("FVG must have positive wick gap")
+        for value in (
+            self.zone_low,
+            self.zone_high,
+            self.formation_low,
+            self.formation_high,
+            self.middle_body,
+            self.first_body,
+            self.third_body,
+        ):
+            if not math.isfinite(float(value)):
+                raise ValueError("FVG values must be finite")
+        for ratio in (
+            self.ratio_to_first,
+            self.ratio_to_third,
+            self.minimum_neighbor_ratio,
+        ):
+            if ratio is not None and not math.isfinite(ratio):
+                raise ValueError("defined FVG ratios must be finite")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +152,9 @@ def body_engulfs(outer: Candle, inner: Candle) -> bool:
     )
 
 
-def _safe_ratio(numerator: float, denominator: float) -> float:
+def _safe_ratio(numerator: float, denominator: float) -> float | None:
     if denominator == 0.0:
-        return float("inf") if numerator > 0.0 else 1.0
+        return None
     return numerator / denominator
 
 
@@ -169,7 +193,7 @@ def _order_block(
         engulfed_body=engulfed_body,
         engulfing_body=engulfing_body,
         body_ratio=ratio,
-        source_two_x_quality=ratio >= 2.0,
+        source_two_x_quality=(ratio is not None and ratio >= 2.0),
         exact_doji_exception=engulfed_body == 0.0,
         numeric_doji_boundary_status=(
             "EXACT_DOJI_SOURCE_EXCEPTION"
@@ -268,7 +292,11 @@ def detect_fvgs(
         third_size = body_size(third)
         ratio_first = _safe_ratio(middle_size, first_size)
         ratio_third = _safe_ratio(middle_size, third_size)
-        minimum_ratio = min(ratio_first, ratio_third)
+        minimum_ratio = (
+            min(ratio_first, ratio_third)
+            if ratio_first is not None and ratio_third is not None
+            else None
+        )
         formation = (first, middle, third)
         output.append(
             SourceFVG(
@@ -292,7 +320,7 @@ def detect_fvgs(
                 ratio_to_first=ratio_first,
                 ratio_to_third=ratio_third,
                 minimum_neighbor_ratio=minimum_ratio,
-                source_two_x_quality=minimum_ratio >= 2.0,
+                source_two_x_quality=(minimum_ratio is not None and minimum_ratio >= 2.0),
             ),
         )
     return output
