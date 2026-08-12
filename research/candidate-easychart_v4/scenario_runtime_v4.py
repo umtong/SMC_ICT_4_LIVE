@@ -10,11 +10,13 @@ exact machine translation used here is deliberately visible: the next context
 candle must close beyond the Fakeout candle's opposite extreme before a lower-
 timeframe displacement is allowed to arm a trade.
 
-EasyChart's top-down workflow also requires the higher-timeframe scene to be
-identified before the lower-timeframe entry. Micro plans are therefore routed
-only when their side agrees with the current 1h medium-direction state. This is
-a router, not a score or risk multiplier; unresolved context means no micro
-trade, while the native 1h->5m scenario remains available.
+EasyChart's top-down workflow requires a higher-timeframe reaction or state
+transition before a lower-timeframe entry.  The router therefore follows the
+latest confirmed, still-live 1h structural event rather than the slope of an
+older channel.  The event remains live only until its own structural stop or
+objective is reached.  This is a state router, not a score or risk multiplier;
+unresolved context means no micro trade, while native 1h->5m plans remain
+available.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from typing import Iterable
 from domain import Candle, Side
 from easychart_mtf_scenario import MTFTradePlan
 from easychart_zones import PriceZone
-from market_structure import ChannelDirection, PivotKind, StructurePath
+from market_structure import StructureEvent, StructurePath
 from scenario_bundle_v4 import (
     ResearchScenarioBundleV4 as _BaseResearchScenarioBundleV4,
     StructuralScenarioEngine,
@@ -44,26 +46,190 @@ class CausalStructuralScenarioEngine(StructuralScenarioEngine):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._pending_fakeout_confirmation: dict[str, float] = {}
+        self._active_context_event: StructureEvent | None = None
+        self._active_context_confirmed_time_ns: int | None = None
+        self._active_context_basis = "UNRESOLVED_1H_EVENT_CONTEXT"
+
+    def _context_target(self, event: StructureEvent, ts_ns: int) -> float | None:
+        if event.target_boundary_id is None:
+            return None
+        boundary = self.structure.find_boundary(event.target_boundary_id)
+        return None if boundary is None else boundary.level_at(ts_ns)
+
+    def _clear_context(self, *, time_ns: int, reason: str, **values) -> None:
+        event = self._active_context_event
+        if event is None:
+            return
+        self._inc(reason)
+        self._trace(
+            reason,
+            time_ns,
+            event_id=event.event_id,
+            context_side=event.side.name,
+            context_path=event.path.value,
+            context_structure_kind=event.structure_kind.value,
+            context_stop=event.stop_reference,
+            context_target=self._context_target(event, time_ns),
+            **values,
+        )
+        self._active_context_event = None
+        self._active_context_confirmed_time_ns = None
+        self._active_context_basis = "UNRESOLVED_1H_EVENT_CONTEXT"
+
+    def _activate_context(
+        self,
+        event: StructureEvent,
+        *,
+        confirmed_time_ns: int,
+        reference_price: float,
+        reason: str,
+    ) -> None:
+        target = self._context_target(event, confirmed_time_ns)
+        valid = (
+            target is not None
+            and (
+                event.stop_reference < reference_price < target
+                if event.side is Side.LONG
+                else target < reference_price < event.stop_reference
+            )
+        )
+        if not valid:
+            self._inc("context_event_rejected_invalid_geometry")
+            self._trace(
+                "context_event_rejected_invalid_geometry",
+                confirmed_time_ns,
+                event_id=event.event_id,
+                context_side=event.side.name,
+                context_path=event.path.value,
+                context_structure_kind=event.structure_kind.value,
+                context_stop=event.stop_reference,
+                context_target=target,
+                reference_price=reference_price,
+            )
+            return
+        previous = self._active_context_event
+        if previous is not None and previous.event_id != event.event_id:
+            self._inc("context_event_superseded_by_later_transition")
+            self._trace(
+                "context_event_superseded_by_later_transition",
+                confirmed_time_ns,
+                event_id=previous.event_id,
+                context_side=previous.side.name,
+                replacement_event_id=event.event_id,
+                replacement_side=event.side.name,
+            )
+        self._active_context_event = event
+        self._active_context_confirmed_time_ns = confirmed_time_ns
+        self._active_context_basis = (
+            f"LIVE_1H_EVENT:{event.path.value}:{event.structure_kind.value}:{event.event_id}"
+        )
+        self._inc(reason)
+        self._trace(
+            reason,
+            confirmed_time_ns,
+            event_id=event.event_id,
+            context_side=event.side.name,
+            context_path=event.path.value,
+            context_structure_kind=event.structure_kind.value,
+            context_stop=event.stop_reference,
+            context_target=target,
+            reference_price=reference_price,
+        )
+
+    def _update_context_lifecycle(self, bar: Candle) -> None:
+        event = self._active_context_event
+        confirmed_time = self._active_context_confirmed_time_ns
+        if event is None or confirmed_time is None or bar.ts_close_ns <= confirmed_time:
+            return
+        target = self._context_target(event, bar.ts_close_ns)
+        if target is None:
+            self._clear_context(
+                time_ns=bar.ts_close_ns,
+                reason="context_target_unavailable",
+            )
+            return
+        stop_hit = (
+            bar.low <= event.stop_reference
+            if event.side is Side.LONG
+            else bar.high >= event.stop_reference
+        )
+        target_hit = (
+            bar.high >= target
+            if event.side is Side.LONG
+            else bar.low <= target
+        )
+        if stop_hit and target_hit:
+            self._clear_context(
+                time_ns=bar.ts_close_ns,
+                reason="context_stop_and_target_touched_same_bar",
+                bar_low=bar.low,
+                bar_high=bar.high,
+            )
+        elif stop_hit:
+            self._clear_context(
+                time_ns=bar.ts_close_ns,
+                reason="context_structural_stop_reached",
+                bar_low=bar.low,
+                bar_high=bar.high,
+            )
+        elif target_hit:
+            self._clear_context(
+                time_ns=bar.ts_close_ns,
+                reason="context_structural_target_reached",
+                bar_low=bar.low,
+                bar_high=bar.high,
+            )
+
+    def context_state(self) -> tuple[Side | None, str, StructureEvent | None, int | None]:
+        event = self._active_context_event
+        return (
+            None if event is None else event.side,
+            self._active_context_basis,
+            event,
+            self._active_context_confirmed_time_ns,
+        )
 
     def _create_setups(self, events) -> None:
         events = tuple(events)
         start = len(self.setups)
         super()._create_setups(events)
-        for setup in self.setups[start:]:
-            if (
-                setup.event.path is not StructurePath.FAKEOUT
-                or setup.state is not StructuralSetupState.WAITING_DISPLACEMENT
-            ):
+        new_setups = self.setups[start:]
+        confirmed_non_fakeout = []
+        for setup in new_setups:
+            if setup.state is not StructuralSetupState.WAITING_DISPLACEMENT:
                 continue
-            interaction = self.structure.bars[setup.event.interaction_index]
-            level = interaction.high if setup.event.side is Side.LONG else interaction.low
-            self._pending_fakeout_confirmation[setup.setup_id] = level
-            self._inc("fakeout_reversal_confirmation_required")
-            self._trace(
-                "fakeout_reversal_confirmation_required",
-                setup.event.interaction_time_ns,
-                setup,
-                reversal_confirmation_price=level,
+            if setup.event.path is StructurePath.FAKEOUT:
+                interaction = self.structure.bars[setup.event.interaction_index]
+                level = interaction.high if setup.event.side is Side.LONG else interaction.low
+                self._pending_fakeout_confirmation[setup.setup_id] = level
+                self._inc("fakeout_reversal_confirmation_required")
+                self._trace(
+                    "fakeout_reversal_confirmation_required",
+                    setup.event.interaction_time_ns,
+                    setup,
+                    reversal_confirmation_price=level,
+                )
+            else:
+                confirmed_non_fakeout.append(setup.event)
+
+        sides = {event.side for event in confirmed_non_fakeout}
+        if len(sides) > 1:
+            self._clear_context(
+                time_ns=max(event.interaction_time_ns for event in confirmed_non_fakeout),
+                reason="context_conflicting_events_same_close",
+                conflicting_event_ids=[event.event_id for event in confirmed_non_fakeout],
+            )
+            self._inc("context_conflicting_events_same_close_observed")
+            return
+        if confirmed_non_fakeout:
+            # Detector order is already semantic: channel, then trendline, then
+            # horizontal swing.  One bar/side is one causal episode.
+            event = confirmed_non_fakeout[0]
+            self._activate_context(
+                event,
+                confirmed_time_ns=event.interaction_time_ns,
+                reference_price=event.reference_close,
+                reason="context_structural_event_activated",
             )
 
     def _resolve_fakeout_confirmations(self, bar: Candle) -> None:
@@ -104,6 +270,12 @@ class CausalStructuralScenarioEngine(StructuralScenarioEngine):
                     setup,
                     reversal_confirmation_price=level,
                     confirmation_close=bar.close,
+                )
+                self._activate_context(
+                    setup.event,
+                    confirmed_time_ns=bar.ts_close_ns,
+                    reference_price=bar.close,
+                    reason="context_confirmed_fakeout_activated",
                 )
             else:
                 self._finish(
@@ -213,18 +385,19 @@ class CausalStructuralScenarioEngine(StructuralScenarioEngine):
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[MTFTradePlan]:
         if timeframe_minutes == self.context_minutes:
+            self._update_context_lifecycle(bar)
             self._resolve_fakeout_confirmations(bar)
         return super().on_bar(timeframe_minutes, bar)
 
 
 class ResearchScenarioBundleV4(_BaseResearchScenarioBundleV4):
-    """The same policy at macro and micro scales, with causal top-down routing."""
+    """The same policy at macro and micro scales, with causal event-state routing."""
 
     TOP_DOWN_SOURCE_RULE = "SOURCE_EXPLICIT:HIGHER_TIMEFRAME_CONTEXT_PRECEDES_LOWER_ENTRY"
     TOP_DOWN_TRANSLATION_RULES = (
-        "HUMAN_NATURAL_INFERENCE:LARGEST_ACTIVE_1H_CHANNEL_DEFINES_MEDIUM_DIRECTION",
-        "HUMAN_NATURAL_INFERENCE:WIDEST_CONFIRMED_1H_HH_HL_OR_LH_LL_IS_FALLBACK_DIRECTION",
-        "HUMAN_NATURAL_INFERENCE:UNRESOLVED_HIGHER_CONTEXT_MEANS_NO_MICRO_TRADE",
+        "HUMAN_NATURAL_INFERENCE:LATEST_LIVE_CONFIRMED_1H_STRUCTURAL_EVENT_DEFINES_MEDIUM_STATE",
+        "HUMAN_NATURAL_INFERENCE:1H_CONTEXT_PERSISTS_UNTIL_ITS_STRUCTURAL_STOP_OR_OBJECTIVE",
+        "HUMAN_NATURAL_INFERENCE:UNRESOLVED_HIGHER_EVENT_CONTEXT_MEANS_NO_MICRO_TRADE",
     )
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
@@ -267,50 +440,8 @@ class ResearchScenarioBundleV4(_BaseResearchScenarioBundleV4):
         return {**output, "top_down_router": dict(self._routing_diagnostics)}
 
     def _higher_context_side(self) -> tuple[Side | None, str]:
-        active_channels = [
-            channel
-            for channel in self.macro.structure.channels.values()
-            if channel.active
-        ]
-        if active_channels:
-            channel = max(
-                active_channels,
-                key=lambda item: (
-                    item.pivot_span,
-                    item.observed_time_ns,
-                    item.observed_index,
-                    item.channel_id,
-                ),
-            )
-            side = (
-                Side.LONG
-                if channel.direction is ChannelDirection.ASCENDING
-                else Side.SHORT
-            )
-            return side, f"ACTIVE_1H_CHANNEL:{channel.channel_id}"
-
-        for span in sorted(self.macro.structure.pivot_spans, reverse=True):
-            highs = [
-                pivot
-                for pivot in self.macro.structure.pivots
-                if pivot.span == span and pivot.kind is PivotKind.HIGH
-            ]
-            lows = [
-                pivot
-                for pivot in self.macro.structure.pivots
-                if pivot.span == span and pivot.kind is PivotKind.LOW
-            ]
-            if len(highs) < 2 or len(lows) < 2:
-                continue
-            higher_high = highs[-1].price > highs[-2].price
-            lower_high = highs[-1].price < highs[-2].price
-            higher_low = lows[-1].price > lows[-2].price
-            lower_low = lows[-1].price < lows[-2].price
-            if higher_high and higher_low:
-                return Side.LONG, f"1H_HH_HL:s{span}"
-            if lower_high and lower_low:
-                return Side.SHORT, f"1H_LH_LL:s{span}"
-        return None, "UNRESOLVED_1H_CONTEXT"
+        side, basis, _event, _confirmed_time = self.macro.context_state()
+        return side, basis
 
     def _micro_permission(self, side: Side) -> tuple[bool, Side | None, str]:
         higher_side, basis = self._higher_context_side()
@@ -324,7 +455,7 @@ class ResearchScenarioBundleV4(_BaseResearchScenarioBundleV4):
         self._last_context_key = key
         self._bundle_trace.append(
             {
-                "scenario_kind": "higher_context_state_changed",
+                "scenario_kind": "higher_event_context_state_changed",
                 "event_time_ns": event_time_ns,
                 "scale_name": "ROUTER",
                 "higher_timeframe_minutes": 60,
@@ -341,9 +472,9 @@ class ResearchScenarioBundleV4(_BaseResearchScenarioBundleV4):
             allowed, higher_side, basis = self._micro_permission(plan.side)
             if not allowed:
                 reason = (
-                    "micro_plan_rejected_unresolved_higher_context"
+                    "micro_plan_rejected_unresolved_higher_event_context"
                     if higher_side is None
-                    else "micro_plan_rejected_opposite_higher_context"
+                    else "micro_plan_rejected_opposite_higher_event_context"
                 )
                 self._route_inc(reason)
                 self._bundle_trace.append(
@@ -362,7 +493,7 @@ class ResearchScenarioBundleV4(_BaseResearchScenarioBundleV4):
                     },
                 )
                 continue
-            self._route_inc("micro_plan_aligned_higher_context")
+            self._route_inc("micro_plan_aligned_live_higher_event")
             accepted.append(
                 replace(
                     plan,
