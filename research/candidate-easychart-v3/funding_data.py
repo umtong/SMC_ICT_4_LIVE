@@ -1,4 +1,4 @@
-"""Checksum-verified Binance Vision funding replay through native Nautilus data.
+"""Checksum-verified Binance Vision funding history for Nautilus settlement.
 
 Funding rates and mark prices are both sourced from Binance's public archive:
 
@@ -7,10 +7,10 @@ Funding rates and mark prices are both sourced from Binance's public archive:
 
 The funding archive states the realized rate and its actual interval per row.
 The mark-price one-minute bar which opens exactly at the funding boundary
-provides the price already observable at that instant; no future bar close is
-used.  At a shared timestamp, the source trading bar is replayed first, then the
-mark price, then the funding event.  NautilusTrader owns settlement, position
-adjustment and account accounting.
+provides the price observable at that instant; no future bar close is used.
+The resulting immutable boundaries are consumed by the project's Nautilus
+``SimulationModule`` so the exchange remains responsible for account events
+and continuous NAV.
 """
 from __future__ import annotations
 
@@ -18,14 +18,13 @@ from collections import Counter
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.model.data import FundingRateUpdate, MarkPriceUpdate
-
 from data import COLUMNS as KLINE_COLUMNS
 from data import _download, sha256_file
+from funding_module import HistoricalFundingBoundary
 
 FUNDING_BASE = "https://data.binance.vision/data/futures/um/monthly/fundingRate"
 MARK_BASE = "https://data.binance.vision/data/futures/um/monthly/markPriceKlines"
@@ -188,52 +187,38 @@ def load_funding_history(
     return selected
 
 
-def add_symbol_funding_data(
-    engine: BacktestEngine,
+def build_symbol_funding_boundaries(
     symbol: str,
-    instrument: object,
+    instrument: Any,
     start: date,
     end: date,
     cache: Path,
-) -> dict[str, object]:
-    """Add mark-price and realized funding events to a Nautilus backtest."""
+) -> tuple[list[HistoricalFundingBoundary], dict[str, object]]:
+    """Build immutable realized boundaries and an auditable source summary."""
     rows = load_funding_history(symbol, start, end, cache)
-    marks: list[MarkPriceUpdate] = []
-    funding: list[FundingRateUpdate] = []
     intervals: Counter[int] = Counter()
+    boundaries: list[HistoricalFundingBoundary] = []
     for row in rows:
-        time_ns = int(row["fundingTime"]) * NS_PER_MS
         interval = int(row["intervalMinutes"])
         intervals[interval] += 1
-        marks.append(
-            MarkPriceUpdate(
+        boundaries.append(
+            HistoricalFundingBoundary(
+                symbol=symbol,
                 instrument_id=instrument.id,
-                value=instrument.make_price(row["markPrice"]),
-                ts_event=time_ns,
-                # One-minute source bars at this close run first. The mark open
-                # is observable at the boundary before funding is settled.
-                ts_init=time_ns + 1,
+                funding_time_ns=int(row["fundingTime"]) * NS_PER_MS,
+                interval_minutes=interval,
+                rate=Decimal(row["fundingRate"]),
+                mark_price=Decimal(row["markPrice"]),
             ),
         )
-        funding.append(
-            FundingRateUpdate(
-                instrument_id=instrument.id,
-                rate=row["fundingRate"],
-                ts_event=time_ns,
-                ts_init=time_ns + 2,
-                interval=interval,
-                # Historical rows are realized boundaries, not forecasts.
-                next_funding_ns=time_ns,
-            ),
-        )
-    engine.add_data(marks, sort=False)
-    engine.add_data(funding, sort=False)
-    return {
+    summary = {
         "records": len(rows),
         "first_funding_time_ms": int(rows[0]["fundingTime"]),
         "last_funding_time_ms": int(rows[-1]["fundingTime"]),
         "interval_minutes": dict(sorted(intervals.items())),
-        "rate_sum": str(sum((row["fundingRate"] for row in rows), Decimal("0"))),
+        "rate_sum": str(sum((Decimal(row["fundingRate"]) for row in rows), Decimal("0"))),
         "source": "Binance Vision fundingRate + 1m markPriceKlines",
+        "mark_policy": "same-boundary one-minute mark-price open",
         "checksum_verified": True,
     }
+    return boundaries, summary
