@@ -1,11 +1,20 @@
-"""Event-local footprint confirmation and immutable plan construction for EasyChart v5."""
+"""Event-local confirmation and immutable plan construction for EasyChart v5."""
 from __future__ import annotations
 
 from typing import Any
 
 from domain import Candle, Side
 from easychart_zones import PriceZone, ZoneKind, ZoneSide
-from contracts_v5 import ScenarioPath, ScenarioSetup, SetupState, StructureFamily, V5TradePlan, provenance, SOURCE_RULES
+from contracts_v5 import (
+    ScenarioPath,
+    ScenarioSetup,
+    SetupState,
+    StructureFamily,
+    StructureZone,
+    V5TradePlan,
+    provenance,
+    SOURCE_RULES,
+)
 
 
 class ScenarioExecutionMixin:
@@ -19,6 +28,7 @@ class ScenarioExecutionMixin:
             if formation_bar.low <= upper and formation_bar.high >= lower:
                 return True
         return False
+
     def _select_footprint(self, candidates: list[PriceZone], setup: ScenarioSetup) -> PriceZone | None:
         if not candidates:
             return None
@@ -32,7 +42,16 @@ class ScenarioExecutionMixin:
                 zone.zone_id,
             ),
         )
+
     def _arm_displacements(self, bar: Candle, index: int, created: list[PriceZone]) -> None:
+        """Arm OB/FVG retests for bounce and rotation families only.
+
+        A confirmed fakeout/rejection now waits for the reclaimed structure's
+        own first later retest.  Requiring an additional post-reclaim OB/FVG
+        would duplicate confirmation and can consume the target space.  OB/FVG
+        remains an event-local execution footprint for ordinary bounces and
+        channel rotations.
+        """
         for setup in list(self._active.values()):
             if setup.state is not SetupState.WAITING_DISPLACEMENT:
                 continue
@@ -74,6 +93,7 @@ class ScenarioExecutionMixin:
                 trigger_zone_kind=trigger.kind.value,
                 trigger_strength_ratio=trigger.strength_ratio,
             )
+
     def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
         members, lower, upper = self._projected_bounds(setup, time_ns)
         if any(member.family is StructureFamily.CHANNEL for member in members):
@@ -82,6 +102,7 @@ class ScenarioExecutionMixin:
         if origin is None:
             return None
         return origin.price - self.tick_size if setup.side is Side.LONG else origin.price + self.tick_size
+
     def _make_plan(
         self,
         setup: ScenarioSetup,
@@ -134,13 +155,14 @@ class ScenarioExecutionMixin:
         higher = members[0]
         decision = members[1] if len(members) > 1 else higher
         self.sequence += 1
-        family = (
-            f"{self.scale_name}_CHANNEL_ROTATION_FOOTPRINT_RETEST"
-            if setup.path is ScenarioPath.ROTATION
-            else f"{self.scale_name}_STRUCTURE_ACCEPTANCE_RETEST"
-            if setup.path is ScenarioPath.ACCEPTANCE
-            else f"{self.scale_name}_STRUCTURE_{setup.path.value}_FOOTPRINT_RETEST"
-        )
+        if setup.path is ScenarioPath.ROTATION:
+            family = f"{self.scale_name}_CHANNEL_ROTATION_FOOTPRINT_RETEST"
+        elif setup.path is ScenarioPath.ACCEPTANCE:
+            family = f"{self.scale_name}_STRUCTURE_ACCEPTANCE_RETEST"
+        elif setup.path is ScenarioPath.REJECTION and isinstance(trigger_zone, StructureZone):
+            family = f"{self.scale_name}_STRUCTURE_REJECTION_RETEST"
+        else:
+            family = f"{self.scale_name}_STRUCTURE_{setup.path.value}_FOOTPRINT_RETEST"
         plan = V5TradePlan(
             plan_id=f"ecv5-{self.scale_name.lower()}-{self.symbol}-{self.sequence:08d}",
             causal_event_id=f"{family}:{setup.setup_id}",
@@ -195,6 +217,71 @@ class ScenarioExecutionMixin:
             gross_rr=gross_rr,
         )
         return plan
+
+    def _advance_rejection_retests(self, bar: Candle, index: int) -> list[V5TradePlan]:
+        """Enter a confirmed fakeout on the reclaimed structure's first retest.
+
+        The reclaim close establishes that price rejected the outside auction.
+        The next independently completed trigger bar which revisits the
+        projected structure is the conservative entry opportunity.  It is
+        consumed whether it succeeds or fails; no later prettier retest may be
+        substituted after seeing the outcome.
+        """
+        output: list[V5TradePlan] = []
+        for setup in list(self._active.values()):
+            if setup.state is not SetupState.WAITING_REJECTION_RETEST:
+                continue
+            if setup.confirmation_time_ns is None or bar.ts_close_ns <= setup.confirmation_time_ns:
+                continue
+            if self._target_is_spent(setup, bar):
+                self._finish(setup, SetupState.TARGET_SPENT, bar.ts_close_ns, "target_spent_before_entry")
+                continue
+            if self._extreme_breached(setup, bar):
+                self._finish(
+                    setup,
+                    SetupState.INVALIDATED,
+                    bar.ts_close_ns,
+                    "rejection_extreme_breached_before_retest",
+                )
+                continue
+            projected, lower, upper = self._projected_bounds(setup, bar.ts_close_ns)
+            touched = bar.low <= upper and bar.high >= lower
+            if not touched:
+                continue
+            if setup.first_retest_consumed:
+                raise RuntimeError("first reclaimed-structure retest processed twice")
+            setup.first_retest_consumed = True
+            reacted = bar.close > upper if setup.side is Side.LONG else bar.close < lower
+            if not reacted:
+                self._finish(
+                    setup,
+                    SetupState.UNRESOLVED,
+                    bar.ts_close_ns,
+                    "rejection_first_structure_retest_failed",
+                    projected_lower=lower,
+                    projected_upper=upper,
+                )
+                continue
+            stop = (
+                min(setup.interaction_extreme - self.tick_size, bar.low - self.tick_size)
+                if setup.side is Side.LONG
+                else max(setup.interaction_extreme + self.tick_size, bar.high + self.tick_size)
+            )
+            proxy = self.structure.snapshot_for(setup.context, bar.ts_close_ns)
+            self._audit(proxy)
+            plan = self._make_plan(
+                setup,
+                bar,
+                entry=bar.close,
+                stop=stop,
+                trigger_zone=proxy,
+                trigger_kind=proxy.kind,
+                trigger_strength=proxy.strength_ratio,
+            )
+            if plan is not None:
+                output.append(plan)
+        return output
+
     def _advance_acceptance_retests(self, bar: Candle, index: int) -> list[V5TradePlan]:
         output: list[V5TradePlan] = []
         for setup in list(self._active.values()):
@@ -236,6 +323,7 @@ class ScenarioExecutionMixin:
             if plan is not None:
                 output.append(plan)
         return output
+
     def _advance_footprint_retests(self, bar: Candle, index: int) -> list[V5TradePlan]:
         output: list[V5TradePlan] = []
         for setup in list(self._active.values()):
@@ -305,3 +393,4 @@ class ScenarioExecutionMixin:
             )
             if plan is not None:
                 output.append(plan)
+        return output
