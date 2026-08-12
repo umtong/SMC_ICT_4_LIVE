@@ -7,6 +7,10 @@ on:
       - ".github/workflows/candidate-easychart-fix-v18-slope.yml"
   workflow_dispatch:
 
+concurrency:
+  group: candidate-easychart-fix-v18-slope
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -31,28 +35,9 @@ jobs:
               "from enum import Enum\nimport math\n",
               "from enum import Enum\nfrom fractions import Fraction\nimport math\n",
           )
-          old = '''def feasible_slope_interval(
-              anchors: Sequence[ReactionInterval],
-          ) -> tuple[float, float] | None:
-              if len(anchors) < 2:
-                  return None
-              ordered = sorted(anchors, key=lambda item: item.pivot.event_time_ns)
-              low = -math.inf
-              high = math.inf
-              for i, first in enumerate(ordered):
-                  for second in ordered[i + 1 :]:
-                      elapsed = second.pivot.event_time_ns - first.pivot.event_time_ns
-                      if elapsed <= 0:
-                          return None
-                      pair_low = (second.low - first.high) / elapsed
-                      pair_high = (second.high - first.low) / elapsed
-                      low = max(low, pair_low)
-                      high = min(high, pair_high)
-                      if high + 1e-18 < low:
-                          return None
-              return float(low), float(high)
-          '''
-          new = '''def feasible_slope_interval(
+          start = text.index("def feasible_slope_interval(")
+          end = text.index("\n\ndef _line_direction(", start)
+          replacement = '''def feasible_slope_interval(
               anchors: Sequence[ReactionInterval],
           ) -> tuple[float, float] | None:
               """Return the exact feasible slope projection of all interval anchors.
@@ -86,36 +71,38 @@ jobs:
               assert low is not None and high is not None
               output = float(low), float(high)
               if output[1] < output[0]:
-                  raise AssertionError("exact ordered slope interval became reversed as floats")
+                  raise AssertionError(
+                      "exact ordered slope interval became reversed as floats"
+                  )
               return output
           '''
-          old = "\n".join(line[10:] if line.startswith("          ") else line for line in old.splitlines()) + "\n"
-          new = "\n".join(line[10:] if line.startswith("          ") else line for line in new.splitlines()) + "\n"
-          if old not in text:
-              raise SystemExit("feasible_slope_interval block not found")
-          source.write_text(text.replace(old, new))
+          replacement = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in replacement.splitlines()
+          )
+          source.write_text(text[:start] + replacement + text[end:])
 
           tests = Path("research/candidate-easychart/tests/test_market_v18_trendline.py")
           text = tests.read_text()
-          needle = '''    def test_ambiguous_flat_or_sloped_family_is_not_directional(self) -> None:
-          '''
-          addition = '''    def test_exact_intersection_never_returns_epsilon_reversed_interval(self) -> None:
-              anchors = (
-                  interval(0, 1, "HIGH", -5e-18, 2e-18),
-                  interval(1, 2, "HIGH", -5e-18, -1e-18),
-                  interval(2, 3, "HIGH", 4e-18, 4e-18),
-              )
-              # The former absolute-epsilon intersection returned (5e-18, 4e-18),
-              # which later crashed FeasibleTrendlineVersion. These exact binary
-              # endpoint constraints have an empty intersection and must return None.
-              self.assertIsNone(feasible_slope_interval(anchors))
+          if "test_exact_intersection_never_returns_epsilon_reversed_interval" not in text:
+              needle = "    def test_ambiguous_flat_or_sloped_family_is_not_directional(self) -> None:\n"
+              addition = '''    def test_exact_intersection_never_returns_epsilon_reversed_interval(self) -> None:
+                  anchors = (
+                      interval(0, 1, "HIGH", -5e-18, 2e-18),
+                      interval(1, 2, "HIGH", -5e-18, -1e-18),
+                      interval(2, 3, "HIGH", 4e-18, 4e-18),
+                  )
+                  # The former epsilon intersection returned a reversed interval.
+                  self.assertIsNone(feasible_slope_interval(anchors))
 
-          '''
-          needle = "\n".join(line[10:] if line.startswith("          ") else line for line in needle.splitlines()) + "\n"
-          addition = "\n".join(line[10:] if line.startswith("          ") else line for line in addition.splitlines()) + "\n"
-          if needle not in text:
-              raise SystemExit("test insertion point not found")
-          tests.write_text(text.replace(needle, addition + needle))
+              '''
+              addition = "\n".join(
+                  line[10:] if line.startswith("          ") else line
+                  for line in addition.splitlines()
+              ) + "\n"
+              if needle not in text:
+                  raise SystemExit("test insertion point not found")
+              tests.write_text(text.replace(needle, addition + needle))
           PY
           PYTHONPATH=research/candidate-easychart \
             python -m unittest \
