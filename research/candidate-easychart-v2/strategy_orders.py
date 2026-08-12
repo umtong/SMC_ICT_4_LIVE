@@ -37,21 +37,27 @@ class EasyChartOrderMixin:
             raise ValueError(f"unsupported entry_order_kind: {kind}")
         return kind
 
+    @staticmethod
+    def _order_price(instrument: Any, value: float) -> Decimal:
+        # Quantity and risk must be based on the exact price Nautilus will put on
+        # the order, not an unquantized Python float from the scenario engine.
+        return Decimal(str(instrument.make_price(value)))
+
     def _execution_reserves(self, instrument: Any, plan: Any) -> tuple[Decimal, Decimal]:
         tick = Decimal(str(instrument.price_increment))
-        # A resting limit cannot fill at a worse price than its limit. We still
-        # reserve the configured entry fee, while market entries keep the
-        # calibrated adverse-slippage reserve.
-        entry_ticks = 0 if self._entry_order_kind(plan) == "LIMIT" else self.config.estimated_entry_slippage_ticks
-        entry = tick * Decimal(entry_ticks)
+        # The project's Nautilus FillModel deliberately applies adverse
+        # execution slippage to both market and resting limit orders. Reserve
+        # that configured model instead of assuming a theoretical no-worse limit
+        # fill which the actual backtest engine is not using.
+        entry = tick * Decimal(self.config.estimated_entry_slippage_ticks)
         stop = tick * Decimal(self.config.estimated_stop_slippage_ticks)
         return entry, stop
 
     def _estimated_geometry(self, instrument: Any, plan: Any) -> dict[str, Decimal]:
-        """Return fill-aware loss and target geometry known before submission."""
-        entry = Decimal(str(plan.entry))
-        stop = Decimal(str(plan.stop))
-        target = Decimal(str(plan.target))
+        """Return quantized, fill-aware geometry known before submission."""
+        entry = self._order_price(instrument, plan.entry)
+        stop = self._order_price(instrument, plan.stop)
+        target = self._order_price(instrument, plan.target)
         direction = Decimal(int(plan.side.value))
         entry_slippage, stop_slippage = self._execution_reserves(instrument, plan)
         expected_entry = entry + direction * entry_slippage
@@ -62,6 +68,14 @@ class EasyChartOrderMixin:
             str(getattr(self.config, "estimated_target_fee_rate", self.config.estimated_entry_fee_rate)),
         )
         funding_rate = Decimal(str(self.config.estimated_funding_rate))
+
+        quantized_risk = abs(entry - stop)
+        quantized_reward = direction * (target - entry)
+        quantized_gross_rr = (
+            quantized_reward / quantized_risk
+            if quantized_risk > 0
+            else Decimal("-Infinity")
+        )
 
         planned_loss_per_unit = abs(expected_entry - expected_stop)
         planned_loss_per_unit += expected_entry * entry_fee_rate
@@ -79,6 +93,10 @@ class EasyChartOrderMixin:
             else Decimal("-Infinity")
         )
         return {
+            "order_entry": entry,
+            "order_stop": stop,
+            "order_target": target,
+            "quantized_gross_rr": quantized_gross_rr,
             "expected_entry": expected_entry,
             "expected_stop_fill": expected_stop,
             "planned_loss_per_unit": planned_loss_per_unit,
@@ -114,6 +132,17 @@ class EasyChartOrderMixin:
         nav = self._current_nav()
         entry_kind = self._entry_order_kind(plan)
         geometry = self._estimated_geometry(instrument, plan)
+        minimum_gross_rr = Decimal(str(self.config.min_gross_rr))
+        if geometry["quantized_gross_rr"] + Decimal("1e-12") < minimum_gross_rr:
+            self._record(
+                "plan_rejected_quantized_rr_below_minimum",
+                plan_id=plan.plan_id,
+                instrument_id=str(instrument_id),
+                nav_at_submission=float(nav),
+                entry_order_kind=entry_kind,
+                quantized_gross_rr=float(geometry["quantized_gross_rr"]),
+            )
+            return False
         if geometry["gross_reward_per_unit"] <= 0 or geometry["net_reward_per_unit"] <= 0:
             self._record(
                 "plan_rejected_nonpositive_cost_after_target",
@@ -145,10 +174,14 @@ class EasyChartOrderMixin:
             order_side=OrderSide.BUY if plan.side is Side.LONG else OrderSide.SELL,
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
-            sl_trigger_price=instrument.make_price(plan.stop),
-            tp_price=instrument.make_price(plan.target),
+            sl_trigger_price=instrument.make_price(geometry["order_stop"]),
+            tp_price=instrument.make_price(geometry["order_target"]),
             entry_order_type=OrderType.LIMIT if entry_kind == "LIMIT" else OrderType.MARKET,
-            entry_price=instrument.make_price(plan.entry) if entry_kind == "LIMIT" else None,
+            entry_price=(
+                instrument.make_price(geometry["order_entry"])
+                if entry_kind == "LIMIT"
+                else None
+            ),
             entry_post_only=False,
             tp_post_only=False,
             emulation_trigger=TriggerType.NO_TRIGGER,
@@ -169,7 +202,11 @@ class EasyChartOrderMixin:
             quantity=str(quantity),
             entry_client_order_id=str(self.active_entry_id),
             entry_order_kind=entry_kind,
-            planned_entry=float(plan.entry),
+            scenario_entry=float(plan.entry),
+            order_entry_price=float(geometry["order_entry"]),
+            order_stop_price=float(geometry["order_stop"]),
+            order_target_price=float(geometry["order_target"]),
+            quantized_gross_rr=float(geometry["quantized_gross_rr"]),
             nav_at_submission=float(nav),
             risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
             estimated_entry_price=float(geometry["expected_entry"]),
@@ -212,7 +249,12 @@ class EasyChartOrderMixin:
 
     def on_order_filled(self, event: OrderFilled) -> None:
         plan_id = self.active_plan.plan_id if self.active_plan else None
-        role = "ENTRY" if event.client_order_id == self.active_entry_id else "EXIT_OR_PROTECTIVE"
+        if event.client_order_id == self.active_entry_id:
+            role = "ENTRY"
+        elif self.emergency_exit_requested:
+            role = "EMERGENCY_PROTECTIVE_EXIT"
+        else:
+            role = "EXIT_OR_PROTECTIVE"
         self._record(
             "order_filled",
             plan_id=plan_id,
