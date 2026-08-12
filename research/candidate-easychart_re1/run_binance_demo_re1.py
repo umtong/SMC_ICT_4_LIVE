@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run candidate-easychart_re1 on Binance USD-M Demo Trading.
 
-This is a paper/demo runner, not a live-funds launcher.  It uses the canonical
+This is a paper/demo runner, not a live-funds launcher. It uses the canonical
 RE1 decision bundle and the same independent reduce-only protective-order
 lifecycle used by the backtest runner.
 
@@ -10,10 +10,9 @@ Required environment variables for an actual run:
     BINANCE_DEMO_API_KEY
     BINANCE_DEMO_API_SECRET
 
-Create those keys in Binance Demo Trading API Management.  Use Ctrl+C for a
-graceful stop.  Existing venue positions or open orders should be manually
-cleared before first use; this candidate intentionally refuses to assume
-ownership of unknown exposure.
+Create those keys in Binance Demo Trading API Management. Use Ctrl+C for a
+graceful stop. Clear unknown venue positions and open orders before first use;
+RE1 never assumes ownership of exposure it did not create.
 """
 from __future__ import annotations
 
@@ -40,9 +39,10 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import ClientId, InstrumentId, TraderId
 
-from easychart_re1_flips import EasyChartRE1FlipObjectiveBundle
+from easychart_re1_fresh import EasyChartRE1FreshBundle
 from execution_re1 import EasyChartMTFConfig
-from paper_re1 import EasyChartRE1PaperStrategy, build_warmup_map
+from paper_re1 import build_warmup_map
+from paper_re1_fixed import EasyChartRE1CoherentPaperStrategy
 import mtf_strategy as _base_strategy
 from simple_contract_v14 import FIXED_RISK_FRACTION, MINIMUM_GROSS_RR
 
@@ -74,19 +74,12 @@ def _instrument_id(symbol: str) -> InstrumentId:
 
 
 def _bar_types(instrument_id: InstrumentId) -> tuple[BarType, BarType, BarType, BarType]:
+    # Exchange-native closed bars avoid beginning an internal 5m/15m/1h
+    # aggregator from a partial interval after warmup replay.
     execution = BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL")
-    trigger = BarType.from_str(
-        f"{instrument_id}-5-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL",
-    )
-    decision = BarType.from_str(
-        f"{instrument_id}-15-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL",
-    )
-    # Nautilus bar specifications use the canonical fixed-subunit form for an
-    # hour. A 60-MINUTE specification is invalid even though the internal
-    # scenario contract continues to express the timeframe as 60 minutes.
-    higher = BarType.from_str(
-        f"{instrument_id}-1-HOUR-LAST-INTERNAL@1-MINUTE-EXTERNAL",
-    )
+    trigger = BarType.from_str(f"{instrument_id}-5-MINUTE-LAST-EXTERNAL")
+    decision = BarType.from_str(f"{instrument_id}-15-MINUTE-LAST-EXTERNAL")
+    higher = BarType.from_str(f"{instrument_id}-1-HOUR-LAST-EXTERNAL")
     return execution, trigger, decision, higher
 
 
@@ -118,6 +111,8 @@ def main() -> None:
     check_record = {
         "candidate": "candidate-easychart_re1",
         "environment": "BINANCE_DEMO_USDT_FUTURES",
+        "scenario_bundle": "EasyChartRE1FreshBundle",
+        "paper_strategy": "EasyChartRE1CoherentPaperStrategy",
         "symbols": symbols,
         "instrument_ids": [str(item) for item in instrument_ids],
         "execution_bar_types": [str(item) for item in execution_types],
@@ -143,7 +138,7 @@ def main() -> None:
     args.cache.mkdir(parents=True, exist_ok=True)
     symbols_by_instrument = dict(zip(instrument_ids, symbols, strict=True))
     warmup = build_warmup_map(symbols_by_instrument, args.warmup_days, args.cache)
-    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FlipObjectiveBundle
+    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FreshBundle
 
     provider = BinanceInstrumentProviderConfig(
         load_ids=frozenset(instrument_ids),
@@ -199,7 +194,7 @@ def main() -> None:
     )
     node = TradingNode(config=node_config)
     trading_start_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
-    strategy = EasyChartRE1PaperStrategy(
+    strategy = EasyChartRE1CoherentPaperStrategy(
         EasyChartMTFConfig(
             instrument_ids=instrument_ids,
             higher_bar_types=higher_types,
