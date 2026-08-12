@@ -27,20 +27,16 @@ jobs:
         run: |
           set -euo pipefail
           payload_dir="research/candidate-easychart/.v15_fix_payload"
-          wc -c "$payload_dir"/part*
-          sha256sum "$payload_dir"/part*
           cat "$payload_dir"/part* > /tmp/easychart-v15-fix.b64
-          wc -c /tmp/easychart-v15-fix.b64
-          sha256sum /tmp/easychart-v15-fix.b64
+          test "$(sha256sum /tmp/easychart-v15-fix.b64 | cut -d' ' -f1)" = "b67a0fbb51f76a1866eb99ffd3dec146b5428b960ab1c8e86874a1e30f312985"
           base64 -d /tmp/easychart-v15-fix.b64 > /tmp/easychart-v15-fix.tar.gz
-          sha256sum /tmp/easychart-v15-fix.tar.gz
+          test "$(sha256sum /tmp/easychart-v15-fix.tar.gz | cut -d' ' -f1)" = "b1485a148b37e00fc92f149f886a4ac4a0ca097825489458c201ff166b8d583a"
           mkdir -p /tmp/easychart-v15-fix
           tar -xzf /tmp/easychart-v15-fix.tar.gz -C /tmp/easychart-v15-fix
           cp /tmp/easychart-v15-fix/research/candidate-easychart/market_v15.py research/candidate-easychart/
           cp /tmp/easychart-v15-fix/research/candidate-easychart/screen_v15.py research/candidate-easychart/
           cp /tmp/easychart-v15-fix/research/candidate-easychart/tests/test_market_v15.py research/candidate-easychart/tests/
           cp /tmp/easychart-v15-fix/research/candidate-easychart/tests/test_screen_v15.py research/candidate-easychart/tests/
-          cp /tmp/easychart-v15-fix/.github/workflows/candidate-easychart-v15.yml .github/workflows/
           python -m py_compile \
             research/candidate-easychart/market_v15.py \
             research/candidate-easychart/screen_v15.py \
@@ -52,8 +48,10 @@ jobs:
             research/candidate-easychart/market_v15.py \
             research/candidate-easychart/screen_v15.py \
             research/candidate-easychart/tests/test_market_v15.py \
-            research/candidate-easychart/tests/test_screen_v15.py \
-            .github/workflows/candidate-easychart-v15.yml
-          git rm -r "$payload_dir" .github/workflows/candidate-easychart-v15-fix-bootstrap.yml
+            research/candidate-easychart/tests/test_screen_v15.py
+          if git diff --cached --quiet; then
+            echo "v15 semantic fixes already materialized"
+            exit 0
+          fi
           git commit -m "candidate-easychart: fix semantic routing and structural invalidation v15"
           git push origin HEAD:research/candidate-easychart
