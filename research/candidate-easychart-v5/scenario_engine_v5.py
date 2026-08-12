@@ -7,6 +7,7 @@ from auction_context_v5 import AuctionContextSnapshot, CausalAuctionContext
 from causal_lifecycle_v5 import LifecycleAwareStructureBook
 from domain import Candle, Side
 from event_footprints_v5 import EventLocalZoneDetector
+from objective_ladder_v5 import CausalObjectiveLadder
 from contracts_v5 import ScenarioSetup, SetupState, V5TradePlan
 from scenario_context_v5 import ScenarioContextMixin
 from scenario_execution_v5 import ScenarioExecutionMixin
@@ -39,6 +40,13 @@ class StructureScenarioEngine(
         self.trigger_minutes = trigger_minutes
         self.minimum_gross_rr = minimum_gross_rr
         self.structure = LifecycleAwareStructureBook(symbol, higher_minutes, tick_size)
+        self.objectives = CausalObjectiveLadder(
+            self.structure,
+            symbol=symbol,
+            decision_minutes=decision_minutes,
+            trigger_minutes=trigger_minutes,
+            tick_size=tick_size,
+        )
         self.decision_context = CausalAuctionContext(symbol, decision_minutes)
         self.trigger_detector = EventLocalZoneDetector(symbol, trigger_minutes, tick_size)
         self.decision_bars: list[Candle] = []
@@ -220,10 +228,6 @@ class StructureScenarioEngine(
         if plan is not None:
             snapshot = self.auction_context_snapshot()
             if snapshot is None:
-                # Pure geometry/unit diagnostics may construct a setup and
-                # call _make_plan directly without replaying the market feed.
-                # A real event-driven path necessarily has decision bars; in
-                # that case absence of context remains a hard invariant error.
                 if self.decision_bars:
                     raise RuntimeError("plan emitted without an observable decision context")
                 self._inc("plan_context_unavailable_in_direct_diagnostic")
@@ -253,23 +257,28 @@ class StructureScenarioEngine(
             if self.decision_bars and bar.ts_close_ns <= self.decision_bars[-1].ts_close_ns:
                 raise ValueError("decision bars must arrive in increasing close time")
             self.decision_bars.append(bar)
+            self.objectives.on_decision_bar(bar)
             snapshot = self.decision_context.on_bar(bar)
             self._trace(
                 "decision_auction_context",
                 bar.ts_close_ns,
                 auction_context=snapshot.to_dict(),
             )
-            index = len(self.decision_bars) - 1
-            self._advance_decision_setups(bar, index)
-            if index >= 1:
-                self._discover_interactions(bar, self.decision_bars[index - 1], index)
-            # The designated decision bar first owns the interaction. After
-            # classification, a body-confirmed break retires a diagonal from
-            # the future fresh-opportunity set; a wick rejection does not.
-            self.structure.observe_price(bar)
-            return []
+            try:
+                index = len(self.decision_bars) - 1
+                self._advance_decision_setups(bar, index)
+                if index >= 1:
+                    self._discover_interactions(bar, self.decision_bars[index - 1], index)
+                return []
+            finally:
+                # The completed decision bar first owns the interaction and
+                # target-spent checks. Only afterward is it allowed to consume
+                # a previously armed objective or retire a broken diagonal.
+                self.structure.observe_price(bar)
+                self.objectives.observe_decision_bar(bar)
         if timeframe_minutes != self.trigger_minutes:
             raise ValueError(f"unsupported timeframe {timeframe_minutes} for {self.scale_name}")
+        self.objectives.on_trigger_bar(bar)
         self._current_trigger_bar = bar
         try:
             created = self.trigger_detector.on_bar(bar)
@@ -282,8 +291,6 @@ class StructureScenarioEngine(
             plan_count_before_retest = len(self.plans)
             footprint_plans = self._advance_footprint_retests(bar, index)
             if footprint_plans is None:
-                # Compatibility guard for the prior method version which appended
-                # plans to self.plans but accidentally omitted its return statement.
                 footprint_plans = self.plans[plan_count_before_retest:]
             plans.extend(footprint_plans)
             return sorted(
@@ -296,6 +303,7 @@ class StructureScenarioEngine(
                 ),
             )
         finally:
+            self.objectives.observe_trigger_bar(bar)
             self._current_trigger_bar = None
 
     def find_zone(self, zone_id: str) -> Any | None:
