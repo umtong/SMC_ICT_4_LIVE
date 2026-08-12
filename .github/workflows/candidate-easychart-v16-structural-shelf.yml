@@ -1,0 +1,181 @@
+name: candidate-easychart-v16-structural-shelf
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-v16-structural-shelf.yml"
+      - "research/candidate-easychart/market_v16_structure.py"
+      - "research/candidate-easychart/screen_v16_structure.py"
+      - "research/candidate-easychart/tests/test_market_v16_structure.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v16-structural-shelf
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  structural-shelf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v16-structural-shelf
+      CACHE: .cache/candidate-easychart
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests -p 'test_*.py' -v
+
+      - name: Run one development microscope and three predeclared untouched windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          common=(
+            --warmup-days 35
+            --cache "$CACHE"
+            --signal-minutes 5
+            --response-minutes 5
+            --structure-minutes 15
+            --dc-atr-period 14
+            --dc-atr-multiple 1.0
+            --cost-profile role
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v16_structure.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name" "${common[@]}"
+          done <<'EOF'
+          development-2024-02-19:2024-02-19:2024-02-25
+          untouched-2024-11:2024-11-04:2024-12-01
+          untouched-2025-09:2025-09-01:2025-09-28
+          untouched-2026-04:2026-04-06:2026-05-03
+          EOF
+
+      - name: Audit every recorded trade under both one-minute OHLC paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/semantic-audit.log") 2>&1
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/trade_semantic_audit.py \
+              --run-dir "$ROOT/$name" \
+              --start "$start" --end "$end" \
+              --cache "$CACHE" \
+              --output "$ROOT/$name/semantic-audit"
+          done <<'EOF'
+          development-2024-02-19:2024-02-19:2024-02-25
+          untouched-2024-11:2024-11-04:2024-12-01
+          untouched-2025-09:2025-09-01:2025-09-28
+          untouched-2026-04:2026-04-06:2026-05-03
+          EOF
+
+      - name: Build cross-window evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-easychart-v16-structural-shelf")
+          names = [
+              "development-2024-02-19",
+              "untouched-2024-11",
+              "untouched-2025-09",
+              "untouched-2026-04",
+          ]
+          rows = []
+          for name in names:
+              metrics = json.loads((root / name / "metrics.json").read_text())
+              audit = json.loads((root / name / "semantic-audit" / "audit_summary.json").read_text())
+              rows.append({
+                  "window": name,
+                  "evaluation_start": metrics["evaluation_start"],
+                  "evaluation_end": metrics["evaluation_end"],
+                  "calendar_days": metrics["calendar_days"],
+                  "trades": metrics["trades"],
+                  "ending_nav": metrics["ending_nav"],
+                  "geometric_daily_growth": metrics["geometric_daily_growth"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "raw_setups_generated": metrics["raw_setups_generated"],
+                  "setups_generated": metrics["setups_generated"],
+                  "target_gate_passed": metrics["target_gate"]["passed"],
+                  "robust_replay_matches": audit["recorded_trade_replay_matches"],
+                  "path_ambiguous_recorded_trades": audit["path_ambiguous_recorded_trades"],
+                  "unexplained_missing_trades": audit["unexplained_missing_trades"],
+              })
+          untouched = [row for row in rows if row["window"].startswith("untouched-")]
+          summary = {
+              "candidate": "candidate-easychart-v16-structural-shelf",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "source_translation": {
+                  "location": "two causally confirmed same-side wick-to-body reaction intervals with literal overlap",
+                  "interaction_response": "first outside close then distinct outside open and close",
+                  "entry": "broken shelf or same-leg fresh OB/FVG first reachable surface",
+                  "invalidation": "pre-break wave origin and shared footprint extreme",
+                  "objective": "nearest still-active preconfirmed opposing pivot; no sub-1R skip"
+              },
+              "windows": rows,
+              "untouched_all_positive_growth": all(row["geometric_daily_growth"] > 0 for row in untouched),
+              "untouched_all_meet_target": all(row["target_gate_passed"] for row in untouched),
+              "all_recorded_trades_robust_under_one_minute_paths": all(
+                  row["robust_replay_matches"] == row["trades"]
+                  and row["path_ambiguous_recorded_trades"] == 0
+                  for row in rows
+              )
+          }
+          (root / "cross_window_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/cross_window_summary.json" >/dev/null
+          for name in \
+            development-2024-02-19 \
+            untouched-2024-11 \
+            untouched-2025-09 \
+            untouched-2026-04; do
+            test -s "$ROOT/$name/metrics.json"
+            test -s "$ROOT/$name/run.json"
+            test -e "$ROOT/$name/raw_setups.csv"
+            test -e "$ROOT/$name/setups.csv"
+            test -e "$ROOT/$name/trades.csv"
+            test -e "$ROOT/$name/equity.csv"
+            test -e "$ROOT/$name/shelves.csv"
+            test -e "$ROOT/$name/pivots.csv"
+            test -e "$ROOT/$name/structure_setup_audit.csv"
+            test -s "$ROOT/$name/semantic-audit/audit_summary.json"
+            test -e "$ROOT/$name/semantic-audit/trade_path_audit.csv"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v16-structural-shelf-${{ github.sha }}
+          path: artifacts/candidate-easychart-v16-structural-shelf/**
+          if-no-files-found: warn
+          retention-days: 90
