@@ -1,0 +1,51 @@
+name: candidate-easychart-apply-v18-exact-files
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - ".github/workflows/candidate-easychart-apply-v18-exact-files.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-apply-v18-exact-files
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart
+          fetch-depth: 0
+      - name: Apply exact locally verified trendline source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=/tmp/v18-exact-fix.tar.gz
+          cat research/candidate-easychart/.v18_exact_fix_payload_* | base64 --decode > "$payload"
+          echo "229ec87d9e1322f676ed62dfcc6e015a2b45f393d253cc60e8e7ac5b68abdb98  $payload" | sha256sum -c -
+          tar -xzf "$payload" -C .
+          rm -f research/candidate-easychart/.v18_exact_fix_payload_*
+          python -m compileall -q \
+            research/candidate-easychart/market_v18_trendline.py \
+            research/candidate-easychart/tests/test_market_v18_trendline.py \
+            research/candidate-easychart/market_v19_trendline.py \
+            research/candidate-easychart/tests/test_market_v19_trendline.py
+          PYTHONPATH=research/candidate-easychart \
+            python -m unittest \
+              research/candidate-easychart/tests/test_market_v18_trendline.py \
+              research/candidate-easychart/tests/test_market_v19_trendline.py -v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-easychart/market_v18_trendline.py \
+            research/candidate-easychart/tests/test_market_v18_trendline.py \
+            research/candidate-easychart/.v18_exact_fix_payload_*
+          git diff --cached --check
+          git commit -m "candidate-easychart: make trendline feasible set numerically exact"
+          git push origin HEAD:research/candidate-easychart
