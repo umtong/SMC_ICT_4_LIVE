@@ -25,6 +25,8 @@ import math
 from typing import Iterable, Sequence
 
 from domain_v3 import ArmedSetup, Candle, Side, TargetMode
+from market_v4 import StructuralPivot
+from market_v5 import DirectionalChangePivotDetector
 from market_v7 import ExpiringArmedSetup, SessionLiquidityRange
 from role_graph_v15 import (
     Direction,
@@ -67,6 +69,7 @@ class BoundaryEngineConfig:
     enable_predictive_outside_footprint: bool = True
     enable_accepted_break_retest: bool = True
     continuation_cap_range_widths: float = 10.0
+    breakout_origin_dc_atr_multiple: float = 1.0
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.tick_size) or self.tick_size <= 0:
@@ -78,6 +81,11 @@ class BoundaryEngineConfig:
             or self.continuation_cap_range_widths <= 1.0
         ):
             raise ValueError("continuation cap must be a finite search cap > 1 range")
+        if (
+            not math.isfinite(self.breakout_origin_dc_atr_multiple)
+            or self.breakout_origin_dc_atr_multiple <= 0.0
+        ):
+            raise ValueError("breakout origin DC multiple must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +281,13 @@ class RoleRoutedBoundaryEngine:
         self.active: dict[str, BoundaryState] = {}
         self.candles: list[Candle] = []
         self.footprints: dict[str, FootprintRef] = {}
+        self.breakout_origin_detector = DirectionalChangePivotDetector(
+            timeframe_minutes=config.source_timeframe_minutes,
+            atr_period=14,
+            atr_multiple=config.breakout_origin_dc_atr_multiple,
+        )
+        self.latest_breakout_high: StructuralPivot | None = None
+        self.latest_breakout_low: StructuralPivot | None = None
         self.sequence = 0
         self.diagnostics: dict[str, int] = {}
 
@@ -487,6 +502,37 @@ class RoleRoutedBoundaryEngine:
             context=PositioningContext(),
         )
 
+    def _strict_immediate_response(
+        self,
+        *,
+        state: BoundaryState,
+        side: Side,
+        current: Candle,
+    ) -> tuple[bool, str]:
+        """Source-shaped immediate response without a fitted threshold.
+
+        The source describes an immediate Fake out primarily as a long sweep
+        wick and also treats a sponsored OB/FVG at the interaction as response
+        evidence.  A one-tick poke with an ordinary candle is therefore left
+        unresolved; it is not silently promoted to a reversal.
+        """
+        body = abs(current.close - current.open)
+        if side is Side.LONG:
+            sweep_wick = min(current.open, current.close) - current.low
+            opposite_wick = current.high - max(current.open, current.close)
+        else:
+            sweep_wick = current.high - max(current.open, current.close)
+            opposite_wick = min(current.open, current.close) - current.low
+        dominant_wick = sweep_wick > max(body, opposite_wick, self.config.tick_size)
+        sponsored = bool(
+            self._eligible_footprints(state=state, side=side, current=current)
+        )
+        if dominant_wick:
+            return True, "DOMINANT_SWEEP_WICK"
+        if sponsored:
+            return True, "SPONSORED_FOOTPRINT_RESPONSE"
+        return False, "NO_DOMINANT_WICK_OR_SPONSORED_FOOTPRINT"
+
     def _reversal_setup(
         self,
         *,
@@ -598,14 +644,24 @@ class RoleRoutedBoundaryEngine:
     ) -> ExpiringArmedSetup | None:
         liquidity_range = state.liquidity_range
         entry = self._continuation_boundary(liquidity_range, side)
-        assert state.outside_first_low is not None and state.outside_first_high is not None
+        # The source-defined invalidation for a break/retest is the origin of
+        # the wave that produced the break, not one tick beyond the broken
+        # boundary.  Use the latest causally confirmed opposite DC pivot.
         if side is Side.LONG:
-            stop = min(entry, state.outside_first_low) - self.config.tick_size
+            origin = self.latest_breakout_low
+            if origin is None or origin.observed_time_ns > current.ts_close_ns or origin.level >= entry:
+                self._count("continuation_missing_breakout_wave_origin")
+                return None
+            stop = origin.level - self.config.tick_size
             target = entry + liquidity_range.width * self.config.continuation_cap_range_widths
             if not stop < entry < target:
                 return None
         else:
-            stop = max(entry, state.outside_first_high) + self.config.tick_size
+            origin = self.latest_breakout_high
+            if origin is None or origin.observed_time_ns > current.ts_close_ns or origin.level <= entry:
+                self._count("continuation_missing_breakout_wave_origin")
+                return None
+            stop = origin.level + self.config.tick_size
             target = max(
                 self.config.tick_size,
                 entry - liquidity_range.width * self.config.continuation_cap_range_widths,
@@ -677,13 +733,14 @@ class RoleRoutedBoundaryEngine:
             source_pool_id=liquidity_range.range_id,
             zone_low=float(entry),
             zone_high=float(entry),
-            formation_extreme=float(stop),
+            formation_extreme=float(origin.level),
             body_ratio=0.0,
             previous_body=0.0,
             current_body=0.0,
             context_bias=(
                 f"ROLE_GRAPH_V15|OPTION=ACCEPTED_BREAK_FIRST_RETEST"
                 f"|TARGET_CAP_NOT_OBJECTIVE"
+                f"|BREAKOUT_WAVE_ORIGIN={origin.level:.12g}"
                 f"|RANGE={liquidity_range.reference_family}"
                 f"|WINDOW={liquidity_range.trade_window}"
             ),
@@ -779,16 +836,29 @@ class RoleRoutedBoundaryEngine:
                     # closes; do not backdate the interaction to its open.
                     state.outside_first_time_ns = current.ts_close_ns
                     state.outside_extreme = current.low
+                    strict, response_kind = self._strict_immediate_response(
+                        state=state, side=Side.LONG, current=current
+                    )
+                    if not strict:
+                        state.completed = True
+                        self._count("immediate_reclaim_unresolved_no_source_response")
+                        events.append({
+                            "range_id": liquidity_range.range_id,
+                            "time_ns": current.ts_close_ns,
+                            "event": "UNRESOLVED_IMMEDIATE_RECLAIM",
+                            "reason": response_kind,
+                        })
+                        return BoundaryEngineUpdate((), (), tuple(events))
                     setup = self._reversal_setup(
                         state=state,
                         current=current,
                         side=Side.LONG,
-                        interaction="IMMEDIATE_FAKEOUT",
+                        interaction=f"IMMEDIATE_FAKEOUT_{response_kind}",
                         predictive=False,
                     )
                     if setup is not None:
                         setups.append(setup)
-                        state.completed = True
+                    state.completed = True
                     return BoundaryEngineUpdate(tuple(setups), (), tuple(events))
                 if current.close < liquidity_range.low:
                     self._start_outside(state, current, index, Side.LONG)
@@ -797,16 +867,29 @@ class RoleRoutedBoundaryEngine:
                     state.outside_side = Side.SHORT
                     state.outside_first_time_ns = current.ts_close_ns
                     state.outside_extreme = current.high
+                    strict, response_kind = self._strict_immediate_response(
+                        state=state, side=Side.SHORT, current=current
+                    )
+                    if not strict:
+                        state.completed = True
+                        self._count("immediate_reclaim_unresolved_no_source_response")
+                        events.append({
+                            "range_id": liquidity_range.range_id,
+                            "time_ns": current.ts_close_ns,
+                            "event": "UNRESOLVED_IMMEDIATE_RECLAIM",
+                            "reason": response_kind,
+                        })
+                        return BoundaryEngineUpdate((), (), tuple(events))
                     setup = self._reversal_setup(
                         state=state,
                         current=current,
                         side=Side.SHORT,
-                        interaction="IMMEDIATE_FAKEOUT",
+                        interaction=f"IMMEDIATE_FAKEOUT_{response_kind}",
                         predictive=False,
                     )
                     if setup is not None:
                         setups.append(setup)
-                        state.completed = True
+                    state.completed = True
                     return BoundaryEngineUpdate(tuple(setups), (), tuple(events))
                 if current.close > liquidity_range.high:
                     self._start_outside(state, current, index, Side.SHORT)
@@ -960,6 +1043,13 @@ class RoleRoutedBoundaryEngine:
 
     def on_close(self, current: Candle, index: int) -> BoundaryEngineUpdate:
         self.candles.append(current)
+        pivot = self.breakout_origin_detector.on_candle(current, index)
+        if pivot is not None:
+            if pivot.side == "HIGH":
+                self.latest_breakout_high = pivot
+            else:
+                self.latest_breakout_low = pivot
+            self._count(f"breakout_origin_pivots_{pivot.side.lower()}")
         cancellations = self._activate_and_expire(current)
         setups: list[ExpiringArmedSetup] = []
         events: list[dict[str, object]] = []

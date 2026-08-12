@@ -1,6 +1,7 @@
 import unittest
 
 from domain_v3 import Candle, Side
+from market_v4 import StructuralPivot
 from market_v7 import SessionLiquidityRange
 from source_footprints import SourceOrderBlock
 
@@ -57,8 +58,8 @@ class BoundaryEngineTests(unittest.TestCase):
 
     def test_wm_requires_rebound_distinct_second_leg_then_reclaim(self):
         engine = self.engine(enable_immediate_fakeout=False)
-        engine.on_close(c(0, 101, 102, 98, 99), 0)        # outside
-        engine.on_close(c(1, 99, 99.8, 98.6, 99.6), 1)   # rebound, still outside
+        engine.on_close(c(0, 101, 102, 98, 99), 0)       # outside
+        engine.on_close(c(1, 99, 99.8, 98.6, 99.6), 1)  # rebound, still outside
         engine.on_close(c(2, 99.6, 99.7, 97.5, 98.4), 2) # second leg
         update = engine.on_close(c(3, 98.4, 101, 98.2, 100.4), 3) # separate reclaim
         self.assertEqual(len(update.setups), 1)
@@ -99,11 +100,19 @@ class BoundaryEngineTests(unittest.TestCase):
         self.assertIn("PREDICTIVE_OUTSIDE_FOOTPRINT", setup.family)
         self.assertAlmostEqual(setup.entry, 99.0)
 
-    def test_accepted_lower_break_uses_lower_boundary_for_short_retest(self):
+    def test_accepted_lower_break_uses_lower_boundary_and_wave_origin_stop(self):
         engine = self.engine(
             enable_immediate_fakeout=False,
             enable_wm_trap=False,
             enable_predictive_outside_footprint=False,
+        )
+        engine.latest_breakout_high = StructuralPivot(
+            center_index=0,
+            observed_index=0,
+            side="HIGH",
+            level=103.0,
+            event_time_ns=1,
+            observed_time_ns=9,
         )
         engine.on_close(c(0, 101, 102, 98, 99), 0)
         update = engine.on_close(c(1, 99, 99.5, 96, 97), 1)
@@ -111,7 +120,29 @@ class BoundaryEngineTests(unittest.TestCase):
         setup = update.setups[0]
         self.assertEqual(setup.side, Side.SHORT)
         self.assertAlmostEqual(setup.entry, 100.0)
+        self.assertAlmostEqual(setup.stop, 103.1)
+        self.assertAlmostEqual(setup.formation_extreme, 103.0)
         self.assertIn("ACCEPTED_BREAK", setup.family)
+
+    def test_accepted_break_without_causal_wave_origin_is_unresolved(self):
+        engine = self.engine(
+            enable_immediate_fakeout=False,
+            enable_wm_trap=False,
+            enable_predictive_outside_footprint=False,
+        )
+        engine.on_close(c(0, 101, 102, 98, 99), 0)
+        update = engine.on_close(c(1, 99, 99.5, 96, 97), 1)
+        self.assertFalse(update.setups)
+        self.assertEqual(engine.diagnostics.get("continuation_missing_breakout_wave_origin"), 1)
+
+    def test_one_tick_reclaim_without_long_wick_or_footprint_is_not_fakeout(self):
+        engine = self.engine()
+        update = engine.on_close(c(0, 100.2, 100.5, 99.95, 100.05), 0)
+        self.assertFalse(update.setups)
+        self.assertEqual(
+            engine.diagnostics.get("immediate_reclaim_unresolved_no_source_response"),
+            1,
+        )
 
 
 class AuctionStateTests(unittest.TestCase):

@@ -109,17 +109,20 @@ def observation_for(
 def _raid_side(setup) -> Side:
     # Reversal direction names the swept side directly: long = lower sweep,
     # short = upper sweep.  Continuation direction is the opposite of the
-    # broken side: short continuation follows a lower break.
-    if "ROLE_ACCEPTED_BREAK" in setup.family:
+    # broken side: short continuation follows a lower break.  Use the semantic
+    # option root because merging deliberately rewrites the display family.
+    if option_root(setup.family) == "ACCEPTED_BREAK_CONTINUATION":
         return Side.LONG if setup.side is Side.SHORT else Side.SHORT
     return setup.side
 
 
 
 def option_root(family: str) -> str:
-    if "ROLE_FAILED_BREAK" in family:
+    # Display-family rewrites (merging and auction routing) must never erase
+    # semantic identity.  Recognize both raw and rewritten forms.
+    if "FAILED_BREAK_REVERSAL" in family or "ROLE_FAILED_BREAK" in family:
         return "FAILED_BREAK_REVERSAL"
-    if "ROLE_ACCEPTED_BREAK" in family:
+    if "ACCEPTED_BREAK_CONTINUATION" in family or "ROLE_ACCEPTED_BREAK" in family:
         return "ACCEPTED_BREAK_CONTINUATION"
     return family
 
@@ -130,8 +133,8 @@ def merge_same_bar_options(setups):
     Several session/range definitions can describe the same sweep.  They are
     not independent trades and must not inflate opportunity count.  The merged
     option uses the first reachable entry surface, the full shared
-    invalidation, and a directional far cap only for subsequent first-objective
-    routing.  No confluence score is created.
+    invalidation, and the nearest declared opposing boundary for subsequent
+    first-objective routing.  No confluence score is created.
     """
     grouped: dict[tuple[object, ...], list[object]] = {}
     for setup in setups:
@@ -159,12 +162,15 @@ def merge_same_bar_options(setups):
             entry_source = max(items, key=lambda item: (item.entry, item.source_pool_id))
             entry = max(item.entry for item in items)
             stop = min(item.stop for item in items)
-            far_cap = max(item.initial_target for item in items)
+            # Every opposite boundary is already a declared structural
+            # objective.  The nearest one, not the most distant overlapping
+            # range, is the first objective.
+            structural_cap = min(item.initial_target for item in items)
         else:
             entry_source = min(items, key=lambda item: (item.entry, item.source_pool_id))
             entry = min(item.entry for item in items)
             stop = max(item.stop for item in items)
-            far_cap = min(item.initial_target for item in items)
+            structural_cap = max(item.initial_target for item in items)
         valid_until = min(int(getattr(item, "valid_until_ns")) for item in items)
         pools = tuple(sorted({item.source_pool_id for item in items}))
         base = entry_source
@@ -177,15 +183,15 @@ def merge_same_bar_options(setups):
             ),
             entry=float(entry),
             stop=float(stop),
-            initial_target=float(far_cap),
-            fixed_target_id=f"MERGED_DIRECTIONAL_CAP:{'|'.join(pools)}",
+            initial_target=float(structural_cap),
+            fixed_target_id=f"MERGED_FIRST_OPPOSING_BOUNDARY:{'|'.join(pools)}",
             source_pool_id=entry_source.source_pool_id,
             zone_low=float(entry_source.zone_low),
             zone_high=float(entry_source.zone_high),
             formation_extreme=float(stop),
             context_bias=(
                 f"{base.context_bias}|MERGED_STRUCTURE_POOLS={'|'.join(pools)}"
-                f"|MERGE_POLICY=FIRST_REACHABLE_ENTRY_FULL_SHARED_INVALIDATION"
+                f"|MERGE_POLICY=FIRST_REACHABLE_ENTRY_FULL_SHARED_INVALIDATION_FIRST_OPPOSING_BOUNDARY"
             ),
             valid_until_ns=valid_until,
         )
@@ -194,16 +200,16 @@ def merge_same_bar_options(setups):
             target_id=merged.fixed_target_id,
             min_gross_rr=1.0,
         ) is None:
-            count("merged_option_far_cap_rr_lt_1")
+            count("merged_option_first_boundary_rr_lt_1")
             audit_rows.append(
                 {
                     "key": repr(key),
                     "setup_ids": ",".join(item.setup_id for item in items),
                     "source_pool_ids": ",".join(pools),
-                    "disposition": "REJECT_MERGED_FAR_CAP_RR_LT_1",
+                    "disposition": "REJECT_MERGED_FIRST_BOUNDARY_RR_LT_1",
                     "entry": entry,
                     "stop": stop,
-                    "far_cap": far_cap,
+                    "structural_cap": structural_cap,
                 }
             )
             continue
@@ -218,7 +224,7 @@ def merge_same_bar_options(setups):
                 "disposition": "MERGED_ONE_CAUSAL_OPTION",
                 "entry": entry,
                 "stop": stop,
-                "far_cap": far_cap,
+                "structural_cap": structural_cap,
             }
         )
     output.sort(key=lambda item: (item.observed_time_ns, item.symbol, item.setup_id))
@@ -296,8 +302,9 @@ def route_auction_states(
             }
         )
 
-        reversal = "ROLE_FAILED_BREAK" in setup.family
-        continuation = "ROLE_ACCEPTED_BREAK" in setup.family
+        semantic_root = option_root(setup.family)
+        reversal = semantic_root == "FAILED_BREAK_REVERSAL"
+        continuation = semantic_root == "ACCEPTED_BREAK_CONTINUATION"
         if reversal and decision.state is AuctionState.COORDINATED_REPRICING:
             count("reversal_rejected_coordinated_repricing")
             audit["disposition"] = "REJECT_REVERSAL_COORDINATED_REPRICING"
@@ -476,7 +483,7 @@ def route_targets(
                 ),
             }
         )
-        continuation = "ROLE_ACCEPTED_BREAK" in setup.family
+        continuation = option_root(setup.family) == "ACCEPTED_BREAK_CONTINUATION"
         if decision.reason == "NO_ACTIVE_INTERNAL_OBJECTIVE_USE_FAR_CAP":
             if continuation:
                 audit["disposition"] = "REJECT_CONTINUATION_NO_ACTIVE_OBJECTIVE"
