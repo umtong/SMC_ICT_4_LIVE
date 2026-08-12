@@ -1,0 +1,245 @@
+name: candidate-easychart-v21-flow
+
+on:
+  push:
+    branches: ["research/candidate-easychart"]
+    paths:
+      - "research/candidate-easychart/market_v21_flow_state.py"
+      - "research/candidate-easychart/route_v21_flow_state.py"
+      - "research/candidate-easychart/download_binance_aggtrades.py"
+      - "research/candidate-easychart/replay_routed_setups_v21.py"
+      - "research/candidate-easychart/tests/test_market_v21_flow_state.py"
+      - ".github/workflows/candidate-easychart-v21-flow.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-v21-flow
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  flow-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-easychart-v21-flow
+      CACHE: .cache/candidate-easychart
+      AGG: .cache/binance-vision-aggtrades
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify causal flow state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" "$CACHE" "$AGG"
+          exec > >(tee "$ROOT/verification.log") 2>&1
+          smc4 doctor
+          python -m compileall -q research/candidate-easychart
+          python -m unittest discover -s research/candidate-easychart/tests \
+            -p 'test_market_v21_flow_state.py' -v
+
+      - name: Generate complete integrated setup intents
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/screen.log") 2>&1
+          families="ASIA_LONDON,ASIA_NY,LONDON_NY,PRIOR_DAY_LONDON,PRIOR_DAY_NY,FUNDING_00_08,FUNDING_08_16,FUNDING_16_00"
+          common=(
+            --warmup-days 35 --cache "$CACHE" --families "$families"
+            --signal-minutes 5 --response-minutes 15
+            --trendline-minutes 5,15,60
+            --target-minutes 5 --target-dc-atr 1.0
+            --continuation-cap-widths 10.0 --cost-profile role
+            --context-minutes 240,360,480,720,1440
+            --value-minutes 240,360,480,720,1440
+            --context-response-minutes 15
+            --context-objective-minutes 5,15,60,240
+            --liquidity-signal-minutes 15
+            --liquidity-pivot-minutes 15,60,240
+            --liquidity-response-minutes 15
+            --liquidity-objective-minutes 5,15,60,240
+          )
+          while IFS=: read -r name start end; do
+            python research/candidate-easychart/screen_v20_integrated.py \
+              --start "$start" --end "$end" \
+              --output "$ROOT/$name/baseline" "${common[@]}"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          EOF
+
+      - name: Download only official aggTrade partitions needed by the setups
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/aggtrades.log") 2>&1
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+          import pandas as pd
+          from download_binance_aggtrades import download
+          from route_v21_flow_state import setup_episode
+
+          root = Path("artifacts/candidate-easychart-v21-flow")
+          output = Path(".cache/binance-vision-aggtrades")
+          needed = set()
+          for setup_path in root.glob("*/baseline/setups.csv"):
+              if setup_path.stat().st_size == 0:
+                  continue
+              frame = pd.read_csv(setup_path)
+              for row in frame.itertuples(index=False):
+                  start_ns, end_ns = setup_episode(row)
+                  start = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc).date()
+                  end = datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc).date()
+                  current = start
+                  while current <= end:
+                      needed.add((str(row.symbol), current))
+                      current += timedelta(days=1)
+          rows = []
+          for symbol, day in sorted(needed):
+              rows.append(download(symbol, day, output))
+          import json
+          manifest = {
+              "source": "official Binance Vision USD-M daily aggTrades",
+              "needed_partitions": len(needed),
+              "files": rows,
+          }
+          output.mkdir(parents=True, exist_ok=True)
+          (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Route complete options by causal flow state and replay one account
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$ROOT/flow-router.log") 2>&1
+          while IFS=: read -r name start end; do
+            baseline="$ROOT/$name/baseline"
+            flow="$ROOT/$name/flow"
+            replay="$ROOT/$name/replay"
+            python research/candidate-easychart/route_v21_flow_state.py \
+              --setups "$baseline/setups.csv" \
+              --aggtrades-root "$AGG" \
+              --output "$flow"
+            python research/candidate-easychart/replay_routed_setups_v21.py \
+              --setups "$flow/routed_setups.csv" \
+              --cancellations "$baseline/cancellations.csv" \
+              --start "$start" --end "$end" \
+              --warmup-days 35 --cache "$CACHE" \
+              --cost-profile role --output "$replay"
+          done <<'EOF'
+          dev-2024-02-19:2024-02-19:2024-02-25
+          diag-2025-07-07:2025-07-07:2025-07-13
+          EOF
+
+      - name: Build decision summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-easychart-v21-flow")
+          rows = []
+          states = Counter()
+          dispositions = Counter()
+          for name in ("dev-2024-02-19", "diag-2025-07-07"):
+              baseline = json.loads((root / name / "baseline" / "metrics.json").read_text())
+              flow = json.loads((root / name / "flow" / "flow_state_summary.json").read_text())
+              replay = json.loads((root / name / "replay" / "metrics.json").read_text())
+              states.update(flow.get("state_counts", {}))
+              dispositions.update(flow.get("disposition_counts", {}))
+              rows.append({
+                  "window": name,
+                  "calendar_days": baseline["calendar_days"],
+                  "baseline_setups": baseline["setups_generated"],
+                  "baseline_trades": baseline["trades"],
+                  "baseline_growth": baseline["geometric_daily_growth"],
+                  "baseline_ending_nav": baseline["ending_nav"],
+                  "flow_input_setups": flow["input_setups"],
+                  "flow_routed_setups": flow["flow_routed_setups"],
+                  "flow_coverage_fraction": flow["coverage_fraction"],
+                  "routed_trades": replay["trades"],
+                  "routed_growth": replay["geometric_daily_growth"],
+                  "routed_ending_nav": replay["ending_nav"],
+                  "routed_profit_factor": replay["profit_factor"],
+                  "routed_max_drawdown": replay["max_drawdown"],
+                  "routed_target_gate": replay["target_gate"]["passed"],
+                  "state_counts": flow["state_counts"],
+                  "disposition_counts": flow["disposition_counts"],
+              })
+
+          total_input = sum(row["flow_input_setups"] for row in rows)
+          total_routed = sum(row["flow_routed_setups"] for row in rows)
+          total_trades = sum(row["routed_trades"] for row in rows)
+          positive_windows = [row for row in rows if row["routed_trades"] > 0]
+          if total_input == 0:
+              disposition = "NO_COMPLETE_OPTIONS_TO_ROUTE"
+          elif total_routed == 0 and states.get("INSUFFICIENT_TRADES", 0) + states.get("NO_INTERACTION", 0) == total_input:
+              disposition = "FLOW_DATA_OR_ANCHOR_COVERAGE"
+          elif total_routed == 0:
+              disposition = "FLOW_MECHANISM_MISMATCH"
+          elif total_trades == 0:
+              disposition = "FLOW_CONFIRMED_BUT_ENTRY_NOT_REACHED"
+          elif all(row["routed_growth"] > 0 for row in positive_windows):
+              disposition = "PROMOTE_FLOW_ROUTED_SETUPS_TO_NAUTILUS"
+          else:
+              disposition = "FLOW_ROUTED_EXPECTANCY_OR_GEOMETRY_FAILURE"
+          summary = {
+              "candidate": "candidate-easychart-v21-flow",
+              "engine_status": "FAST_DIAGNOSTIC_NOT_AUTHORITATIVE",
+              "policy_change": "route complete source scenarios by relational aggregate-trade absorption versus accepted repricing; no fitted imbalance or impact threshold",
+              "disposition": disposition,
+              "total_input_setups": total_input,
+              "total_flow_routed_setups": total_routed,
+              "total_routed_trades": total_trades,
+              "aggregate_state_counts": dict(sorted(states.items())),
+              "aggregate_disposition_counts": dict(sorted(dispositions.items())),
+              "windows": rows,
+              "promote_to_nautilus": disposition == "PROMOTE_FLOW_ROUTED_SETUPS_TO_NAUTILUS",
+              "future_information_used": False,
+              "flow_thresholds_fitted": False,
+          }
+          target = root / "cross_window_summary.json"
+          target.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(target.read_text())
+          PY
+
+      - name: Publish compact research memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart/results
+          cp "$ROOT/cross_window_summary.json" \
+            research/candidate-easychart/results/V21_FLOW_LATEST.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart/results/V21_FLOW_LATEST.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart: record aggregate-trade flow diagnostic"
+          git push origin HEAD:research/candidate-easychart
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-v21-flow-${{ github.sha }}
+          path: artifacts/candidate-easychart-v21-flow/**
+          if-no-files-found: warn
+          retention-days: 90
