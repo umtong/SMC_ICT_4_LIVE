@@ -1,9 +1,9 @@
-"""Run the canonical simplified EasyChart contract.
+"""Run the complete EasyChart decision sequence under the fixed simple contract.
 
-Execution management is fixed: one full entry, one full stop, one full target,
+Execution management remains one full entry, one full stop, one full target,
 three-percent account risk, no daily governor, no time exit, and no trade-count
-limit.  A retest requires a distinct departure and first later return, while
-60m structure supplies the directional role for 5m acceptance/retest entries.
+limit.  Research changes only context, causal state, entry location, invalidation
+and target selection.
 """
 from __future__ import annotations
 
@@ -21,11 +21,16 @@ from mtf_backtest_support_v5 import preserve_mtf_results_v5
 from mtf_data import add_symbol_mtf_data
 import mtf_strategy as _base_strategy
 from mtf_strategy_v5 import EasyChartMTFConfig, EasyChartMTFStrategy
+from scenario_acceptance_footprint_v18 import (
+    ACCEPTANCE_FOOTPRINT_RULE,
+    CompleteEasyChartBundleV18,
+)
 from scenario_close_detached_v14 import CLOSE_DETACHED_RETEST_RULE
 from scenario_higher_timeframe_v15 import (
+    FOUR_HOUR_ROLE_RULE,
     HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
+    HIGHER_TIMEFRAME_REVERSAL_RULE,
     HIGHER_TIMEFRAME_STATE_TRANSLATION,
-    HigherTimeframeAcceptanceBundleV15,
 )
 from simple_contract_v14 import (
     FIXED_RISK_FRACTION,
@@ -66,7 +71,7 @@ def main() -> None:
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
 
-    _base_strategy.MultiScaleScenarioBundle = HigherTimeframeAcceptanceBundleV15
+    _base_strategy.MultiScaleScenarioBundle = CompleteEasyChartBundleV18
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -121,12 +126,17 @@ def main() -> None:
             end=args.end,
         )
         policy = {
-            "candidate": "candidate-easychart-v15-higher-timeframe-roles",
-            "scale_policy": "60m_context__15m_5m_1m_execution",
-            "target_policy": "nearest_any_confirmed_preexisting_opposite_pivot",
+            "candidate": "candidate-easychart-v18-complete-decision-sequence",
+            "scale_policy": "4h_60m_context__15m_5m_1m_execution",
+            "structure_policy": "MEANINGFUL_OBSERVABLE_STRUCTURES_ONLY_FOR_TRADE_CONTEXT",
+            "target_policy": "nearest_confirmed_preexisting_opposite_objective_across_stack",
             "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
             "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
+            "acceptance_execution_policy": "BREAK_HOLD_RETEST_THEN_EVENT_LOCAL_FOOTPRINT",
+            "acceptance_execution_provenance": ACCEPTANCE_FOOTPRINT_RULE,
             "higher_timeframe_acceptance_rule": HIGHER_TIMEFRAME_ACCEPTANCE_RULE,
+            "higher_timeframe_reversal_rule": HIGHER_TIMEFRAME_REVERSAL_RULE,
+            "four_hour_role_rule": FOUR_HOUR_ROLE_RULE,
             "higher_timeframe_state_translation": HIGHER_TIMEFRAME_STATE_TRANSLATION,
             "fee_profile": profile.name,
             "maker_fee_rate": float(profile.maker_rate),
