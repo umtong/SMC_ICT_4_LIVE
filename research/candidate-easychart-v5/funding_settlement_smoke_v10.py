@@ -2,16 +2,20 @@
 
 NautilusTrader 1.230 initializes a process-global Rust logger, so control and
 funded engines are intentionally executed in separate Python processes by the
-workflow. This module emits one isolated account result per invocation.
+workflow. This module emits one isolated account result per invocation and
+records the data/cache/position state visible when the funding update arrives.
 """
 from __future__ import annotations
 
 import argparse
 from decimal import Decimal
 import json
+from typing import Any
 
 from nautilus_trader.model.data import Bar, BarType, FundingRateUpdate, MarkPriceUpdate
 from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.trading.strategy import Strategy
 
 from backtest_support import final_nav, make_engine
@@ -32,9 +36,54 @@ class HoldAcrossFunding(Strategy):
         self.instrument_id = instrument_id
         self.bar_type = bar_type
         self.bars_seen = 0
+        self.mark_callbacks = 0
+        self.funding_callbacks = 0
+        self.funding_observations: list[dict[str, Any]] = []
+
+    def _account_total(self) -> float | None:
+        account = self.portfolio.account(Venue("BINANCE"))
+        if account is None:
+            return None
+        money = account.balance_total(Currency.from_str("USDT"))
+        return None if money is None else float(money.as_double())
 
     def on_start(self) -> None:
         self.subscribe_bars(self.bar_type)
+        self.subscribe_mark_prices(self.instrument_id)
+        self.subscribe_funding_rates(self.instrument_id)
+
+    def on_mark_price(self, update: MarkPriceUpdate) -> None:
+        self.mark_callbacks += 1
+
+    def on_funding_rate(self, update: FundingRateUpdate) -> None:
+        self.funding_callbacks += 1
+        cached_mark = self.cache.mark_price(self.instrument_id)
+        cached_funding = self.cache.funding_rate(self.instrument_id)
+        positions = self.cache.positions_open(
+            instrument_id=self.instrument_id,
+            strategy_id=self.id,
+        )
+        self.funding_observations.append(
+            {
+                "event_ts_ns": update.ts_event,
+                "rate": str(update.rate),
+                "interval": update.interval,
+                "cached_mark": None if cached_mark is None else str(cached_mark.value),
+                "cached_funding": (
+                    None if cached_funding is None else str(cached_funding.rate)
+                ),
+                "open_positions": len(positions),
+                "position_signed_qty": (
+                    None if not positions else float(positions[0].signed_qty)
+                ),
+                "position_realized_pnl": (
+                    None
+                    if not positions or positions[0].realized_pnl is None
+                    else str(positions[0].realized_pnl)
+                ),
+                "account_total_after_exchange_route": self._account_total(),
+            },
+        )
 
     def on_bar(self, bar: Bar) -> None:
         instrument = self.cache.instrument(self.instrument_id)
@@ -57,6 +106,8 @@ class HoldAcrossFunding(Strategy):
         if not self.portfolio.is_flat(self.instrument_id):
             self.close_all_positions(self.instrument_id)
         self.unsubscribe_bars(self.bar_type)
+        self.unsubscribe_mark_prices(self.instrument_id)
+        self.unsubscribe_funding_rates(self.instrument_id)
 
 
 def _bars(instrument, bar_type):  # type: ignore[no-untyped-def]
@@ -82,7 +133,7 @@ def _bars(instrument, bar_type):  # type: ignore[no-untyped-def]
     ]
 
 
-def run_smoke(include_funding: bool) -> float:
+def run_smoke(include_funding: bool) -> dict[str, Any]:
     engine = make_engine()
     instrument = make_instrument("BTCUSDT")
     bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
@@ -120,7 +171,21 @@ def run_smoke(include_funding: bool) -> float:
         engine.run()
         if not engine.portfolio.is_flat(instrument.id):
             raise RuntimeError("funding smoke test did not finish flat")
-        return final_nav(engine)
+        positions = engine.trader.generate_positions_report()
+        account = engine.trader.generate_account_report(Venue("BINANCE"))
+        return {
+            "final_nav": final_nav(engine),
+            "mark_callbacks": strategy.mark_callbacks,
+            "funding_callbacks": strategy.funding_callbacks,
+            "funding_observations": strategy.funding_observations,
+            "positions_report_rows": int(len(positions.index)),
+            "account_report_rows": int(len(account.index)),
+            "closed_position_realized_pnl": (
+                None
+                if positions.empty
+                else str(positions.iloc[-1].get("realized_pnl"))
+            ),
+        }
     finally:
         engine.dispose()
 
@@ -134,19 +199,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     include_funding = args.mode == "funded"
-    nav = run_smoke(include_funding)
-    print(
-        json.dumps(
-            {
-                "mode": args.mode,
-                "include_funding": include_funding,
-                "final_nav": nav,
-                "expected_funding_delta": EXPECTED_FUNDING_DELTA,
-            },
-            indent=2,
-            sort_keys=True,
-        ),
+    result = run_smoke(include_funding)
+    result.update(
+        {
+            "mode": args.mode,
+            "include_funding": include_funding,
+            "expected_funding_delta": EXPECTED_FUNDING_DELTA,
+        },
     )
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
