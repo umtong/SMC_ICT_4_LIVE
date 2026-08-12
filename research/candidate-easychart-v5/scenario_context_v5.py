@@ -15,6 +15,25 @@ class ScenarioContextMixin:
     def _touches(bar: Candle, zone: StructureZone) -> bool:
         return bar.low <= zone.upper and bar.high >= zone.lower
 
+    @staticmethod
+    def _dominant_excursion_wick(bar: Candle, side: Side) -> tuple[bool, float, float]:
+        """Return whether the liquidity-side wick is larger than the body.
+
+        The source distinguishes a fast fakeout from a generic close back
+        inside by its conspicuous rejection tail and abrupt return.  A human
+        reads that relation visually; software needs a scale-free translation.
+        Comparing the excursion-side wick with the real body preserves the
+        meaning across instruments and volatility regimes without adding a
+        fitted percentage or ATR threshold.
+        """
+        body = abs(bar.close - bar.open)
+        wick = (
+            min(bar.open, bar.close) - bar.low
+            if side is Side.LONG
+            else bar.high - max(bar.open, bar.close)
+        )
+        return wick > body, wick, body
+
     def _projected_members(
         self,
         setup: ScenarioSetup,
@@ -155,6 +174,8 @@ class ScenarioContextMixin:
         bar: Candle,
         decision_index: int,
         state: SetupState,
+        terminal_reason: str | None = None,
+        trace_values: dict[str, float] | None = None,
     ) -> ScenarioSetup | None:
         side = (
             (Side.SHORT if context.side is ZoneSide.SUPPORT else Side.LONG)
@@ -263,14 +284,27 @@ class ScenarioContextMixin:
             acceptance_origin=origin,
             channel_id=channel_id,
             midline_price_at_interaction=midline,
+            terminal_reason=terminal_reason,
         )
         self.setups.append(setup)
-        self._active[setup.setup_id] = setup
+        if terminal_reason is None:
+            self._active[setup.setup_id] = setup
         for member in members:
             self._claimed_structures.add(member.source_structure_id)
             self._audit(member)
         self._audit(target_zone)
         self._claimed_episodes.add(episode_id)
+        if terminal_reason is not None:
+            self._inc(terminal_reason)
+            self._trace(
+                terminal_reason,
+                bar.ts_close_ns,
+                setup,
+                target_zone_id=target_zone.zone_id,
+                target_price=target_price,
+                **(trace_values or {}),
+            )
+            return None
         self._inc(f"setup_{path.value.lower()}_created")
         self._trace(
             f"setup_{path.value.lower()}_created",
@@ -299,6 +333,22 @@ class ScenarioContextMixin:
                 previous_inside = previous_zone is None or previous.close <= previous_zone.upper
 
             if breached and fully_inside:
+                dominant_wick, excursion_wick, real_body = self._dominant_excursion_wick(bar, side)
+                if not dominant_wick:
+                    self._create_setup(
+                        path=ScenarioPath.REJECTION,
+                        context=context,
+                        members=members,
+                        bar=bar,
+                        decision_index=index,
+                        state=SetupState.UNRESOLVED,
+                        terminal_reason="fast_fakeout_without_dominant_excursion_wick",
+                        trace_values={
+                            "excursion_wick": excursion_wick,
+                            "real_body": real_body,
+                        },
+                    )
+                    continue
                 self._create_setup(
                     path=ScenarioPath.REJECTION,
                     context=context,
