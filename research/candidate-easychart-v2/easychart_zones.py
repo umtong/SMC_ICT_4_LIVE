@@ -107,14 +107,15 @@ class EasyChartZoneDetector:
     """Detect source-defined OB/FVG zones from closed candles only.
 
     Order block
-        Opposite candle body engulfed by the current candle body. The zone is
-        the *engulfed candle body*, as stated in the video transcript, while
-        invalidation uses the wick extreme of all formation candles.
+        The source examples contain both a two-candle opposite-body engulf and
+        a three-candle double-engulf sequence. In both forms the executable OB
+        body is the final candle's immediately engulfed opposite candle. All
+        formation wicks belong to structural invalidation.
 
-        The source explicitly excludes a pathologically small first candle.
-        Instead of inventing an asset-specific body threshold, the detector
-        reuses TA-Lib's longstanding causal doji convention: a real body at or
-        below 10% of the average high-low range of the previous 10 candles.
+        A pathologically small source candle is explicitly excluded. Instead of
+        inventing an asset-specific threshold, the detector reuses TA-Lib's
+        longstanding causal doji convention: a real body at or below 10% of the
+        average high-low range of the previous 10 candles.
 
     FVG
         A three-candle non-overlap where the middle directional body is at
@@ -145,10 +146,18 @@ class EasyChartZoneDetector:
         upper = max(bar.open, bar.close)
         return lower, upper, upper - lower
 
+    @staticmethod
+    def _body_engulfs(
+        outer_lower: float,
+        outer_upper: float,
+        inner_lower: float,
+        inner_upper: float,
+    ) -> bool:
+        return outer_lower <= inner_lower and outer_upper >= inner_upper
+
     def _ratio(self, numerator: float, denominator: float) -> float:
-        # An adjacent doji does not make a diagnostic ratio infinite. The OB
-        # detector separately rejects a source doji once a causal baseline is
-        # available; one tick keeps early diagnostics finite.
+        # One tick keeps early diagnostics finite. Source-doji rejection is a
+        # separate causal decision once its ten-bar baseline is available.
         return numerator / max(denominator, self.tick_size)
 
     def _source_body_to_average_range(self, source_index: int) -> float | None:
@@ -198,7 +207,11 @@ class EasyChartZoneDetector:
                 zone.first_touch_time_ns = current.ts_close_ns
                 self._inc(f"{zone.kind.value.lower()}_first_touch")
 
-    def _detect_order_block(self, index: int) -> PriceZone | None:
+    def _order_block_pattern(
+        self,
+        index: int,
+    ) -> tuple[ZoneSide, tuple[int, ...], int] | None:
+        """Return side, all formation indices, and executable source index."""
         if index < 1:
             return None
         previous = self.bars[index - 1]
@@ -206,56 +219,129 @@ class EasyChartZoneDetector:
         previous_lower, previous_upper, previous_body = self._body(previous)
         current_lower, current_upper, current_body = self._body(current)
         if previous_body <= 0.0 or current_body <= 0.0:
+            return None
+
+        # Prefer the source-explicit double-engulf sequence when both it and the
+        # final two-candle pair are true. This prevents one visual formation from
+        # becoming two zones/trades.
+        if index >= 2:
+            first = self.bars[index - 2]
+            first_lower, first_upper, first_body = self._body(first)
+            if first_body > 0.0:
+                bullish_three = (
+                    first.close > first.open
+                    and previous.close < previous.open
+                    and current.close > current.open
+                    and self._body_engulfs(
+                        previous_lower,
+                        previous_upper,
+                        first_lower,
+                        first_upper,
+                    )
+                    and self._body_engulfs(
+                        current_lower,
+                        current_upper,
+                        previous_lower,
+                        previous_upper,
+                    )
+                )
+                bearish_three = (
+                    first.close < first.open
+                    and previous.close > previous.open
+                    and current.close < current.open
+                    and self._body_engulfs(
+                        previous_lower,
+                        previous_upper,
+                        first_lower,
+                        first_upper,
+                    )
+                    and self._body_engulfs(
+                        current_lower,
+                        current_upper,
+                        previous_lower,
+                        previous_upper,
+                    )
+                )
+                if bullish_three:
+                    return ZoneSide.SUPPORT, (index - 2, index - 1, index), index - 1
+                if bearish_three:
+                    return ZoneSide.RESISTANCE, (index - 2, index - 1, index), index - 1
+
+        bullish_two = (
+            previous.close < previous.open
+            and current.close > current.open
+            and self._body_engulfs(
+                current_lower,
+                current_upper,
+                previous_lower,
+                previous_upper,
+            )
+        )
+        bearish_two = (
+            previous.close > previous.open
+            and current.close < current.open
+            and self._body_engulfs(
+                current_lower,
+                current_upper,
+                previous_lower,
+                previous_upper,
+            )
+        )
+        if bullish_two:
+            return ZoneSide.SUPPORT, (index - 1, index), index - 1
+        if bearish_two:
+            return ZoneSide.RESISTANCE, (index - 1, index), index - 1
+        return None
+
+    def _detect_order_block(self, index: int) -> PriceZone | None:
+        pattern = self._order_block_pattern(index)
+        if pattern is None:
+            return None
+        side, formation, source_index = pattern
+        source = self.bars[source_index]
+        current = self.bars[index]
+        source_lower, source_upper, source_body = self._body(source)
+        _, _, current_body = self._body(current)
+        if source_body <= 0.0 or current_body <= 0.0:
             self._inc("order_block_zero_body_rejected")
             return None
 
-        bullish = (
-            previous.close < previous.open
-            and current.close > current.open
-            and current_lower <= previous_lower
-            and current_upper >= previous_upper
-        )
-        bearish = (
-            previous.close > previous.open
-            and current.close < current.open
-            and current_lower <= previous_lower
-            and current_upper >= previous_upper
-        )
-        if not bullish and not bearish:
-            return None
-
-        source_is_doji, source_body_ratio = self._source_is_doji(index - 1)
+        source_is_doji, source_body_ratio = self._source_is_doji(source_index)
         if source_is_doji:
             self._inc("order_block_source_doji_rejected")
             return None
 
-        side = ZoneSide.SUPPORT if bullish else ZoneSide.RESISTANCE
-        formation = (index - 1, index)
-        invalidation = (
-            min(previous.low, current.low) - self.tick_size
-            if bullish
-            else max(previous.high, current.high) + self.tick_size
-        )
-        impulse_extreme = current.high if bullish else current.low
+        formation_bars = [self.bars[item] for item in formation]
+        if side is ZoneSide.SUPPORT:
+            invalidation = min(bar.low for bar in formation_bars) - self.tick_size
+            impulse_extreme = current.high
+        else:
+            invalidation = max(bar.high for bar in formation_bars) + self.tick_size
+            impulse_extreme = current.low
         zone = PriceZone(
             zone_id=self._zone_id(ZoneKind.ORDER_BLOCK, side, formation),
             kind=ZoneKind.ORDER_BLOCK,
             side=side,
             timeframe_minutes=self.timeframe_minutes,
-            lower=previous_lower,
-            upper=previous_upper,
+            lower=source_lower,
+            upper=source_upper,
             invalidation=invalidation,
             impulse_extreme=impulse_extreme,
             formed_index=index,
-            formed_time_ns=previous.ts_close_ns,
+            formed_time_ns=source.ts_close_ns,
             observed_time_ns=current.ts_close_ns,
             formation_indices=formation,
-            strength_ratio=self._ratio(current_body, previous_body),
-            source_body_lower=previous_lower,
-            source_body_upper=previous_upper,
+            strength_ratio=self._ratio(current_body, source_body),
+            source_body_lower=source_lower,
+            source_body_upper=source_upper,
             source_body_to_average_range=source_body_ratio,
         )
         self._inc("order_block_detected")
+        self._inc(
+            "order_block_three_candle_detected"
+            if len(formation) == 3
+            else "order_block_two_candle_detected",
+        )
         if source_body_ratio is not None:
             self._inc("order_block_source_body_baseline_available")
         if zone.high_quality_by_size:
