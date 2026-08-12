@@ -132,11 +132,11 @@ class EasyChartZoneDetector:
         upper = max(bar.open, bar.close)
         return lower, upper, upper - lower
 
-    @staticmethod
-    def _ratio(numerator: float, denominator: float) -> float:
-        if denominator <= 0.0:
-            return math.inf
-        return numerator / denominator
+    def _ratio(self, numerator: float, denominator: float) -> float:
+        # An adjacent doji does not make the semantic ratio undefined. Use one
+        # tradable price increment as the minimum measurable body so the ratio
+        # remains finite, auditable and comparable across instruments.
+        return numerator / max(denominator, self.tick_size)
 
     def _zone_id(self, kind: ZoneKind, side: ZoneSide, indices: tuple[int, ...]) -> str:
         joined = "-".join(str(index) for index in indices)
