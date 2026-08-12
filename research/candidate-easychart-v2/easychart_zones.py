@@ -1,6 +1,6 @@
 """Causal EasyChart order-block, FVG and multi-timeframe zone semantics.
 
-This module deliberately does not submit orders.  It first makes the source
+This module deliberately does not submit orders. It first makes the source
 material's chart objects explicit and testable so a bad result cannot be
 mistaken for evidence against a concept which was never encoded correctly.
 """
@@ -102,13 +102,13 @@ class EasyChartZoneDetector:
     """Detect source-defined OB/FVG zones from closed candles only.
 
     Order block
-        Opposite candle body engulfed by the current candle body.  The zone is
+        Opposite candle body engulfed by the current candle body. The zone is
         the *engulfed candle body*, as stated in the video transcript, while
         invalidation uses the wick extreme of all formation candles.
 
     FVG
         A three-candle non-overlap where the middle directional body is at
-        least twice the larger adjacent body.  The zone is the actual wick gap.
+        least twice the larger adjacent body. The zone is the actual wick gap.
     """
 
     def __init__(self, symbol: str, timeframe_minutes: int, tick_size: float) -> None:
@@ -143,16 +143,17 @@ class EasyChartZoneDetector:
         return f"{self.symbol}:{self.timeframe_minutes}m:{kind.value}:{side.value}:{joined}"
 
     def _update_lifecycle(self, current: Candle, index: int) -> None:
-        # Formation candles cannot mitigate their own zone.  Only a later closed
-        # candle may touch or invalidate it.
+        # Formation candles cannot mitigate their own zone. Only a later closed
+        # candle may touch or invalidate it. An exact stop-price touch is an
+        # invalidation because a live stop order would execute there.
         for zone in self.zones:
             if not zone.active or index <= zone.formed_index:
                 continue
             if zone.side is ZoneSide.SUPPORT:
-                invalidated = current.low < zone.invalidation
+                invalidated = current.low <= zone.invalidation
                 touched = current.low <= zone.upper and current.high >= zone.lower
             else:
-                invalidated = current.high > zone.invalidation
+                invalidated = current.high >= zone.invalidation
                 touched = current.high >= zone.lower and current.low <= zone.upper
             if invalidated:
                 zone.invalidated_index = index
