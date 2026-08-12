@@ -12,7 +12,7 @@ from backtest_support import make_engine
 from instruments import CONTRACTS, make_instrument
 from mtf_backtest_support import preserve_mtf_results
 from mtf_data import add_symbol_mtf_data
-from mtf_strategy import EasyChartMTFConfig, EasyChartMTFStrategy
+from mtf_strategy_v3 import EasyChartMTFConfig, EasyChartMTFStrategy
 
 
 def parse_args() -> argparse.Namespace:
