@@ -1,0 +1,101 @@
+name: candidate-easychart-re1-liquidity-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/easychart_re1_liquidity.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_liquidity_location.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_liquidity_local.py"
+      - ".github/workflows/candidate-easychart-re1-liquidity-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-liquidity-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: liquidity-location
+            runner: run_mtf_backtest_re1_liquidity_location.py
+          - name: liquidity-local
+            runner: run_mtf_backtest_re1_liquidity_local.py
+        period:
+          - name: dev-february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - name: dev-august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - name: dev-february-2025
+            start: 2025-02-01
+            end: 2025-02-14
+          - name: random-aug20-sep02-2024
+            start: 2024-08-20
+            end: 2024-09-02
+          - name: random-sep09-sep22-2024
+            start: 2024-09-09
+            end: 2024-09-22
+          - name: random-mar07-mar20-2025
+            start: 2025-03-07
+            end: 2025-03-20
+          - name: random-jun09-jun22-2025
+            start: 2025-06-09
+            end: 2025-06-22
+          - name: random-sep10-sep23-2025
+            start: 2025-09-10
+            end: 2025-09-23
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-liquidity/${{ matrix.variant.name }}/${{ matrix.period.name }}
+      OUT: artifacts/candidate-easychart-re1-liquidity/${{ matrix.variant.name }}/${{ matrix.period.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_impulse.py \
+            research/candidate-easychart_re1/easychart_re1_ablation.py \
+            research/candidate-easychart_re1/easychart_re1_liquidity.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_liquidity_location.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_liquidity_local.py
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.variant.runner }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-${{ matrix.variant.name }}-${{ matrix.period.name }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-liquidity/${{ matrix.variant.name }}/${{ matrix.period.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
