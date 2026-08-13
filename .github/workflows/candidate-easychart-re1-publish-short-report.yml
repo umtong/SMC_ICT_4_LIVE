@@ -1,0 +1,74 @@
+name: candidate-easychart-re1-publish-short-report
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-publish-short-report.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Download latest successful candidate diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs
+          workflows=(
+            candidate-easychart-re1-impulse-diagnostic.yml
+            candidate-easychart-re1-structural-ablation.yml
+            candidate-easychart-re1-liquidity-diagnostic.yml
+            candidate-easychart-re1-complete-diagnostic.yml
+            candidate-easychart-re1-breadth-diagnostic.yml
+            candidate-easychart-re1-adjacent-diagnostic.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            run_id=$(gh run list --workflow "$workflow" \
+              --branch research/candidate-easychart_re1 --status completed --limit 10 \
+              --json databaseId,conclusion \
+              --jq '[.[] | select(.conclusion == "success")][0].databaseId // empty')
+            if [[ -z "$run_id" ]]; then
+              echo "No successful run: $workflow" >&2
+              continue
+            fi
+            mkdir -p "inputs/$workflow"
+            gh run download "$run_id" --dir "inputs/$workflow"
+          done
+
+      - name: Build public report
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf report-out
+          python research/candidate-easychart_re1/gate_re1_candidates_v3.py \
+            inputs --mode short --output report-out
+          mkdir -p research/candidate-easychart_re1/reports
+          cp report-out/gate.md research/candidate-easychart_re1/reports/latest_short_gate.md
+          cp report-out/gate.json research/candidate-easychart_re1/reports/latest_short_gate.json
+
+      - name: Commit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/reports/latest_short_gate.md \
+                  research/candidate-easychart_re1/reports/latest_short_gate.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart_re1: publish structural diagnostic gate [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
