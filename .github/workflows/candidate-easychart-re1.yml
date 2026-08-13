@@ -24,13 +24,49 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - period: february-2024
+          - variant: confirmed
+            runner: run_mtf_backtest_re1_confirmed.py
+            period: february-2024
             start: 2024-02-01
             end: 2024-02-14
-          - period: august-2024
+          - variant: confirmed
+            runner: run_mtf_backtest_re1_confirmed.py
+            period: august-2024
             start: 2024-08-01
             end: 2024-08-14
-          - period: february-2025
+          - variant: confirmed
+            runner: run_mtf_backtest_re1_confirmed.py
+            period: february-2025
+            start: 2025-02-01
+            end: 2025-02-14
+          - variant: major-swing
+            runner: run_mtf_backtest_re1_major_swing.py
+            period: february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - variant: major-swing
+            runner: run_mtf_backtest_re1_major_swing.py
+            period: august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - variant: major-swing
+            runner: run_mtf_backtest_re1_major_swing.py
+            period: february-2025
+            start: 2025-02-01
+            end: 2025-02-14
+          - variant: daytrade
+            runner: run_mtf_backtest_re1_daytrade.py
+            period: february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - variant: daytrade
+            runner: run_mtf_backtest_re1_daytrade.py
+            period: august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - variant: daytrade
+            runner: run_mtf_backtest_re1_daytrade.py
+            period: february-2025
             start: 2025-02-01
             end: 2025-02-14
     runs-on: ubuntu-24.04
@@ -41,12 +77,12 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-easychart-re1/${{ matrix.period }}
-      OUT: artifacts/candidate-easychart-re1/${{ matrix.period }}
+      CACHE: .cache/candidate-easychart-re1/${{ matrix.variant }}/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1/${{ matrix.variant }}/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile canonical decision, execution and paper code
+      - name: Compile candidate variants and paper code
         shell: bash
         run: |
           set -euo pipefail
@@ -58,6 +94,8 @@ jobs:
             research/candidate-easychart_re1/easychart_re1_reaction.py \
             research/candidate-easychart_re1/easychart_re1_selective.py \
             research/candidate-easychart_re1/easychart_re1_confirmed.py \
+            research/candidate-easychart_re1/easychart_re1_major_swing.py \
+            research/candidate-easychart_re1/easychart_re1_daytrade.py \
             research/candidate-easychart_re1/execution_re1.py \
             research/candidate-easychart_re1/execution_re1_structural.py \
             research/candidate-easychart_re1/execution_re1_structural_fixed.py \
@@ -65,7 +103,9 @@ jobs:
             research/candidate-easychart_re1/paper_re1_fixed.py \
             research/candidate-easychart_re1/run_binance_demo_re1.py \
             research/candidate-easychart_re1/run_mtf_backtest_re1.py \
-            research/candidate-easychart_re1/run_mtf_backtest_re1_confirmed.py
+            research/candidate-easychart_re1/run_mtf_backtest_re1_confirmed.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_major_swing.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_daytrade.py
 
       - name: Validate paper configuration without credentials or network
         shell: bash
@@ -78,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CACHE" "$OUT"
-          python research/candidate-easychart_re1/run_mtf_backtest_re1_confirmed.py \
+          python "research/candidate-easychart_re1/${{ matrix.runner }}" \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
             --warmup-days 30 \
@@ -91,7 +131,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-re1-${{ matrix.period }}-${{ github.sha }}
-          path: artifacts/candidate-easychart-re1/${{ matrix.period }}/**
+          name: candidate-easychart-re1-${{ matrix.variant }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1/${{ matrix.variant }}/${{ matrix.period }}/**
           if-no-files-found: warn
           retention-days: 90
