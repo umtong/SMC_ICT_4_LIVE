@@ -1,0 +1,86 @@
+name: candidate-easychart-re1-episode-geometry-packed
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/easychart_re1_episode_geometry.py"
+      - "research/candidate-easychart_re1/episode_variant_registry.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_episode.py"
+      - ".github/workflows/candidate-easychart-re1-episode-geometry-packed.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-episode-geometry-packed
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  period:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: dev-february-2024, start: 2024-02-01, end: 2024-02-14}
+          - {name: dev-august-2024, start: 2024-08-01, end: 2024-08-14}
+          - {name: dev-february-2025, start: 2025-02-01, end: 2025-02-14}
+          - {name: random-aug20-sep02-2024, start: 2024-08-20, end: 2024-09-02}
+          - {name: random-sep09-sep22-2024, start: 2024-09-09, end: 2024-09-22}
+          - {name: random-mar07-mar20-2025, start: 2025-03-07, end: 2025-03-20}
+          - {name: random-jun09-jun22-2025, start: 2025-06-09, end: 2025-06-22}
+          - {name: random-sep10-sep23-2025, start: 2025-09-10, end: 2025-09-23}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/re1-episode-packed/${{ matrix.name }}
+      ROOT_OUT: artifacts/re1-episode-packed/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile only focused lazy dispatcher
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/episode_variant_registry.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_episode.py
+      - name: Isolate candidates while reusing one market-data cache
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT"
+          : > "$ROOT_OUT/failures.txt"
+          variants=(
+            episode-geometry-5m
+            episode-geometry-static
+            episode-geometry-invalidation
+            episode-decision-area-5m
+            episode-decision-area-static
+            episode-decision-area-invalidation
+          )
+          for variant in "${variants[@]}"; do
+            export EASYCHART_RE1_EPISODE_VARIANT="$variant"
+            out="$ROOT_OUT/$variant"
+            mkdir -p "$out"
+            if ! python research/candidate-easychart_re1/run_mtf_backtest_re1_episode.py \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 35 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+              --cache "$CACHE" --output "$out" --fee-profile usd_m_vip0 \
+              > "$out/runner.log" 2>&1; then
+              echo "$variant" >> "$ROOT_OUT/failures.txt"
+              tail -n 120 "$out/runner.log" || true
+            fi
+          done
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-re1-episode-packed-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/re1-episode-packed/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
