@@ -1,0 +1,40 @@
+name: candidate-easychart-re1-cancel-superseded-v2
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-cancel-superseded-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Cancel unpacked final diagnostics and dependent superseded pipelines
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflows=(
+            candidate-easychart-re1-structural-v3-diagnostic.yml
+            candidate-easychart-re1-mechanism-v3-diagnostic.yml
+            candidate-easychart-re1-gated-validation-v12.yml
+            candidate-easychart-re1-auto-promote-v14.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            gh run list --repo "${{ github.repository }}" \
+              --workflow "$workflow" \
+              --branch research/candidate-easychart_re1 \
+              --limit 200 \
+              --json databaseId,status \
+              --jq '.[] | select(.status == "queued" or .status == "in_progress") | .databaseId' \
+            | while read -r run_id; do
+                [[ -z "$run_id" ]] || gh run cancel "$run_id" --repo "${{ github.repository }}" || true
+              done
+          done
