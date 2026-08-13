@@ -1,0 +1,76 @@
+name: candidate-easychart-re1-auto-promote-v13
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-auto-promote-v13.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 500
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: research/candidate-easychart_re1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Wait for latest v11 gated validation
+        id: wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=""
+          for attempt in $(seq 1 940); do
+            run_id=$(gh run list \
+              --workflow candidate-easychart-re1-gated-validation-v11.yml \
+              --branch research/candidate-easychart_re1 \
+              --status completed \
+              --limit 30 \
+              --json databaseId,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[0].databaseId // empty')
+            [[ -n "$run_id" ]] && break
+            sleep 30
+          done
+          [[ -n "$run_id" ]] || { echo "No completed v11 gated run" >&2; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download v11 gate evidence
+        run: |
+          mkdir -p gate-input
+          gh run download "${{ steps.wait.outputs.run_id }}" --dir gate-input || true
+      - name: Freeze only unanimous passing evidence
+        run: |
+          rm -rf promote-out
+          python research/candidate-easychart_re1/promote_re1_candidate_v5.py \
+            gate-input --output promote-out --commit-sha "${{ github.sha }}"
+          mkdir -p research/candidate-easychart_re1/reports/v11
+          cp -f promote-out/reports/* research/candidate-easychart_re1/reports/v11/ || true
+          if [[ -f promote-out/CANONICAL_READY ]]; then
+            cp promote-out/canonical_candidate.json \
+               research/candidate-easychart_re1/canonical_candidate_v11.json
+            cp promote-out/CANONICAL_READY \
+               research/candidate-easychart_re1/CANONICAL_READY_V11
+            rm -f research/candidate-easychart_re1/NOT_PROMOTED_V11
+          else
+            cp promote-out/NOT_PROMOTED \
+               research/candidate-easychart_re1/NOT_PROMOTED_V11
+          fi
+      - name: Commit isolated v11 status
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/reports/v11 \
+                  research/candidate-easychart_re1/canonical_candidate_v11.json \
+                  research/candidate-easychart_re1/CANONICAL_READY_V11 \
+                  research/candidate-easychart_re1/NOT_PROMOTED_V11 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-easychart_re1: publish isolated v11 promotion evidence [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
