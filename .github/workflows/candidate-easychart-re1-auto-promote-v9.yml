@@ -1,0 +1,86 @@
+name: candidate-easychart-re1-auto-promote-v9
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-auto-promote-v9.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: research/candidate-easychart_re1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Wait for latest v8 gated validation
+        id: wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=""
+          for attempt in $(seq 1 780); do
+            run_id=$(gh run list \
+              --workflow candidate-easychart-re1-gated-validation-v8.yml \
+              --branch research/candidate-easychart_re1 \
+              --status completed \
+              --limit 30 \
+              --json databaseId,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[0].databaseId // empty')
+            [[ -n "$run_id" ]] && break
+            sleep 30
+          done
+          [[ -n "$run_id" ]] || { echo "No completed v8 gated run" >&2; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download gate evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-input
+          gh run download "${{ steps.wait.outputs.run_id }}" --dir gate-input || true
+      - name: Freeze only a passing long candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf promote-out
+          python research/candidate-easychart_re1/promote_re1_candidate_v2.py \
+            gate-input \
+            --output promote-out \
+            --commit-sha "${{ github.sha }}"
+          mkdir -p research/candidate-easychart_re1/reports
+          cp -f promote-out/reports/* research/candidate-easychart_re1/reports/ || true
+          if [[ -f promote-out/CANONICAL_READY ]]; then
+            cp promote-out/canonical_candidate.json \
+               research/candidate-easychart_re1/canonical_candidate.json
+            cp promote-out/CANONICAL_READY \
+               research/candidate-easychart_re1/CANONICAL_READY
+            rm -f research/candidate-easychart_re1/NOT_PROMOTED
+          else
+            cp promote-out/NOT_PROMOTED \
+               research/candidate-easychart_re1/NOT_PROMOTED
+          fi
+      - name: Commit gated promotion status
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/reports \
+                  research/candidate-easychart_re1/canonical_candidate.json \
+                  research/candidate-easychart_re1/CANONICAL_READY \
+                  research/candidate-easychart_re1/NOT_PROMOTED 2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart_re1: publish lazy venue-safe promotion status [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
