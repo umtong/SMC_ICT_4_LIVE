@@ -1,0 +1,117 @@
+name: candidate-easychart-re1-paper-readiness-v6
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/canonical_candidate_v11.json"
+      - "research/candidate-easychart_re1/CANONICAL_READY_V11"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-24.04
+    outputs:
+      variant: ${{ steps.read.outputs.variant }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          test -f research/candidate-easychart_re1/canonical_candidate_v11.json
+          test -f research/candidate-easychart_re1/CANONICAL_READY_V11
+          variant=$(python -c 'import json; print(json.load(open("research/candidate-easychart_re1/canonical_candidate_v11.json"))["variant"])')
+          echo "variant=$variant" >> "$GITHUB_OUTPUT"
+
+  venue-parity:
+    needs: manifest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: parity-2024, start: 2024-08-20, end: 2024-09-02}
+          - {period: parity-2025, start: 2025-06-09, end: 2025-06-22}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_VARIANT: ${{ needs.manifest.outputs.variant }}
+      CACHE: .cache/re1-paper-v11-parity/${{ matrix.period }}
+      OUT: artifacts/re1-paper-v11-parity/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile selected-only transport graph
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/variant_registry_v4.py \
+            research/candidate-easychart_re1/variant_loader_v4.py \
+            research/candidate-easychart_re1/execution_re1_venue_safe.py \
+            research/candidate-easychart_re1/execution_re1_venue_mechanism.py \
+            research/candidate-easychart_re1/paper_re1_generic.py \
+            research/candidate-easychart_re1/paper_re1_mechanism.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_venue_frozen_v4.py \
+            research/candidate-easychart_re1/run_binance_demo_re1_frozen_v5.py
+      - name: Run exact venue-safe lifecycle in BacktestEngine
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_venue_frozen_v4.py \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: re1-paper-v11-parity-${{ needs.manifest.outputs.variant }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/re1-paper-v11-parity/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  operational-contract:
+    needs: [manifest, venue-parity]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_VARIANT: ${{ needs.manifest.outputs.variant }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Validate frozen paper graph
+        run: |
+          rm -rf paper-v11-contract
+          python research/candidate-easychart_re1/validate_paper_re1_v5.py \
+            research/candidate-easychart_re1/canonical_candidate_v11.json \
+            --output paper-v11-contract
+      - name: Validate Demo node configuration without credentials
+        run: |
+          python research/candidate-easychart_re1/run_binance_demo_re1_frozen_v5.py --check-config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re1-paper-v11-contract-${{ needs.manifest.outputs.variant }}-${{ github.sha }}
+          path: paper-v11-contract/**
+          retention-days: 90
+      - name: Publish isolated Demo-ready marker
+        run: |
+          cp paper-v11-contract/paper_contract.json \
+             research/candidate-easychart_re1/paper_contract_v11.json
+          cp paper-v11-contract/PAPER_CODE_READY \
+             research/candidate-easychart_re1/PAPER_READY_FOR_DEMO_V11
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/paper_contract_v11.json \
+                  research/candidate-easychart_re1/PAPER_READY_FOR_DEMO_V11
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-easychart_re1: freeze isolated v11 paper transport [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
