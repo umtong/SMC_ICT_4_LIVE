@@ -16,12 +16,19 @@ from easychart_re1 import (
 )
 from easychart_re1_fresh import FRESH_HTF_FOOTPRINT_RULE
 from easychart_re1_horizontal import (
-    EasyChartRE1IntegratedBundle,
     HORIZONTAL_FLIP_STOP_RULE,
     REPEATED_DEFENSE_LIFECYCLE_RULE,
     REPEATED_DEFENSE_RULE,
 )
-from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy, LIVE_PROTECTION_POLICY
+from easychart_re1_natural import (
+    EasyChartRE1NaturalBundle,
+    HORIZONTAL_SWEEP_RECLAIM_ONLY_RULE,
+)
+from execution_re1 import EasyChartMTFConfig, LIVE_PROTECTION_POLICY
+from execution_re1_structural import (
+    EasyChartRE1StructuralStrategy,
+    STRUCTURAL_PROFIT_PROTECTION_RULE,
+)
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
 from mtf_backtest_support_v5 import preserve_mtf_results_v5
@@ -63,7 +70,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     args.cache.mkdir(parents=True, exist_ok=True)
     profile = FEE_PROFILES[args.fee_profile]
-    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1IntegratedBundle
+    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1NaturalBundle
 
     engine = make_engine()
     instruments = [make_instrument_with_fee_profile(symbol, profile) for symbol in symbols]
@@ -89,7 +96,7 @@ def main() -> None:
         higher_types.append(higher_type)
     engine.sort_data()
 
-    strategy = EasyChartRE1Strategy(
+    strategy = EasyChartRE1StructuralStrategy(
         EasyChartMTFConfig(
             instrument_ids=tuple(item.id for item in instruments),
             higher_bar_types=tuple(higher_types),
@@ -120,10 +127,11 @@ def main() -> None:
         metadata = {
             "candidate": "candidate-easychart_re1",
             "decision_policy": (
-                "60m causal direction -> independent 15m diagonal or repeated-defense location -> "
-                "5m event -> 1m first distinct retest -> immutable plan"
+                "60m causal direction -> independent 15m diagonal or repeated-defense sweep location -> "
+                "5m event -> 1m first distinct retest -> immutable initial plan -> "
+                "cost-secure stop behind later confirmed 1m swing"
             ),
-            "scale_policy": "60m_context_router_plus_integrated_15_5_1_scenario_families",
+            "scale_policy": "60m_context_router_plus_natural_15_5_1_scenario_families",
             "context_router_policy": (
                 "continuation with 60m BOS; neutral regime allowed; countertrend only at "
                 "same-side untouched or first-touch-episode 60m structure/OB/FVG"
@@ -136,24 +144,29 @@ def main() -> None:
             ],
             "htf_footprint_lifecycle": "UNTOUCHED_OR_FIRST_COMPLETED_60M_TOUCH_EPISODE",
             "trade_context_policy": (
-                "CHANNEL_TRENDLINE_CORE_PLUS_INDEPENDENT_REPEATED_DEFENSE_HORIZONTAL_FAMILY"
+                "CHANNEL_TRENDLINE_CORE_PLUS_REPEATED_DEFENSE_SWEEP_RECLAIM_FAMILY"
             ),
             "horizontal_policy_provenance": [
                 REPEATED_DEFENSE_RULE,
                 REPEATED_DEFENSE_LIFECYCLE_RULE,
                 HORIZONTAL_FLIP_STOP_RULE,
+                HORIZONTAL_SWEEP_RECLAIM_ONLY_RULE,
             ],
             "target_policy": "CHANNEL_EDGE_OR_PREEXISTING_OPPOSING_STRUCTURE_WITH_CHANNEL_EXTENSION",
             "target_policy_provenance": CHANNEL_EXTENSION_RULE,
             "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
             "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
+            "position_management": (
+                "ONE_FULL_POSITION_WITH_INITIAL_STOP_TARGET_AND_COST_SECURE_CONFIRMED_1M_SWING_STOP_RATCHET"
+            ),
+            "position_management_provenance": STRUCTURAL_PROFIT_PROTECTION_RULE,
             "execution_policy": LIVE_PROTECTION_POLICY,
             "fee_profile": profile.name,
             "maker_fee_rate": float(profile.maker_rate),
             "taker_fee_rate": float(profile.taker_rate),
             "fee_profile_provenance": profile.provenance,
             "strategy_exit_policy": (
-                "PREDECLARED_REDUCE_ONLY_STOP_MARKET_OR_LIMIT_TARGET_WITH_STRATEGY_SIBLING_CANCEL"
+                "REDUCE_ONLY_STOP_MARKET_RATCHET_OR_LIMIT_TARGET_WITH_STRATEGY_SIBLING_CANCEL"
             ),
             **contract_record(),
         }
