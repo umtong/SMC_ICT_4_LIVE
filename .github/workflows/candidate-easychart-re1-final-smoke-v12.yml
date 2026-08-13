@@ -1,0 +1,82 @@
+name: candidate-easychart-re1-final-smoke-v12
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-final-smoke-v12.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  import-and-config:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - geometry-v3-5m
+          - zone-v3-5m
+          - decision-area-v3-5m
+          - displacement-v3-5m
+          - mechanism-v3-easychart-core-invalidation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile final graph
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_geometry_v2.py \
+            research/candidate-easychart_re1/easychart_re1_geometry_v3.py \
+            research/candidate-easychart_re1/easychart_re1_zone_targets_v3.py \
+            research/candidate-easychart_re1/easychart_re1_decision_area_v3.py \
+            research/candidate-easychart_re1/easychart_re1_displacement_v3.py \
+            research/candidate-easychart_re1/execution_re1_invalidation.py \
+            research/candidate-easychart_re1/execution_re1_mechanism_filter.py \
+            research/candidate-easychart_re1/execution_re1_venue_safe.py \
+            research/candidate-easychart_re1/execution_re1_venue_mechanism.py \
+            research/candidate-easychart_re1/paper_re1_generic.py \
+            research/candidate-easychart_re1/paper_re1_mechanism.py \
+            research/candidate-easychart_re1/research_variant_registry_v11.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_variant_v11.py \
+            research/candidate-easychart_re1/variant_registry_v4.py \
+            research/candidate-easychart_re1/variant_loader_v4.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_venue_frozen_v4.py \
+            research/candidate-easychart_re1/run_binance_demo_re1_frozen_v5.py
+      - name: Instantiate selected research and production bundle
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib
+          import os
+          from research_variant_registry_v11 import VARIANTS as research
+          from variant_registry_v4 import VARIANTS as production
+
+          name = os.environ['EASYCHART_RE1_VARIANT']
+          r = research[name]
+          p = production[name]
+          def load(path):
+              module, _, attr = path.partition(':')
+              return getattr(importlib.import_module(module), attr)
+          research_bundle = load(r.bundle)
+          production_bundle = load(p.bundle)
+          assert research_bundle is production_bundle
+          instance = production_bundle('BTCUSDT', 0.1, 1.0)
+          assert instance is not None
+          load(p.venue_strategy)
+          load(p.paper_strategy)
+          print(name, p.bundle, p.venue_strategy, p.paper_strategy, p.mechanisms)
+          PY
+      - name: Validate Demo node configuration without credentials
+        run: |
+          python research/candidate-easychart_re1/run_binance_demo_re1_frozen_v5.py --check-config
