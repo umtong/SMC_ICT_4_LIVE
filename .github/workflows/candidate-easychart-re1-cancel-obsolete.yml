@@ -1,0 +1,65 @@
+name: candidate-easychart-re1-cancel-obsolete
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-cancel-obsolete.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Cancel only superseded queued or running workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          obsolete=(
+            candidate-easychart-re1-gated-validation-v7.yml
+            candidate-easychart-re1-gated-validation-v8.yml
+            candidate-easychart-re1-gated-validation-v9.yml
+            candidate-easychart-re1-gated-validation-v10.yml
+            candidate-easychart-re1-gated-validation-v11.yml
+            candidate-easychart-re1-auto-promote-v8.yml
+            candidate-easychart-re1-auto-promote-v9.yml
+            candidate-easychart-re1-auto-promote-v10.yml
+            candidate-easychart-re1-auto-promote-v11.yml
+            candidate-easychart-re1-auto-promote-v12.yml
+            candidate-easychart-re1-auto-promote-v13.yml
+            candidate-easychart-re1-paper-readiness.yml
+            candidate-easychart-re1-paper-readiness-v2.yml
+            candidate-easychart-re1-paper-readiness-v3.yml
+            candidate-easychart-re1-paper-readiness-v4.yml
+            candidate-easychart-re1-paper-readiness-v5.yml
+            candidate-easychart-re1-paper-readiness-v6.yml
+            candidate-easychart-re1-publish-diagnostics-v8.yml
+            candidate-easychart-re1-publish-diagnostics-v9.yml
+            candidate-easychart-re1-publish-diagnostics-v10.yml
+            candidate-easychart-re1-publish-diagnostics-v11.yml
+            candidate-easychart-re1-displacement-diagnostic.yml
+            candidate-easychart-re1-geometry-v2-diagnostic.yml
+            candidate-easychart-re1-zone-target-v2-diagnostic.yml
+            candidate-easychart-re1-decision-area-v2-diagnostic.yml
+            candidate-easychart-re1-displacement-v2-diagnostic.yml
+            candidate-easychart-re1-mechanism-attribution.yml
+            candidate-easychart-re1-mechanism-combinations.yml
+            candidate-easychart-re1-final-smoke-v12.yml
+          )
+          for workflow in "${obsolete[@]}"; do
+            gh run list --repo "${{ github.repository }}" \
+              --workflow "$workflow" \
+              --branch research/candidate-easychart_re1 \
+              --limit 100 \
+              --json databaseId,status \
+              --jq '.[] | select(.status == "queued" or .status == "in_progress") | .databaseId' \
+            | while read -r run_id; do
+                [[ -z "$run_id" ]] || gh run cancel "$run_id" --repo "${{ github.repository }}" || true
+              done
+          done
