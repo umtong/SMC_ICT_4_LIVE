@@ -1,0 +1,179 @@
+name: candidate-easychart-re1-gated-validation-v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+jobs:
+  short-gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      variant: ${{ steps.gate.outputs.variant }}
+      pass: ${{ steps.gate.outputs.pass }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest completed diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs
+          workflows=(
+            candidate-easychart-re1-impulse-diagnostic.yml
+            candidate-easychart-re1-structural-ablation.yml
+            candidate-easychart-re1-liquidity-diagnostic.yml
+            candidate-easychart-re1-complete-diagnostic.yml
+            candidate-easychart-re1-breadth-diagnostic.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            run_id=$(gh run list --workflow "$workflow" \
+              --branch research/candidate-easychart_re1 --status completed --limit 10 \
+              --json databaseId,conclusion \
+              --jq '[.[] | select(.conclusion == "success")][0].databaseId // empty')
+            [[ -n "$run_id" ]] || { echo "missing successful $workflow" >&2; continue; }
+            mkdir -p "inputs/$workflow"
+            gh run download "$run_id" --dir "inputs/$workflow"
+          done
+      - name: Aggregate short diagnostics
+        id: gate
+        run: |
+          python research/candidate-easychart_re1/gate_re1_candidates_v2.py \
+            inputs --mode short --output gate-short --github-output "$GITHUB_OUTPUT"
+          cat gate-short/gate.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re1-v2-short-gate-${{ github.sha }}
+          path: gate-short/**
+          retention-days: 90
+
+  unseen-holdout:
+    needs: short-gate
+    if: needs.short-gate.outputs.pass == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: holdout-march-2024, start: 2024-03-11, end: 2024-03-24}
+          - {period: holdout-may-2024, start: 2024-05-06, end: 2024-05-19}
+          - {period: holdout-november-2024, start: 2024-11-04, end: 2024-11-17}
+          - {period: holdout-january-2025, start: 2025-01-06, end: 2025-01-19}
+          - {period: holdout-april-2025, start: 2025-04-07, end: 2025-04-20}
+          - {period: holdout-july-2025, start: 2025-07-07, end: 2025-07-20}
+          - {period: holdout-november-2025, start: 2025-11-03, end: 2025-11-16}
+          - {period: holdout-february-2026, start: 2026-02-02, end: 2026-02-15}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_VARIANT: ${{ needs.short-gate.outputs.variant }}
+      CACHE: .cache/re1-v2-holdout/${{ matrix.period }}
+      OUT: artifacts/re1-v2-holdout/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile selected policy
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_variant_v2.py \
+            research/candidate-easychart_re1/execution_re1_breadth.py
+      - name: Run unseen window
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_variant_v2.py \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: re1-v2-holdout-${{ needs.short-gate.outputs.variant }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/re1-v2-holdout/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  holdout-gate:
+    needs: [short-gate, unseen-holdout]
+    if: needs.short-gate.outputs.pass == 'true' && always() && needs.unseen-holdout.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      pass: ${{ steps.gate.outputs.pass }}
+      variant: ${{ steps.gate.outputs.variant }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: re1-v2-holdout-*
+          path: holdout-inputs
+      - id: gate
+        run: |
+          python research/candidate-easychart_re1/gate_re1_candidates_v2.py \
+            holdout-inputs --mode holdout --output gate-holdout --github-output "$GITHUB_OUTPUT"
+          cat gate-holdout/gate.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re1-v2-holdout-gate-${{ github.sha }}
+          path: gate-holdout/**
+          retention-days: 90
+
+  long-continuous:
+    needs: [short-gate, holdout-gate]
+    if: needs.holdout-gate.outputs.pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_VARIANT: ${{ needs.short-gate.outputs.variant }}
+      CACHE: .cache/re1-v2-long
+      OUT: artifacts/re1-v2-long/long-continuous
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run one continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_variant_v2.py \
+            --start 2024-02-01 --end 2026-07-31 --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: re1-v2-long-${{ needs.short-gate.outputs.variant }}-${{ github.sha }}
+          path: artifacts/re1-v2-long/long-continuous/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  long-gate:
+    needs: [short-gate, long-continuous]
+    if: needs.long-continuous.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      pass: ${{ steps.gate.outputs.pass }}
+      variant: ${{ steps.gate.outputs.variant }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: re1-v2-long-*
+          path: long-input
+      - id: gate
+        run: |
+          python research/candidate-easychart_re1/gate_re1_candidates_v2.py \
+            long-input --mode long --output gate-long --github-output "$GITHUB_OUTPUT"
+          cat gate-long/gate.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re1-v2-long-gate-${{ github.sha }}
+          path: gate-long/**
+          retention-days: 90
