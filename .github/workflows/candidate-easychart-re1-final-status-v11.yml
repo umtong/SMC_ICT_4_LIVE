@@ -1,0 +1,65 @@
+name: candidate-easychart-re1-final-status-v11
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/NOT_PROMOTED_V11"
+      - "research/candidate-easychart_re1/PAPER_READY_FOR_DEMO_V11"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Build final status
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          root = Path('research/candidate-easychart_re1')
+          output = {
+              'candidate': 'candidate-easychart_re1',
+              'generated_at_utc': datetime.now(UTC).isoformat(),
+              'long_and_paper_ready': False,
+          }
+          manifest = root / 'canonical_candidate_v11.json'
+          paper = root / 'paper_contract_v11.json'
+          failed = root / 'NOT_PROMOTED_V11'
+          if manifest.exists() and paper.exists() and (root / 'PAPER_READY_FOR_DEMO_V11').exists():
+              output['long_and_paper_ready'] = True
+              output['promotion'] = json.loads(manifest.read_text())
+              output['paper_contract'] = json.loads(paper.read_text())
+          else:
+              output['reason'] = failed.read_text().strip() if failed.exists() else 'paper validation incomplete'
+              status = root / 'reports/v11/latest_gate_status.json'
+              if status.exists():
+                  output['gate_status'] = json.loads(status.read_text())
+              for mode in ('short', 'holdout', 'long'):
+                  path = root / f'reports/v11/latest_{mode}_gate.json'
+                  if path.exists():
+                      output[f'{mode}_gate'] = json.loads(path.read_text())
+          (root / 'FINAL_STATUS_V11.json').write_text(
+              json.dumps(output, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+      - name: Commit final status
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/FINAL_STATUS_V11.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-easychart_re1: publish final v11 status [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
