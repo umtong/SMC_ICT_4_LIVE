@@ -1,0 +1,45 @@
+name: candidate-easychart-re1-reversal-flow-ob-expanded
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.reversal_flow_ob_expanded_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-reversal-flow-ob-expanded, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: february-2024, start: 2024-02-01, end: 2024-02-14}
+          - {period: august-2024, start: 2024-08-01, end: 2024-08-14}
+          - {period: february-2025, start: 2025-02-01, end: 2025-02-14}
+          - {period: live-examples-2025, start: 2025-08-01, end: 2025-09-03}
+          - {period: february-2026, start: 2026-02-01, end: 2026-02-14}
+          - {period: july-2026, start: 2026-07-15, end: 2026-07-31}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/candidate-easychart-re1-reversal-flow-ob-expanded/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-reversal-flow-ob-expanded/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: python -m py_compile research/candidate-easychart_re1/easychart_re1_reversal_flow_ob.py research/candidate-easychart_re1/run_mtf_backtest_re1_reversal_flow_ob.py research/candidate-easychart_re1/execution_re1_flow.py
+      - name: Run
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_reversal_flow_ob.py --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 14 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - name: Preserve
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-reversal-flow-ob-expanded-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-reversal-flow-ob-expanded/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
