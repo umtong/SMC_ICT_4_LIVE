@@ -24,11 +24,7 @@ from easychart_re1_natural import (
     EasyChartRE1NaturalBundle,
     HORIZONTAL_SWEEP_RECLAIM_ONLY_RULE,
 )
-from execution_re1 import EasyChartMTFConfig, LIVE_PROTECTION_POLICY
-from execution_re1_structural import (
-    EasyChartRE1StructuralStrategy,
-    STRUCTURAL_PROFIT_PROTECTION_RULE,
-)
+from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy, LIVE_PROTECTION_POLICY
 from fee_profiles_v5 import FEE_PROFILES, make_instrument_with_fee_profile
 from instruments import CONTRACTS
 from mtf_backtest_support_v5 import preserve_mtf_results_v5
@@ -96,7 +92,7 @@ def main() -> None:
         higher_types.append(higher_type)
     engine.sort_data()
 
-    strategy = EasyChartRE1StructuralStrategy(
+    strategy = EasyChartRE1Strategy(
         EasyChartMTFConfig(
             instrument_ids=tuple(item.id for item in instruments),
             higher_bar_types=tuple(higher_types),
@@ -128,8 +124,8 @@ def main() -> None:
             "candidate": "candidate-easychart_re1",
             "decision_policy": (
                 "60m causal direction -> independent 15m diagonal or repeated-defense sweep location -> "
-                "5m event -> 1m first distinct retest -> immutable initial plan -> "
-                "cost-secure stop behind later confirmed 1m swing"
+                "5m event -> 1m first distinct retest -> immutable pre-entry stop and target -> "
+                "one full-position exit"
             ),
             "scale_policy": "60m_context_router_plus_natural_15_5_1_scenario_families",
             "context_router_policy": (
@@ -157,16 +153,16 @@ def main() -> None:
             "retest_policy": "CLOSE_DETACH_THEN_FIRST_RETURN",
             "retest_policy_provenance": CLOSE_DETACHED_RETEST_RULE,
             "position_management": (
-                "ONE_FULL_POSITION_WITH_INITIAL_STOP_TARGET_AND_COST_SECURE_CONFIRMED_1M_SWING_STOP_RATCHET"
+                "ONE_FULL_POSITION_WITH_IMMUTABLE_PRE_ENTRY_STOP_AND_TARGET_NO_PARTIAL_NO_RATCHET"
             ),
-            "position_management_provenance": STRUCTURAL_PROFIT_PROTECTION_RULE,
+            "position_management_provenance": "RE1_SIMPLE_FIXED_PLAN_CONTRACT",
             "execution_policy": LIVE_PROTECTION_POLICY,
             "fee_profile": profile.name,
             "maker_fee_rate": float(profile.maker_rate),
             "taker_fee_rate": float(profile.taker_rate),
             "fee_profile_provenance": profile.provenance,
             "strategy_exit_policy": (
-                "REDUCE_ONLY_STOP_MARKET_RATCHET_OR_LIMIT_TARGET_WITH_STRATEGY_SIBLING_CANCEL"
+                "REDUCE_ONLY_STOP_MARKET_OR_LIMIT_TARGET_WITH_STRATEGY_SIBLING_CANCEL"
             ),
             **contract_record(),
         }
