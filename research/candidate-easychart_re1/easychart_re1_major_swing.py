@@ -1,8 +1,8 @@
 """Single-major-swing liquidity and S/R-flip family for EasyChart RE1.
 
 Repeated-defense areas recover box-range traps, but the supplied material and
-the live examples also trade one obvious prior high or low.  Such a swing is
-not an unconditional bounce signal.  Its value is the visible pool of stops
+the live examples also trade one obvious prior high or low. Such a swing is
+not an unconditional bounce signal. Its value is the visible pool of stops
 behind the wick and the binary auction which follows when price later reaches
 it:
 
@@ -10,13 +10,19 @@ it:
 * a body break, next-decision-bar hold, detached return and immediate response
   is a genuine S/R-flip continuation episode.
 
-This module adds that mechanism as an independent opportunity family.  Only
-causally confirmed 15-minute span-6 pivots originate trades.  Their original
+This module adds that mechanism as an independent opportunity family. Only
+causally confirmed 15-minute span-6 pivots originate trades. Their original
 wick rejection band is the decision area; local span-2 pivots remain available
-only as nearer pre-existing objectives.  A first later interaction owns the
-episode and retires the swing.  Every executable entry still requires the
+only as nearer pre-existing objectives. A first later interaction owns the
+episode and retires the swing. Every executable entry still requires the
 existing one-minute OB, or an FVG overlapping an active OB, followed by the
 first detached retest and first-response hold.
+
+For an accepted break, the hard stop is inherited from the causal breakout-wave
+origin rather than manufactured immediately behind the retested level. If that
+structural stop leaves less than 1.0 gross R to the first pre-existing objective,
+the plan is rejected before entry. This preserves the user's immutable-plan
+contract without converting normal retest depth into a false high-R setup.
 
 No distance tolerance, score, volatility threshold, fixed-R target, clock
 timeout or outcome-dependent selection is introduced.
@@ -35,7 +41,7 @@ from contracts_v5 import (
     StructureZone,
     V5TradePlan,
 )
-from domain import Candle, Side
+from domain import Candle
 from easychart_re1_confirmed import (
     ConfirmedSelectiveScenarioEngine,
     EasyChartRE1ConfirmedBundle,
@@ -56,10 +62,15 @@ MAJOR_SWING_PATH_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "SINGLE_MAJOR_SWING_EXECUTES_ONLY_SWEEP_RECLAIM_OR_CONFIRMED_ACCEPTED_BREAK_RETEST"
 )
+MAJOR_SWING_ACCEPTANCE_STOP_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:"
+    "ACCEPTED_SINGLE_MAJOR_SWING_BREAK_RETEST_USES_CAUSAL_BREAKOUT_WAVE_ORIGIN"
+)
 for _rule in (
     SINGLE_MAJOR_SWING_LIQUIDITY_RULE,
     MAJOR_SWING_EPISODE_RULE,
     MAJOR_SWING_PATH_RULE,
+    MAJOR_SWING_ACCEPTANCE_STOP_RULE,
 ):
     if _rule not in _contracts.TRANSLATION_RULES:
         _contracts.TRANSLATION_RULES += (_rule,)
@@ -72,7 +83,7 @@ class MajorSwingLiquidityStructureBook(NearestAnyPivotStructureBook):
 
     def __init__(self, symbol: str, timeframe_minutes: int, tick_size: float) -> None:
         # Span 2 remains in the same causal book only so target_for can select
-        # the nearer opposing structure.  It never originates a trade here.
+        # the nearer opposing structure. It never originates a trade here.
         super().__init__(
             symbol,
             timeframe_minutes,
@@ -138,7 +149,13 @@ class MajorSwingLiquidityStructureBook(NearestAnyPivotStructureBook):
 
 
 class MajorSwingLiquidityScenarioEngine(ConfirmedSelectiveScenarioEngine):
-    """Complete sweep/reclaim and accepted-break policy over one major swing."""
+    """Complete sweep/reclaim and accepted-break policy over one major swing.
+
+    Accepted breaks deliberately inherit the standard non-channel acceptance
+    stop: the causal breakout-wave origin, extended beyond the completed entry
+    bar only when necessary. A single prior high/low is a structural S/R flip,
+    not a zero-width level whose nearest tick is automatically the thesis stop.
+    """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -147,33 +164,6 @@ class MajorSwingLiquidityScenarioEngine(ConfirmedSelectiveScenarioEngine):
             self.higher_minutes,
             self.tick_size,
         )
-
-    def _acceptance_stop(self, setup: ScenarioSetup, time_ns: int) -> float | None:
-        # A horizontal S/R flip fails when the first response loses the retested
-        # level or the retest extreme.  This is intentionally different from a
-        # diagonal main-line reversal whose breakout-wave origin can be farther.
-        bar = self._current_trigger_bar
-        if bar is None or bar.ts_close_ns != time_ns:
-            raise RuntimeError("major-swing acceptance stop requested without retest bar")
-        _, lower, upper = self._projected_bounds(setup, time_ns)
-        stop = (
-            min(lower - self.tick_size, bar.low - self.tick_size)
-            if setup.side is Side.LONG
-            else max(upper + self.tick_size, bar.high + self.tick_size)
-        )
-        self._inc("major_swing_acceptance_retest_extreme_stop")
-        self._trace(
-            "major_swing_acceptance_retest_extreme_stop",
-            time_ns,
-            setup,
-            projected_lower=lower,
-            projected_upper=upper,
-            retest_low=bar.low,
-            retest_high=bar.high,
-            executable_stop=stop,
-            rule_provenance=MAJOR_SWING_PATH_RULE,
-        )
-        return stop
 
 
 class EasyChartRE1MajorSwingBundle(EasyChartRE1ConfirmedBundle):
@@ -280,6 +270,7 @@ class EasyChartRE1MajorSwingBundle(EasyChartRE1ConfirmedBundle):
                 SINGLE_MAJOR_SWING_LIQUIDITY_RULE,
                 MAJOR_SWING_EPISODE_RULE,
                 MAJOR_SWING_PATH_RULE,
+                MAJOR_SWING_ACCEPTANCE_STOP_RULE,
             ),
         }
         return output
