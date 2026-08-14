@@ -142,6 +142,11 @@ class EasyChartRE1FlowAuctionCoreBundle(EasyChartRE1VolumeClockMicroCoreBundle):
         return output
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        # Preserve the complete closed-bar evidence without invoking any
+        # unrelated family. Each timeframe is appended exactly once.
+        if timeframe_minutes in self.detectors:
+            self.detectors[timeframe_minutes].on_bar(bar)
+
         # Update each causal market-state book exactly once.
         if timeframe_minutes == self.CONTEXT_MINUTES:
             self._update_macro_context(bar)
