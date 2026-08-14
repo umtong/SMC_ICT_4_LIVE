@@ -65,11 +65,17 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
     def _sinc(self, key: str) -> None:
         self._sequence_counts[key] = self._sequence_counts.get(key, 0) + 1
 
-    def _touches(self, setup: ScenarioSetup, item: FlowObservation) -> bool:
+    def _flow_touches(self, setup: ScenarioSetup, item: FlowObservation) -> bool:
+        """Return whether one completed flow bar interacted with the setup boundary.
+
+        The distinct name is intentional: scenario-context engines already expose
+        ``_touches(bar, zone)`` for price-cluster discovery.
+        """
         _, lower, upper = self._projected_bounds(setup, item.ts_close_ns)
         return item.low <= upper if setup.side is Side.LONG else item.high >= lower
 
-    def _outside(self, setup: ScenarioSetup, item: FlowObservation) -> bool:
+    def _flow_outside(self, setup: ScenarioSetup, item: FlowObservation) -> bool:
+        """Return whether the completed flow bar finished on the intended side."""
         _, lower, upper = self._projected_bounds(setup, item.ts_close_ns)
         return item.close > upper if setup.side is Side.LONG else item.close < lower
 
@@ -79,7 +85,7 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
         bar: Any,
         observation: FlowObservation | None,
     ) -> FlowSignal | None:
-        if observation is None or not self._outside(setup, observation):
+        if observation is None or not self._flow_outside(setup, observation):
             return None
         event_start = setup.confirmation_time_ns or setup.interaction_time_ns
         episode = self.flow_analyzer.since(event_start)
@@ -99,15 +105,17 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
             if item.active
             and item.directed
             and self._opposite_delta(setup.side, item.signed_taker_quote)
-            and self._touches(setup, item)
+            and self._flow_touches(setup, item)
         ]
-        touch_episode = [item for item in episode if self._touches(setup, item)]
+        touch_episode = [
+            item for item in episode if self._flow_touches(setup, item)
+        ]
 
         current_absorption = (
             observation.active
             and observation.directed
             and self._opposite_delta(setup.side, observation.signed_taker_quote)
-            and self._touches(setup, observation)
+            and self._flow_touches(setup, observation)
         )
         repeated_absorption = (
             bool(touch_episode)
@@ -135,10 +143,12 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
         response_after_absorption = False
         response_progress = 0.0
         if aligned_current and prior_absorption:
-            first_absorption = prior_absorption[0]
+            # The most recent absorption is the causal parent of the first
+            # response, not an arbitrarily old absorption earlier in the episode.
+            latest_absorption = prior_absorption[-1]
             response_progress = self._intended_progress(
                 setup.side,
-                first_absorption.open,
+                latest_absorption.open,
                 observation.close,
             )
             response_after_absorption = response_progress > 0.0
@@ -167,9 +177,14 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
                     net_price_progress=net_progress,
                 )
 
-            retest_before_current = bool(touch_episode[:-1])
+            retest_before_current = any(
+                item.ts_close_ns < observation.ts_close_ns
+                for item in touch_episode
+            )
             retest_initiative = aligned_current and (
-                response_after_absorption or retest_before_current or self._touches(setup, observation)
+                response_after_absorption
+                or retest_before_current
+                or self._flow_touches(setup, observation)
             )
             if retest_initiative:
                 kind = (
@@ -194,7 +209,9 @@ class SequenceFlowEntryMixin(FlowEntryMixin):
                     observation=observation,
                     episode_bars=len(episode),
                     cumulative_signed_taker_quote=cumulative_delta,
-                    net_price_progress=(response_progress if response_after_absorption else net_progress),
+                    net_price_progress=(
+                        response_progress if response_after_absorption else net_progress
+                    ),
                 )
             self._sinc("acceptance_raw_initiative_deferred_without_retest")
             return None
