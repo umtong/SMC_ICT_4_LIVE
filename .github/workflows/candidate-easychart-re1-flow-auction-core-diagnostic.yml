@@ -1,0 +1,96 @@
+name: candidate-easychart-re1-flow-auction-core-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.flow_auction_core_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-flow-auction-core-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: february-2025-short
+            start: 2025-02-01
+            end: 2025-02-10
+          - period: live-examples-2025-short
+            start: 2025-08-10
+            end: 2025-08-20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-flow-auction-core/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-flow-auction-core/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile flow auction core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_flow.py \
+            research/candidate-easychart_re1/mtf_data_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow_routed.py \
+            research/candidate-easychart_re1/easychart_re1_flow_volume_clock.py \
+            research/candidate-easychart_re1/easychart_re1_flow_sequence.py \
+            research/candidate-easychart_re1/easychart_re1_flow_micro_core.py \
+            research/candidate-easychart_re1/easychart_re1_flow_auction_core.py \
+            research/candidate-easychart_re1/execution_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow_auction_core.py
+
+      - name: Auction core responsibility smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_flow_auction_core import EasyChartRE1FlowAuctionCoreBundle
+          from easychart_re1_flow_sequence import SequenceFlowEntryMixin
+          from easychart_re1_flow_volume_clock import VolumeClockFlowEntryMixin
+          bundle = EasyChartRE1FlowAuctionCoreBundle("BTCUSDT", 0.1, 1.0)
+          assert isinstance(bundle.micro, VolumeClockFlowEntryMixin)
+          assert isinstance(bundle.decision_area, SequenceFlowEntryMixin)
+          assert bundle.micro.flow_analyzer.BASELINE_BARS == 60
+          assert bundle.decision_area.flow_analyzer.BASELINE_BARS == 60
+          PY
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_flow_auction_core.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve auction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-flow-auction-core-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-flow-auction-core/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
