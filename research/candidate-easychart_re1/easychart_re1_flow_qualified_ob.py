@@ -1,4 +1,4 @@
-"""Flow-qualified immediate order-block entry for EasyChart RE1.
+"""Mechanism-flow-qualified immediate order-block entry for EasyChart RE1.
 
 The causal-state candidate recovered trade frequency, but its completed-account
 evidence showed a structural failure: the immediate high-quality one-minute OB
@@ -8,16 +8,14 @@ that moment.
 
 This module changes one responsibility only:
 
-* a high-quality engulfing OB remains an immediate entry when the same completed
-  one-minute bar also shows coherent taker initiative or boundary absorption;
-* without coherent flow, that OB is not discarded--it falls back to the existing
-  departure, first-retest and response path;
+* a high-quality engulfing OB remains an immediate entry when its completed
+  one-minute bar also carries the flow mechanism appropriate to the scenario;
+* accepted breaks use aligned initiative, while rejection/bounce/rotation and
+  terminal reversals use opposing-aggression absorption;
+* without the matching flow event, the OB is not discarded--it falls back to
+  the existing departure, first-retest and response path;
 * the OB remains the price location while the flow mechanism becomes the plan's
-  entry trigger kind, allowing the mechanism-aware router to treat absorption
-  and initiative correctly;
-* a one-minute bar closing at the same timestamp as the completed five-minute
-  decision bar is causally available because the account submits only after the
-  whole timestamp bucket has closed.
+  entry trigger kind, so the mechanism-aware router can route it correctly.
 
 No fitted score, percentile, clock window, family exception, partial exit or
 post-entry rule is introduced.
@@ -29,35 +27,29 @@ from typing import Any
 import contracts_v5 as _contracts
 from contracts_v5 import ScenarioSetup, V5TradePlan
 from domain import Side
-from easychart_re1_flow import (
-    FlowHorizontalFlipEngine,
-    FlowHumanDecisionAreaEngine,
-    FlowHumanHorizontalEngine,
-    FlowHumanMajorSwingEngine,
-    FlowHumanMicroEngine,
-    FlowSignal,
-    FlowTerminalWedgeScenarioEngine,
+from easychart_re1_flow import FlowSignal
+from easychart_re1_flow_mechanism import (
+    EasyChartRE1MechanismFlowBundle,
+    MechanismFlowHorizontalFlipEngine,
+    MechanismFlowHumanDecisionAreaEngine,
+    MechanismFlowHumanHorizontalEngine,
+    MechanismFlowHumanMajorSwingEngine,
+    MechanismFlowHumanMicroEngine,
+    MechanismFlowTerminalWedgeScenarioEngine,
 )
-from easychart_re1_flow_routed import EasyChartRE1FlowRoutedBundle
 from easychart_zones import PriceZone, ZoneKind, ZoneSide
 
 
 FLOW_QUALIFIED_IMMEDIATE_OB_RULE = (
     "RESEARCH_HYPOTHESIS:"
-    "HIGH_QUALITY_ENGULFING_OB_ENTERS_IMMEDIATELY_ONLY_WHEN_ITS_COMPLETED_BAR_ALSO_SHOWS_COHERENT_TAKER_INITIATIVE_OR_BOUNDARY_ABSORPTION"
-)
-SAME_CLOSE_CAUSAL_AVAILABILITY_RULE = (
-    "SOURCE_AMBIGUITY_TRANSLATION:"
-    "COMPLETED_ONE_MINUTE_FLOW_AT_THE_SAME_CLOSE_TIMESTAMP_AS_THE_COMPLETED_FIVE_MINUTE_DECISION_BAR_IS_AVAILABLE_BEFORE_ORDER_SUBMISSION"
+    "HIGH_QUALITY_ENGULFING_OB_ENTERS_IMMEDIATELY_ONLY_WHEN_ITS_COMPLETED_BAR_ALSO_SHOWS_THE_FLOW_MECHANISM_APPROPRIATE_TO_THE_SCENARIO"
 )
 if FLOW_QUALIFIED_IMMEDIATE_OB_RULE not in _contracts.RESEARCH_RULES:
     _contracts.RESEARCH_RULES += (FLOW_QUALIFIED_IMMEDIATE_OB_RULE,)
-if SAME_CLOSE_CAUSAL_AVAILABILITY_RULE not in _contracts.TRANSLATION_RULES:
-    _contracts.TRANSLATION_RULES += (SAME_CLOSE_CAUSAL_AVAILABILITY_RULE,)
 
 
 class FlowQualifiedImmediateOrderBlockMixin:
-    """Authorize immediate OBs with flow; otherwise retain their retest path."""
+    """Authorize immediate OBs with mechanism flow; otherwise retain retest."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -86,7 +78,7 @@ class FlowQualifiedImmediateOrderBlockMixin:
             if zone.kind is ZoneKind.ORDER_BLOCK
             and zone.side is wanted
             and zone.high_quality_by_size
-            and zone.observed_time_ns >= setup.confirmation_time_ns
+            and zone.observed_time_ns > setup.confirmation_time_ns
             and self._formation_touches_context(zone, setup)
         ]
         if not candidates:
@@ -94,9 +86,9 @@ class FlowQualifiedImmediateOrderBlockMixin:
 
         signal = self._flow_signal(setup, bar, self._flow_current)
         if signal is None:
-            self._qinc("strong_ob_deferred_to_retest_without_coherent_flow")
+            self._qinc("strong_ob_deferred_to_retest_without_matching_flow")
             self._trace(
-                "strong_ob_deferred_to_retest_without_coherent_flow",
+                "strong_ob_deferred_to_retest_without_matching_flow",
                 bar.ts_close_ns,
                 setup,
                 candidate_zone_ids=[zone.zone_id for zone in candidates],
@@ -105,18 +97,13 @@ class FlowQualifiedImmediateOrderBlockMixin:
             return []
 
         self._qualified_ob_signals[setup.setup_id] = signal
-        self._qinc("strong_ob_immediate_authorized_by_flow")
-        if bar.ts_close_ns == setup.confirmation_time_ns:
-            self._qinc("strong_ob_used_same_close_flow")
+        self._qinc("strong_ob_immediate_authorized_by_matching_flow")
         self._trace(
-            "strong_ob_immediate_authorized_by_flow",
+            "strong_ob_immediate_authorized_by_matching_flow",
             bar.ts_close_ns,
             setup,
             candidate_zone_ids=[zone.zone_id for zone in candidates],
-            rule_provenance=(
-                FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
-                SAME_CLOSE_CAUSAL_AVAILABILITY_RULE,
-            ),
+            rule_provenance=FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
             **self._signal_trace(signal),
         )
         return candidates
@@ -177,50 +164,47 @@ class FlowQualifiedImmediateOrderBlockMixin:
     def flow_qualified_ob_diagnostics(self) -> dict[str, Any]:
         return {
             "counts": dict(sorted(self._qualified_ob_counts.items())),
-            "rules": (
-                FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
-                SAME_CLOSE_CAUSAL_AVAILABILITY_RULE,
-            ),
+            "rule_provenance": FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
         }
 
 
 class QualifiedFlowMicroEngine(
     FlowQualifiedImmediateOrderBlockMixin,
-    FlowHumanMicroEngine,
+    MechanismFlowHumanMicroEngine,
 ):
     pass
 
 
 class QualifiedFlowHorizontalEngine(
     FlowQualifiedImmediateOrderBlockMixin,
-    FlowHumanHorizontalEngine,
+    MechanismFlowHumanHorizontalEngine,
 ):
     pass
 
 
 class QualifiedFlowMajorSwingEngine(
     FlowQualifiedImmediateOrderBlockMixin,
-    FlowHumanMajorSwingEngine,
+    MechanismFlowHumanMajorSwingEngine,
 ):
     pass
 
 
 class QualifiedFlowDecisionAreaEngine(
     FlowQualifiedImmediateOrderBlockMixin,
-    FlowHumanDecisionAreaEngine,
+    MechanismFlowHumanDecisionAreaEngine,
 ):
     pass
 
 
 class QualifiedFlowTerminalWedgeEngine(
     FlowQualifiedImmediateOrderBlockMixin,
-    FlowTerminalWedgeScenarioEngine,
+    MechanismFlowTerminalWedgeScenarioEngine,
 ):
     pass
 
 
-class EasyChartRE1FlowQualifiedOBBundle(EasyChartRE1FlowRoutedBundle):
-    """Mechanism-routed flow system with flow-qualified immediate OBs."""
+class EasyChartRE1FlowQualifiedOBBundle(EasyChartRE1MechanismFlowBundle):
+    """Mechanism-flow system with qualified immediate OB entry."""
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
@@ -261,7 +245,7 @@ class EasyChartRE1FlowQualifiedOBBundle(EasyChartRE1FlowRoutedBundle):
             trigger_minutes=1,
             **kwargs,
         )
-        self.horizontal_flip = FlowHorizontalFlipEngine(
+        self.horizontal_flip = MechanismFlowHorizontalFlipEngine(
             symbol,
             tick_size,
             scale_name="HORIZONTAL_SR_FLIP",
@@ -298,10 +282,7 @@ class EasyChartRE1FlowQualifiedOBBundle(EasyChartRE1FlowRoutedBundle):
             "major_swing": self.major_swing.flow_qualified_ob_diagnostics,
             "decision_area": self.decision_area.flow_qualified_ob_diagnostics,
             "terminal_wedge": self.wedge.flow_qualified_ob_diagnostics,
-            "rules": (
-                FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
-                SAME_CLOSE_CAUSAL_AVAILABILITY_RULE,
-            ),
+            "rule_provenance": FLOW_QUALIFIED_IMMEDIATE_OB_RULE,
         }
         return output
 
