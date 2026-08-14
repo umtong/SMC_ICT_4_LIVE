@@ -15,7 +15,10 @@ It is a smaller complete decision policy:
 * one first typical-volume bucket supplies absorption or accepted-break
   initiative;
 * natural 5m/15m invalidation and first obstacle remain unchanged;
-* no OB/FVG-only plan and no other family may reserve or claim the account slot.
+* no OB/FVG-only plan and no other family may reserve or claim the account slot;
+* a channel-edge fade cannot use absorption to fight an established 60m move
+  unless the plan is itself located at a same-side 60m decision area. A
+  trend-line fakeout remains a distinct stop-sweep reversal mechanism.
 
 Removing the unrelated families lets additional independent micro auctions reach
 the account router, so selectivity need not mean lower realized frequency.
@@ -25,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 import contracts_v5 as _contracts
-from contracts_v5 import V5TradePlan
+from contracts_v5 import ScenarioPath, StructureFamily, V5TradePlan
 from domain import Candle
 from easychart_re1_flow_volume_clock import EasyChartRE1VolumeClockFlowBundle
 
@@ -34,8 +37,14 @@ MICRO_FLOW_CORE_RULE = (
     "RESEARCH_HYPOTHESIS:"
     "ONE_COMPLETE_SYSTEM_USES_CAUSAL_MARKET_STATE_DIAGONAL_LOCATION_AND_VOLUME_CLOCK_FLOW_AS_THE_MICRO_AUCTION_ENTRY_CORE"
 )
+CHANNEL_FADE_MACRO_ALIGNMENT_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:"
+    "CHANNEL_EDGE_REJECTION_IS_A_RANGE_FADE_AND_CANNOT_FIGHT_ESTABLISHED_SIXTY_MINUTE_DIRECTION_WITHOUT_SAME_SIDE_HTF_DECISION_AREA"
+)
 if MICRO_FLOW_CORE_RULE not in _contracts.RESEARCH_RULES:
     _contracts.RESEARCH_RULES += (MICRO_FLOW_CORE_RULE,)
+if CHANNEL_FADE_MACRO_ALIGNMENT_RULE not in _contracts.TRANSLATION_RULES:
+    _contracts.TRANSLATION_RULES += (CHANNEL_FADE_MACRO_ALIGNMENT_RULE,)
 
 
 class EasyChartRE1VolumeClockMicroCoreBundle(EasyChartRE1VolumeClockFlowBundle):
@@ -48,6 +57,20 @@ class EasyChartRE1VolumeClockMicroCoreBundle(EasyChartRE1VolumeClockFlowBundle):
 
     def _mcinc(self, key: str) -> None:
         self._micro_core_counts[key] = self._micro_core_counts.get(key, 0) + 1
+
+    def _countertrend_channel_fade_without_htf_area(self, plan: V5TradePlan) -> bool:
+        if (
+            plan.scenario_path != ScenarioPath.REJECTION.value
+            or self._macro_side is None
+            or plan.side is self._macro_side
+        ):
+            return False
+        kind = str(getattr(plan.higher_zone_kind, "value", plan.higher_zone_kind))
+        if "CHANNEL" not in kind:
+            return False
+        # The pre-existing 60m structure/OB/FVG evidence is the only exception.
+        evidence = self._structure_evidence(plan) + self._footprint_evidence(plan)
+        return not evidence
 
     def _route_plan(self, plan: V5TradePlan) -> bool:
         if plan.scale_name != "MICRO":
@@ -65,6 +88,25 @@ class EasyChartRE1VolumeClockMicroCoreBundle(EasyChartRE1VolumeClockFlowBundle):
                     "scenario_path": plan.scenario_path,
                     "trigger_zone_kind": self._trigger_kind(plan),
                     "rule_provenance": MICRO_FLOW_CORE_RULE,
+                },
+            )
+            return False
+        if self._countertrend_channel_fade_without_htf_area(plan):
+            self._mcinc("countertrend_channel_fade_without_htf_area_suppressed")
+            self._micro_core_trace.append(
+                {
+                    "scenario_kind": "countertrend_channel_fade_without_htf_area_suppressed",
+                    "event_time_ns": plan.observed_time_ns,
+                    "symbol": plan.symbol,
+                    "plan_id": plan.plan_id,
+                    "side": plan.side.name,
+                    "macro_side": self._macro_side.name,
+                    "scenario_path": plan.scenario_path,
+                    "higher_zone_kind": str(
+                        getattr(plan.higher_zone_kind, "value", plan.higher_zone_kind)
+                    ),
+                    "trigger_zone_kind": self._trigger_kind(plan),
+                    "rule_provenance": CHANNEL_FADE_MACRO_ALIGNMENT_RULE,
                 },
             )
             return False
@@ -120,7 +162,10 @@ class EasyChartRE1VolumeClockMicroCoreBundle(EasyChartRE1VolumeClockFlowBundle):
         output = dict(super().diagnostics)
         output["volume_clock_micro_flow_core"] = {
             "counts": dict(sorted(self._micro_core_counts.items())),
-            "rule_provenance": MICRO_FLOW_CORE_RULE,
+            "rules": (
+                MICRO_FLOW_CORE_RULE,
+                CHANNEL_FADE_MACRO_ALIGNMENT_RULE,
+            ),
         }
         return output
 
