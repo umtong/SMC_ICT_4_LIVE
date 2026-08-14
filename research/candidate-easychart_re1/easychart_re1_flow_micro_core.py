@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 import contracts_v5 as _contracts
-from contracts_v5 import ScenarioPath, StructureFamily, V5TradePlan
+from contracts_v5 import ScenarioPath, V5TradePlan
 from domain import Candle
 from easychart_re1_flow_volume_clock import EasyChartRE1VolumeClockFlowBundle
 
@@ -119,6 +119,11 @@ class EasyChartRE1VolumeClockMicroCoreBundle(EasyChartRE1VolumeClockFlowBundle):
         return allowed
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        # Retain complete closed-bar evidence even though the broad family router
+        # is intentionally bypassed. This does not participate in decisions.
+        if timeframe_minutes in self.detectors:
+            self.detectors[timeframe_minutes].on_bar(bar)
+
         # Preserve the causal market-state books without invoking the broad
         # multi-family plan router.
         if timeframe_minutes == self.CONTEXT_MINUTES:
