@@ -1,0 +1,137 @@
+name: candidate-easychart-re1-flow-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.flow_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-flow-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: state-baseline
+            runner: run_mtf_backtest_re1_state.py
+            period: february-2025-short
+            start: 2025-02-01
+            end: 2025-02-10
+          - variant: flow
+            runner: run_mtf_backtest_re1_flow.py
+            period: february-2025-short
+            start: 2025-02-01
+            end: 2025-02-10
+          - variant: state-baseline
+            runner: run_mtf_backtest_re1_state.py
+            period: live-examples-2025-short
+            start: 2025-08-10
+            end: 2025-08-20
+          - variant: flow
+            runner: run_mtf_backtest_re1_flow.py
+            period: live-examples-2025-short
+            start: 2025-08-10
+            end: 2025-08-20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-flow/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-flow/${{ matrix.variant }}/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile flow candidate and reused execution stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_flow.py \
+            research/candidate-easychart_re1/mtf_data_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow.py \
+            research/candidate-easychart_re1/execution_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_state.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1.py
+
+      - name: Smoke-test causal flow baseline and bundle construction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_flow import CausalFlowAnalyzer, EasyChartRE1FlowBundle, FlowCandle
+
+          analyzer = CausalFlowAnalyzer(0.1)
+          for i in range(60):
+              result = analyzer.observe(
+                  FlowCandle(
+                      ts_close_ns=(i + 1) * 60_000_000_000,
+                      open=100.0,
+                      high=100.5,
+                      low=99.5,
+                      close=100.1,
+                      volume=10.0,
+                      quote_volume=1_000.0,
+                      trade_count=100,
+                      taker_buy_base_volume=5.0,
+                      taker_buy_quote_volume=520.0,
+                  ),
+              )
+              assert result is None
+          result = analyzer.observe(
+              FlowCandle(
+                  ts_close_ns=61 * 60_000_000_000,
+                  open=100.0,
+                  high=102.0,
+                  low=99.9,
+                  close=101.8,
+                  volume=30.0,
+                  quote_volume=3_000.0,
+                  trade_count=180,
+                  taker_buy_base_volume=24.0,
+                  taker_buy_quote_volume=2_400.0,
+              ),
+          )
+          assert result is not None
+          assert result.active and result.directed and result.material_progress
+          bundle = EasyChartRE1FlowBundle("BTCUSDT", 0.1, 1.0)
+          assert bundle.micro.flow_analyzer.BASELINE_BARS == 60
+          assert bundle.horizontal_flip.flow_analyzer.BASELINE_BARS == 60
+          assert bundle.wedge.flow_analyzer.BASELINE_BARS == 60
+          PY
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.runner }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve decision, flow and execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-flow-${{ matrix.variant }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-flow/${{ matrix.variant }}/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
