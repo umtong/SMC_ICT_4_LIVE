@@ -1,0 +1,53 @@
+name: candidate-easychart-re1-response-rejection-core-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.response_rejection_core_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-response-rejection-core-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024-guard, start: 2024-05-01, end: 2024-05-14}
+          - {period: february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {period: live-examples-2025-short, start: 2025-08-10, end: 2025-08-20}
+          - {period: november-2025-guard, start: 2025-11-01, end: 2025-11-14}
+          - {period: february-2026-guard, start: 2026-02-01, end: 2026-02-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/candidate-easychart-re1-response-rejection-core/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-response-rejection-core/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidate
+        run: python -m py_compile research/candidate-easychart_re1/easychart_re1_embedded_acceptance.py research/candidate-easychart_re1/easychart_re1_embedded_acceptance_response.py research/candidate-easychart_re1/easychart_re1_response_rejection_core.py research/candidate-easychart_re1/run_mtf_backtest_re1_response_rejection_core.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_response_rejection_core import EasyChartRE1ResponseRejectionCoreBundle
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartRE1ResponseRejectionCoreBundle(symbol, tick)
+              assert bundle.diagnostics["decision_ob_current_rejection_policy"]["historical_bounce_executable"] is False
+              assert bundle.micro.embedded_acceptance_response_diagnostics["pending_response"] == 0
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_response_rejection_core.py --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 14 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-response-rejection-core-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-response-rejection-core/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
