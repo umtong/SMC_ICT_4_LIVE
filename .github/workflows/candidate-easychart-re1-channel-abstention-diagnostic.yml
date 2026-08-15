@@ -1,0 +1,50 @@
+name: candidate-easychart-re1-channel-abstention-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.channel_abstention_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-channel-abstention-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: dev-february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {period: dev-february-2026, start: 2026-02-01, end: 2026-02-14}
+          - {period: guard-may-2024, start: 2024-05-01, end: 2024-05-14}
+          - {period: guard-november-2025, start: 2025-11-01, end: 2025-11-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/channel-abstention/${{ matrix.period }}
+      OUT: artifacts/channel-abstention/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile channel-abstention candidate
+        run: python -m py_compile research/candidate-easychart_re1/easychart_re1_channel_abstention.py research/candidate-easychart_re1/run_mtf_backtest_re1_channel_abstention.py research/candidate-easychart_re1/execution_re1_flow.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_channel_abstention import EasyChartRE1ChannelAbstentionBundle
+          b = EasyChartRE1ChannelAbstentionBundle("BTCUSDT", 0.1, 1.0)
+          assert b.micro.channel_abstention_diagnostics["executable"] is False
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_channel_abstention.py --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 14 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-abstention-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/channel-abstention/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
