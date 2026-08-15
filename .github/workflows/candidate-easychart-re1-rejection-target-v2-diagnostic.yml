@@ -1,0 +1,68 @@
+name: candidate-easychart-re1-rejection-target-v2-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.rejection_target_v2_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-rejection-target-v2-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate:
+          - {name: fast-persistent, script: run_mtf_backtest_re1_persistent_rejection_target_v2.py}
+          - {name: slow-common, script: run_mtf_backtest_re1_slow_rejection_target_v2.py}
+        period:
+          - {name: dev-february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {name: dev-live-examples-2025, start: 2025-08-10, end: 2025-08-20}
+          - {name: dev-february-2026, start: 2026-02-01, end: 2026-02-14}
+          - {name: guard-may-2024, start: 2024-05-01, end: 2024-05-14}
+          - {name: guard-november-2025, start: 2025-11-01, end: 2025-11-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/rejection-target-v2/${{ matrix.candidate.name }}/${{ matrix.period.name }}
+      OUT: artifacts/rejection-target-v2/${{ matrix.candidate.name }}/${{ matrix.period.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidates
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_rejection_micro_target.py \
+            research/candidate-easychart_re1/easychart_re1_rejection_micro_target_v2.py \
+            research/candidate-easychart_re1/execution_re1_slow_common.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_persistent_rejection_target_v2.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_slow_rejection_target_v2.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_rejection_micro_target_v2 import EasyChartRE1RejectionMicroTargetV2Bundle
+          b = EasyChartRE1RejectionMicroTargetV2Bundle("BTCUSDT", 0.1, 1.0)
+          assert b.micro.micro_objective_detector.timeframe_minutes == 1
+          assert b.direct_sweep_ob.micro_objective_detector.timeframe_minutes == 1
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.candidate.script }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rejection-target-v2-${{ matrix.candidate.name }}-${{ matrix.period.name }}-${{ github.sha }}
+          path: artifacts/rejection-target-v2/${{ matrix.candidate.name }}/${{ matrix.period.name }}/**
+          if-no-files-found: warn
+          retention-days: 30
