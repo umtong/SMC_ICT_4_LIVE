@@ -1,0 +1,66 @@
+name: candidate-easychart-re1-slow-common-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.slow_common_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-slow-common-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate:
+          - {name: slow-direct-sweep, script: run_mtf_backtest_re1_slow_direct_sweep.py}
+          - {name: slow-full-auction, script: run_mtf_backtest_re1_slow_full_auction.py}
+        period:
+          - {name: dev-february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {name: dev-live-examples-2025, start: 2025-08-10, end: 2025-08-20}
+          - {name: dev-february-2026, start: 2026-02-01, end: 2026-02-14}
+          - {name: guard-may-2024, start: 2024-05-01, end: 2024-05-14}
+          - {name: guard-november-2025, start: 2025-11-01, end: 2025-11-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/slow-common/${{ matrix.candidate.name }}/${{ matrix.period.name }}
+      OUT: artifacts/slow-common/${{ matrix.candidate.name }}/${{ matrix.period.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile slow common candidates
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/execution_re1_slow_common.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_slow_direct_sweep.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_slow_full_auction.py
+      - name: Slow common construction smoke
+        run: |
+          python - <<'PY'
+          from execution_re1_slow_common import SlowPersistentFactorStrategy, SlowFullAuctionStateStrategy
+          assert SlowPersistentFactorStrategy.SLOW_MINUTES == 15
+          assert SlowPersistentFactorStrategy.SLOW_BASELINE_BUCKETS == 16
+          assert SlowFullAuctionStateStrategy.HISTORY_EVENTS == 6
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.candidate.script }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-common-${{ matrix.candidate.name }}-${{ matrix.period.name }}-${{ github.sha }}
+          path: artifacts/slow-common/${{ matrix.candidate.name }}/${{ matrix.period.name }}/**
+          if-no-files-found: warn
+          retention-days: 30
