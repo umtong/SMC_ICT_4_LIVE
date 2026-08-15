@@ -1,20 +1,21 @@
 """Persistent common-auction routing for EasyChart RE1.
 
-A one-minute common shock is useful evidence, but its midpoint is too short-lived
-as the sole market state. This router treats the ordered sequence of completed
-BTC/ETH/SOL/XRP common-initiative events as a causal state machine:
+A one-minute common shock is evidence of broad initiative, but neither its
+single-candle midpoint nor a permanent last-direction label is a sufficient
+market state.  The router therefore keeps the ordered sequence of completed
+BTC/ETH/SOL/XRP common-initiative events and distinguishes two responsibilities:
 
-* PERSISTENT: the latest six common shocks contain at most one direction change;
-* TURBULENT: the latest six contain at least three direction changes;
-* TRANSITIONAL: everything between those states or insufficient history.
+* the event history identifies persistence or turbulence;
+* the currently active midpoint state identifies whether generic plans may be
+  routed immediately, while a persistent footprint may survive the later
+  rebalance through a dedicated continuation engine.
 
-The state is based on event count rather than wall-clock time. In a persistent
-state only plans aligned with the latest broad initiative and whose own symbol
-participated in that shock are executable. In a turbulent state the account
-abstains: a local one-minute absorption is not enough evidence of control
-transfer while the broad tape repeatedly changes direction. Transitional states
-keep completed visual OB/FVG and major-liquidity plans but do not allow a single
-flow proxy to originate a trade.
+The latest six common shocks define the state without a fitted clock timeout:
+PERSISTENT has at most one direction change, TURBULENT has at least three, and
+TRANSITIONAL lies between.  Generic plans in a persistent state require the
+active common factor, matching direction, and participation by the traded
+symbol.  Turbulent states abstain.  Transitional states retain completed visual
+OB/FVG and major-liquidity plans but do not let one flow proxy originate a trade.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ PERSISTENT_COMMON_AUCTION_RULE = (
     "EXTERNAL_METHOD:ORDERED_COMMON_FLOW_EVENTS_DEFINE_PERSISTENT_TRANSITIONAL_AND_TURBULENT_AUCTION_STATES"
 )
 PERSISTENT_ALIGNED_ROUTING_RULE = (
-    "RESEARCH_HYPOTHESIS:PERSISTENT_COMMON_AUCTION_EXECUTES_ONLY_ALIGNED_PARTICIPATING_SYMBOL_PULLBACKS"
+    "RESEARCH_HYPOTHESIS:PERSISTENT_COMMON_AUCTION_EXECUTES_GENERIC_PLANS_ONLY_WHILE_THE_ACTIVE_FACTOR_IS_ALIGNED_AND_THE_SYMBOL_PARTICIPATED"
 )
 TURBULENT_ABSTENTION_RULE = (
     "RESEARCH_HYPOTHESIS:THREE_OR_MORE_DIRECTION_CHANGES_INSIDE_THE_LATEST_SIX_COMMON_SHOCKS_REQUIRE_A_DEDICATED_CONTROL_TRANSFER_BEFORE_ANY_TRADE"
@@ -77,10 +78,16 @@ class CommonAuctionSnapshot:
     events: int
     latest_event_time_ns: int | None
     latest_agreeing_symbols: tuple[str, ...]
+    active_side: Side | None
+    active_event_time_ns: int | None
+
+    @property
+    def active_matches_history(self) -> bool:
+        return self.side is not None and self.active_side is self.side
 
 
 class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
-    """One-account router using common-flow event persistence and abstention."""
+    """One-account router using common-flow persistence and selective abstention."""
 
     HISTORY_EVENTS = 6
 
@@ -93,26 +100,42 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
     def _pinc(self, key: str) -> None:
         self.persistent_factor_counts[key] = self.persistent_factor_counts.get(key, 0) + 1
 
+    def _publish_snapshot(self, snapshot: CommonAuctionSnapshot) -> None:
+        for engine in self.scenario_engines.values():
+            setter = getattr(engine, "set_common_auction_snapshot", None)
+            if setter is not None:
+                setter(snapshot)
+
     def _observe_common_factor(self) -> None:
         super()._observe_common_factor()
         state = self.factor_state
-        if state is None or state.event_time_ns == self._last_recorded_factor_time_ns:
-            return
-        self._last_recorded_factor_time_ns = state.event_time_ns
-        self.common_event_history.append(
-            CommonAuctionEvent(
-                side=state.side,
-                event_time_ns=state.event_time_ns,
-                agreeing_symbols=tuple(state.agreeing_symbols),
-                sequence=state.sequence,
+        if state is not None and state.event_time_ns != self._last_recorded_factor_time_ns:
+            self._last_recorded_factor_time_ns = state.event_time_ns
+            self.common_event_history.append(
+                CommonAuctionEvent(
+                    side=state.side,
+                    event_time_ns=state.event_time_ns,
+                    agreeing_symbols=tuple(state.agreeing_symbols),
+                    sequence=state.sequence,
+                )
             )
-        )
-        self._pinc("common_event_recorded")
+            self._pinc("common_event_recorded")
+        self._publish_snapshot(self._auction_snapshot())
 
     def _auction_snapshot(self) -> CommonAuctionSnapshot:
         events = tuple(self.common_event_history)
+        active = self.factor_state
         if not events:
-            return CommonAuctionSnapshot(CommonAuctionRegime.UNKNOWN, None, 0, 0, None, ())
+            return CommonAuctionSnapshot(
+                CommonAuctionRegime.UNKNOWN,
+                None,
+                0,
+                0,
+                None,
+                (),
+                None if active is None else active.side,
+                None if active is None else active.event_time_ns,
+            )
         flips = sum(events[i].side is not events[i - 1].side for i in range(1, len(events)))
         latest = events[-1]
         if len(events) < self.HISTORY_EVENTS:
@@ -130,6 +153,8 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
             len(events),
             latest.event_time_ns,
             latest.agreeing_symbols,
+            None if active is None else active.side,
+            None if active is None else active.event_time_ns,
         )
 
     @staticmethod
@@ -141,7 +166,12 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
             and "INITIATIVE" not in kind
         )
 
-    def _record_regime_rejection(self, plan: V5TradePlan, snapshot: CommonAuctionSnapshot, reason: str) -> None:
+    def _record_regime_rejection(
+        self,
+        plan: V5TradePlan,
+        snapshot: CommonAuctionSnapshot,
+        reason: str,
+    ) -> None:
         self._record(
             "persistent_factor_plan_rejected",
             plan_id=plan.plan_id,
@@ -149,9 +179,11 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
             plan_side=plan.side.name,
             regime=snapshot.regime.value,
             regime_side=None if snapshot.side is None else snapshot.side.name,
+            active_side=None if snapshot.active_side is None else snapshot.active_side.name,
             regime_flips=snapshot.flips,
             regime_events=snapshot.events,
             latest_factor_event_time_ns=snapshot.latest_event_time_ns,
+            active_factor_event_time_ns=snapshot.active_event_time_ns,
             latest_agreeing_symbols=list(snapshot.latest_agreeing_symbols),
             scenario_path=plan.scenario_path,
             scale_name=plan.scale_name,
@@ -169,25 +201,37 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
         snapshot = self._auction_snapshot()
         regime = snapshot.regime
         self._pinc(f"plan_seen_{regime.value.lower()}")
-        if regime is CommonAuctionRegime.PERSISTENT:
+        if regime is CommonAuctionRegime.PERSISTENT and snapshot.active_matches_history:
             aligned = snapshot.side is plan.side
             participated = plan.symbol in snapshot.latest_agreeing_symbols
             if aligned and participated:
-                self._pinc("persistent_aligned_participant_allowed")
+                self._pinc("persistent_active_aligned_participant_allowed")
                 return True
             self._pinc("persistent_nonparticipant_or_counterplan_rejected")
-            self._record_regime_rejection(plan, snapshot, "PERSISTENT_REQUIRES_ALIGNED_LATEST_PARTICIPATING_SYMBOL")
+            self._record_regime_rejection(
+                plan,
+                snapshot,
+                "PERSISTENT_REQUIRES_ACTIVE_ALIGNED_LATEST_PARTICIPATING_SYMBOL",
+            )
             return False
         if regime is CommonAuctionRegime.TURBULENT:
             self._pinc("turbulent_abstention")
-            self._record_regime_rejection(plan, snapshot, "TURBULENT_REQUIRES_DEDICATED_CONTROL_TRANSFER")
+            self._record_regime_rejection(
+                plan,
+                snapshot,
+                "TURBULENT_REQUIRES_DEDICATED_CONTROL_TRANSFER",
+            )
             return False
         if plan.scale_name == "LIQUIDITY" or self._visual_trigger(plan):
             if super()._factor_allows(plan):
                 self._pinc("transitional_visual_or_liquidity_allowed")
                 return True
         self._pinc("transitional_flow_proxy_rejected")
-        self._record_regime_rejection(plan, snapshot, "TRANSITIONAL_REQUIRES_VISUAL_FOOTPRINT_OR_MAJOR_LIQUIDITY")
+        self._record_regime_rejection(
+            plan,
+            snapshot,
+            "TRANSITIONAL_REQUIRES_VISUAL_FOOTPRINT_OR_MAJOR_LIQUIDITY",
+        )
         return False
 
     @property
@@ -198,9 +242,11 @@ class EasyChartRE1PersistentFactorStrategy(EasyChartRE1MarketFactorStrategy):
             "snapshot": {
                 "regime": snapshot.regime.value,
                 "side": None if snapshot.side is None else snapshot.side.name,
+                "active_side": None if snapshot.active_side is None else snapshot.active_side.name,
                 "flips": snapshot.flips,
                 "events": snapshot.events,
                 "latest_event_time_ns": snapshot.latest_event_time_ns,
+                "active_event_time_ns": snapshot.active_event_time_ns,
                 "latest_agreeing_symbols": snapshot.latest_agreeing_symbols,
             },
             "rules": (
