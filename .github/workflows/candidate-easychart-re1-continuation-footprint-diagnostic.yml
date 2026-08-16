@@ -1,0 +1,158 @@
+name: candidate-easychart-re1-continuation-footprint-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-continuation-footprint-diagnostic.yml"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_footprint.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_footprint.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-continuation-footprint-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile alpha implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_continuation_footprint.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_footprint.py
+      - name: Construct one-owner footprint stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_continuation_footprint import (
+              CONTINUATION_FOOTPRINT_OWNERSHIP_RULE,
+              EasyChartRE1ContinuationFootprintBundle,
+              OBOrFVGFallbackContinuationEngine,
+          )
+          bundle = EasyChartRE1ContinuationFootprintBundle("BTCUSDT", 0.1, 1.0)
+          assert isinstance(bundle.continuation, OBOrFVGFallbackContinuationEngine)
+          assert bundle.plans == []
+          assert "FVG" in CONTINUATION_FOOTPRINT_OWNERSHIP_RULE
+          print({
+              "bundle": type(bundle).__name__,
+              "continuation": type(bundle.continuation).__name__,
+              "rule": CONTINUATION_FOOTPRINT_OWNERSHIP_RULE,
+          })
+          PY
+
+  matched-footprint-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: may-2024
+            start: 2024-05-01
+            end: 2024-05-14
+          - period: live-examples-2025
+            start: 2025-08-10
+            end: 2025-08-20
+          - period: july-2026
+            start: 2026-07-01
+            end: 2026-07-28
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-continuation-footprint/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-continuation-footprint/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run OB-owned first-return continuation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/ob_only"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_first_return.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/ob_only" \
+            --fee-profile usd_m_vip0
+      - name: Run OB-first FVG-fallback continuation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/ob_or_fvg"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_footprint.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/ob_or_fvg" \
+            --fee-profile usd_m_vip0
+      - name: Print actual account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {"period": "${{ matrix.period }}"}
+          for name in ("ob_only", "ob_or_fvg"):
+              metrics_path = root / name / "metrics.json"
+              trades_path = root / name / "trade_audit.csv"
+              if not metrics_path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              trades = pd.read_csv(trades_path) if trades_path.exists() else pd.DataFrame()
+              net_r = trades["actual_net_r"] if "actual_net_r" in trades else pd.Series(dtype=float)
+              rr = trades["planned_gross_rr"] if "planned_gross_rr" in trades else pd.Series(dtype=float)
+              families = (
+                  trades.groupby("family")["actual_net_r"].agg(["count", "sum"]).to_dict("index")
+                  if "family" in trades and "actual_net_r" in trades
+                  else {}
+              )
+              result[name] = {
+                  "closed_positions": int(len(trades)),
+                  "win_rate": None if net_r.empty else float((net_r > 0).mean()),
+                  "sum_net_r": float(net_r.sum()),
+                  "mean_planned_rr": None if rr.empty else float(rr.mean()),
+                  "independent_trades_per_day": metrics.get("independent_trades_per_day"),
+                  "final_nav": metrics.get("final_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "families": families,
+              }
+          print("FOOTPRINT_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account and trade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-continuation-footprint-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-continuation-footprint/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
