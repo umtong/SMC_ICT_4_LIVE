@@ -1,6 +1,6 @@
 """Skilled day-trading policy plus completed-H4 liquidity auctions.
 
-The existing skilled daily-auction bundle owns completed previous-day extremes
+The existing skilled daily-liquidity bundle owns completed previous-day extremes
 and the local response-confirmed structure mechanisms.  This layer adds one
 independent opportunity family: rejection of the immediately preceding
 completed four-hour auction extreme.  It does not relax a local setup.
@@ -18,15 +18,13 @@ from typing import Any
 from contracts_v5 import V5TradePlan
 from domain import Candle
 from easychart_re1_h4_liquidity import H4LiquiditySweepEngine
-from easychart_re1_skilled_daily_auction import (
-    EasyChartRE1SkilledDailyAuctionBundle,
-)
+from easychart_re1_skilled_daily import EasyChartRE1SkilledDailyBundle
 
 
 class EasyChartRE1SkilledH4Bundle:
     """One routed plan stream with daily, H4 and local mechanism ownership."""
 
-    DAILY_SCALES = {"DAILY_LIQUIDITY", "DAILY_ACCEPTANCE"}
+    DAILY_SCALES = {"DAILY_LIQUIDITY"}
 
     def __init__(
         self,
@@ -36,7 +34,7 @@ class EasyChartRE1SkilledH4Bundle:
     ) -> None:
         self.symbol = symbol
         self.tick_size = tick_size
-        self.base = EasyChartRE1SkilledDailyAuctionBundle(
+        self.base = EasyChartRE1SkilledDailyBundle(
             symbol,
             tick_size,
             minimum_gross_rr,
@@ -206,10 +204,11 @@ class EasyChartRE1SkilledH4Bundle:
             "skilled_h4_router": {
                 "counts": dict(sorted(self._counts.items())),
                 "priority": (
-                    "PREVIOUS_DAY_AUCTION",
+                    "PREVIOUS_DAY_LIQUIDITY",
                     "COMPLETED_H4_AUCTION",
                     "LOCAL_STRUCTURE",
                 ),
+                "base_dependency": "EasyChartRE1SkilledDailyBundle",
             },
             "base": self.base.diagnostics,
             "h4_liquidity": self.h4.diagnostics,
