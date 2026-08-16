@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""Run the complete skilled auction policy with anchored local continuation."""
+"""Run complete rejection/acceptance plus first-return continuation policy."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 import sys
 
-from easychart_re1_skilled_continuation import EasyChartRE1SkilledContinuationBundle
+from easychart_re1_skilled_continuation_first_return import (
+    EasyChartRE1SkilledContinuationFirstReturnBundle,
+)
 import run_mtf_backtest_re1_flow as _flow_runner
 
 
-_flow_runner._runner.EasyChartRE1NaturalBundle = EasyChartRE1SkilledContinuationBundle
+_flow_runner._runner.EasyChartRE1NaturalBundle = (
+    EasyChartRE1SkilledContinuationFirstReturnBundle
+)
 
 
 def _rewrite_metadata(output: Path) -> None:
     values = {
-        "candidate": "candidate-easychart_re1_skilled_continuation",
+        "candidate": "candidate-easychart_re1_skilled_continuation_first_return",
         "policy": (
-            "LOCAL_RESPONSE_CONFIRMED_STRUCTURE_PLUS_PREVIOUS_DAY_AND_H4_"
-            "AUCTIONS_PLUS_NESTED_ANCHORED_LOCAL_CONTINUATION"
+            "LOCAL_REJECTION_PLUS_LOCAL_OR_H4_ACCEPTANCE_PLUS_FLOW_VALIDATED_"
+            "NESTED_INITIATIVE_FIRST_HELD_RETURN"
         ),
     }
     for name in ("metrics.json", "run.json"):
