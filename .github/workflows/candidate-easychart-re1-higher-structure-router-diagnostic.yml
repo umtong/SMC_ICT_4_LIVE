@@ -1,0 +1,161 @@
+name: candidate-easychart-re1-higher-structure-router-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-higher-structure-router-diagnostic.yml"
+      - "research/candidate-easychart_re1/.higher_structure_router_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_higher_structure_router.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_higher_structure_router.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py"
+      - "research/candidate-easychart_re1/plan_event_values_re1.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-higher-structure-router-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile higher-structure router
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_higher_structure_router.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_higher_structure_router.py
+      - name: Construct full routed stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_higher_structure_router import (
+              COMPLETED_60M_STRUCTURE_RULE,
+              LOCAL_STRUCTURE_ROUTER_RULE,
+              EasyChartRE1HigherStructureRouterBundle,
+              HigherStructureState,
+          )
+
+          bundle = EasyChartRE1HigherStructureRouterBundle("BTCUSDT", 0.1, 1.0)
+          assert bundle._state is HigherStructureState.MIXED
+          assert bundle.structure.timeframe_minutes == 60
+          assert bundle.structure.pivot_spans == (2,)
+          assert bundle.detectors is bundle.base.detectors
+          assert "CAUSALLY_CONFIRMED" in COMPLETED_60M_STRUCTURE_RULE
+          assert "ACCEPTED_CONTROL_TRANSFER" in LOCAL_STRUCTURE_ROUTER_RULE
+          print({
+              "bundle": type(bundle).__name__,
+              "state": bundle._state.value,
+              "pivot_spans": bundle.structure.pivot_spans,
+              "higher_rule": COMPLETED_60M_STRUCTURE_RULE,
+              "router_rule": LOCAL_STRUCTURE_ROUTER_RULE,
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: development-may-2024
+            start: 2024-05-01
+            end: 2024-05-03
+          - period: unseen-october-2024
+            start: 2024-10-01
+            end: 2024-10-03
+          - period: unseen-may-2025
+            start: 2025-05-01
+            end: 2025-05-03
+          - period: unseen-may-2026
+            start: 2026-05-01
+            end: 2026-05-03
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-higher-structure/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-higher-structure/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run current skilled flow-aware baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run completed-60m structure router
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/candidate"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_higher_structure_router.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/candidate" \
+            --fee-profile usd_m_vip0
+      - name: Print matched continuous-account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {"period": "${{ matrix.period }}"}
+          for name in ("baseline", "candidate"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text())
+              keys = (
+                  "candidate", "start", "end", "calendar_days", "completed_trades",
+                  "independent_completed_trades", "win_rate", "profit_factor",
+                  "expectancy_r", "average_net_r", "sum_net_r", "total_return",
+                  "ending_balance", "ending_nav", "max_drawdown", "max_drawdown_pct",
+                  "gross_rr_mean", "mean_gross_rr", "fees", "funding", "liquidations",
+                  "risk_budget_breaches",
+              )
+              result[name] = {key: data.get(key) for key in keys if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("HIGHER_STRUCTURE_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trades and routing trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-higher-structure-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-higher-structure/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
