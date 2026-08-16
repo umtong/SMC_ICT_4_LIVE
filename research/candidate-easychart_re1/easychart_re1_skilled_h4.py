@@ -1,9 +1,9 @@
 """Skilled day-trading policy plus completed-H4 liquidity auctions.
 
-The existing skilled daily-auction bundle owns completed previous-day extremes
-and the local response-confirmed structure mechanisms.  This layer adds one
-independent opportunity family: rejection of the immediately preceding
-completed four-hour auction extreme.  It does not relax a local setup.
+The existing skilled daily bundle owns completed previous-day extremes and the
+local response-confirmed structure mechanisms.  This layer adds one independent
+opportunity family: rejection of the immediately preceding completed four-hour
+auction extreme.  It does not relax a local setup.
 
 Episode ownership is categorical and causal: previous-day evidence owns an
 overlap first, then the completed-H4 auction, then local structure labels.  A
@@ -18,9 +18,7 @@ from typing import Any
 from contracts_v5 import V5TradePlan
 from domain import Candle
 from easychart_re1_h4_liquidity import H4LiquiditySweepEngine
-from easychart_re1_skilled_daily_auction import (
-    EasyChartRE1SkilledDailyAuctionBundle,
-)
+from easychart_re1_skilled_daily import EasyChartRE1SkilledDailyBundle
 
 
 class EasyChartRE1SkilledH4Bundle:
@@ -36,7 +34,7 @@ class EasyChartRE1SkilledH4Bundle:
     ) -> None:
         self.symbol = symbol
         self.tick_size = tick_size
-        self.base = EasyChartRE1SkilledDailyAuctionBundle(
+        self.base = EasyChartRE1SkilledDailyBundle(
             symbol,
             tick_size,
             minimum_gross_rr,
@@ -96,7 +94,7 @@ class EasyChartRE1SkilledH4Bundle:
         )
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
-        # Both engines receive the same completed bar.  H4 is processed first so
+        # Both engines receive the same completed bar. H4 is processed first so
         # its pending ownership is visible when local plans from this close are
         # routed, while previous-day ownership remains explicit below.
         h4_raw = self.h4.on_bar(timeframe_minutes, bar)
