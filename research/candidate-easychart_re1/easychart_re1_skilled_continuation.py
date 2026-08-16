@@ -1,29 +1,48 @@
-"""Full skilled opportunity router with nested anchored pullback continuation.
+"""Coherent EasyChart day-trading policy for rejection, acceptance and pullback.
 
-Higher daily/H4 auctions keep their established ownership.  The local
-continuation family owns a nested 5m initiative, its anchored fair-value/source
-OB pullback and first response.  Generic local structure labels at the same
-price episode are suppressed while that specific continuation is pending or on
-its terminal response bar.  Distinct causal locations remain independent and
-are arbitrated by the one global account slot.
+The broad previous-day and previous-H4 sweep engines produced many trades but
+mistook every adjacent range extreme for mature liquidity.  Those labels are no
+longer executable here.  Higher-timeframe execution is reserved for the complete
+accepted-H4 auction: body break, immediate hold, first return and first response.
+
+The executable opportunity set is now three complete mechanisms:
+
+* local sweep/reclaim rejection, with visual first return or completed 5m
+  control transfer for flow-only evidence;
+* local/H4 accepted transfer, with first return and first response;
+* aligned nested 5m initiative, source-OB / anchored-fair-value pullback and
+  immediate response.
+
+Higher accepted auctions own an overlapping episode, then the specific nested
+continuation, then generic local structure.  Distinct price locations remain
+independent and the existing NautilusTrader strategy arbitrates the single
+account slot.  No score, PnL router, trade cap, partial exit, stop movement or
+fitted time window is introduced.
 """
 from __future__ import annotations
 
 from typing import Any
 
+import contracts_v5 as _contracts
 from contracts_v5 import V5TradePlan
 from domain import Candle
-from easychart_re1_local_continuation import LocalAuctionContinuationEngine
-from easychart_re1_skilled_h4_auction import EasyChartRE1SkilledH4AuctionBundle
+from easychart_re1_h4_acceptance import H4AcceptanceEngine
+from easychart_re1_local_continuation_hold import (
+    CloseHeldLocalAuctionContinuationEngine,
+)
+from easychart_re1_skilled_integrated import EasyChartRE1SkilledIntegratedBundle
+
+
+COMPLETE_MECHANISM_OPPORTUNITY_POLICY = (
+    "RESEARCH_SYNTHESIS:EXECUTABLE_OPPORTUNITIES_ARE_LOCAL_REJECTION_LOCAL_OR_"
+    "H4_ACCEPTANCE_AND_NESTED_LOCAL_CONTINUATION_NOT_GENERIC_ADJACENT_RANGE_SWEEPS"
+)
+if COMPLETE_MECHANISM_OPPORTUNITY_POLICY not in _contracts.RESEARCH_RULES:
+    _contracts.RESEARCH_RULES += (COMPLETE_MECHANISM_OPPORTUNITY_POLICY,)
 
 
 class EasyChartRE1SkilledContinuationBundle:
-    HIGHER_AUCTION_SCALES = {
-        "DAILY_LIQUIDITY",
-        "DAILY_ACCEPTANCE",
-        "H4_LIQUIDITY",
-        "H4_ACCEPTANCE",
-    }
+    """One plan stream for three mutually owned auction mechanisms."""
 
     def __init__(
         self,
@@ -33,17 +52,22 @@ class EasyChartRE1SkilledContinuationBundle:
     ) -> None:
         self.symbol = symbol
         self.tick_size = tick_size
-        self.base = EasyChartRE1SkilledH4AuctionBundle(
+        self.local = EasyChartRE1SkilledIntegratedBundle(
             symbol,
             tick_size,
             minimum_gross_rr,
         )
-        self.continuation = LocalAuctionContinuationEngine(
+        self.h4_acceptance = H4AcceptanceEngine(
             symbol,
             tick_size,
             minimum_gross_rr,
         )
-        self.detectors = self.base.detectors
+        self.continuation = CloseHeldLocalAuctionContinuationEngine(
+            symbol,
+            tick_size,
+            minimum_gross_rr,
+        )
+        self.detectors = self.local.detectors
         self._plans: list[V5TradePlan] = []
         self._trace: list[dict[str, Any]] = []
         self._counts: dict[str, int] = {}
@@ -62,19 +86,24 @@ class EasyChartRE1SkilledContinuationBundle:
             <= min(plan.overlap_upper, upper) + self.tick_size
         )
 
-    def _same_episode(self, left: V5TradePlan, right: V5TradePlan) -> bool:
+    def _same_emission_location(
+        self,
+        left: V5TradePlan,
+        right: V5TradePlan,
+    ) -> bool:
         return (
-            left.interaction_time_ns == right.interaction_time_ns
+            left.observed_time_ns == right.observed_time_ns
             and self._overlap_prices(left, right.overlap_lower, right.overlap_upper)
         )
 
-    @classmethod
-    def _higher(cls, plan: V5TradePlan) -> bool:
-        return plan.scale_name in cls.HIGHER_AUCTION_SCALES
-
-    @staticmethod
-    def _continuation(plan: V5TradePlan) -> bool:
-        return plan.scale_name == "LOCAL_CONTINUATION"
+    def _h4_context_owns(self, plan: V5TradePlan, setup: Any) -> bool:
+        if setup is None or plan.observed_time_ns < setup.break_time_ns:
+            return False
+        return self._overlap_prices(
+            plan,
+            setup.level_zone.lower,
+            setup.level_zone.upper,
+        )
 
     def _continuation_context_owns(self, plan: V5TradePlan, setup: Any) -> bool:
         if setup is None or plan.observed_time_ns < setup.impulse_time_ns:
@@ -86,6 +115,15 @@ class EasyChartRE1SkilledContinuationBundle:
         )
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        h4_before = self.h4_acceptance._active
+        h4_raw = self.h4_acceptance.on_bar(timeframe_minutes, bar)
+        h4_resolved = (
+            h4_before
+            if h4_before is not None
+            and self.h4_acceptance._active is not h4_before
+            else None
+        )
+
         continuation_before = self.continuation._active
         continuation_raw = self.continuation.on_bar(timeframe_minutes, bar)
         continuation_resolved = (
@@ -94,22 +132,23 @@ class EasyChartRE1SkilledContinuationBundle:
             and self.continuation._active is not continuation_before
             else None
         )
-        base_raw = self.base.on_bar(timeframe_minutes, bar)
+        local_raw = self.local.on_bar(timeframe_minutes, bar)
 
-        higher = [plan for plan in base_raw if self._higher(plan)]
-        local = [plan for plan in base_raw if not self._higher(plan)]
-        routed: list[V5TradePlan] = list(higher)
-
+        routed: list[V5TradePlan] = list(h4_raw)
         for plan in continuation_raw:
             owner = next(
-                (existing for existing in higher if self._same_episode(plan, existing)),
+                (
+                    existing
+                    for existing in h4_raw
+                    if self._same_emission_location(plan, existing)
+                ),
                 None,
             )
             if owner is not None:
-                self._inc("local_continuation_suppressed_by_higher_auction")
+                self._inc("continuation_suppressed_by_h4_acceptance")
                 self._trace.append(
                     {
-                        "scenario_kind": "local_continuation_owned_by_higher_auction",
+                        "scenario_kind": "continuation_owned_by_h4_acceptance",
                         "event_time_ns": plan.observed_time_ns,
                         "symbol": plan.symbol,
                         "suppressed_plan_id": plan.plan_id,
@@ -120,16 +159,20 @@ class EasyChartRE1SkilledContinuationBundle:
             routed.append(plan)
 
         owners = list(routed)
-        for plan in local:
+        for plan in local_raw:
             owner = next(
-                (existing for existing in owners if self._same_episode(plan, existing)),
+                (
+                    existing
+                    for existing in owners
+                    if self._same_emission_location(plan, existing)
+                ),
                 None,
             )
             if owner is not None:
-                self._inc("generic_local_plan_suppressed_by_specific_owner")
+                self._inc("generic_local_suppressed_by_specific_plan")
                 self._trace.append(
                     {
-                        "scenario_kind": "generic_local_episode_owned_by_specific_auction",
+                        "scenario_kind": "generic_local_owned_by_specific_plan",
                         "event_time_ns": plan.observed_time_ns,
                         "symbol": plan.symbol,
                         "suppressed_plan_id": plan.plan_id,
@@ -137,17 +180,38 @@ class EasyChartRE1SkilledContinuationBundle:
                     },
                 )
                 continue
-            pending = self.continuation._active
-            if self._continuation_context_owns(plan, pending):
-                self._inc("generic_local_plan_suppressed_during_pending_continuation")
+
+            h4_pending = self.h4_acceptance._active
+            if self._h4_context_owns(plan, h4_pending):
+                self._inc("generic_local_suppressed_during_h4_acceptance")
                 self._trace.append(
                     {
-                        "scenario_kind": "generic_local_episode_owned_by_pending_continuation",
+                        "scenario_kind": "generic_local_owned_by_pending_h4_acceptance",
+                        "event_time_ns": plan.observed_time_ns,
+                        "symbol": plan.symbol,
+                        "suppressed_plan_id": plan.plan_id,
+                        "h4_setup_id": h4_pending.setup_id,
+                    },
+                )
+                continue
+            if (
+                h4_resolved is not None
+                and plan.observed_time_ns == bar.ts_close_ns
+                and self._h4_context_owns(plan, h4_resolved)
+            ):
+                self._inc("generic_local_suppressed_on_h4_terminal_bar")
+                continue
+
+            pending = self.continuation._active
+            if self._continuation_context_owns(plan, pending):
+                self._inc("generic_local_suppressed_during_nested_continuation")
+                self._trace.append(
+                    {
+                        "scenario_kind": "generic_local_owned_by_pending_continuation",
                         "event_time_ns": plan.observed_time_ns,
                         "symbol": plan.symbol,
                         "suppressed_plan_id": plan.plan_id,
                         "continuation_setup_id": pending.setup_id,
-                        "impulse_time_ns": pending.impulse_time_ns,
                     },
                 )
                 continue
@@ -156,17 +220,7 @@ class EasyChartRE1SkilledContinuationBundle:
                 and plan.observed_time_ns == bar.ts_close_ns
                 and self._continuation_context_owns(plan, continuation_resolved)
             ):
-                self._inc("generic_local_plan_suppressed_on_continuation_terminal_bar")
-                self._trace.append(
-                    {
-                        "scenario_kind": "generic_local_episode_owned_by_terminal_continuation",
-                        "event_time_ns": plan.observed_time_ns,
-                        "symbol": plan.symbol,
-                        "suppressed_plan_id": plan.plan_id,
-                        "continuation_setup_id": continuation_resolved.setup_id,
-                        "continuation_terminal_reason": continuation_resolved.terminal_reason,
-                    },
-                )
+                self._inc("generic_local_suppressed_on_continuation_terminal_bar")
                 continue
             routed.append(plan)
 
@@ -176,9 +230,9 @@ class EasyChartRE1SkilledContinuationBundle:
             key=lambda plan: (
                 plan.interaction_time_ns,
                 0
-                if self._higher(plan)
+                if plan.scale_name == "H4_ACCEPTANCE"
                 else 1
-                if self._continuation(plan)
+                if plan.scale_name == "LOCAL_CONTINUATION"
                 else 2,
                 plan.observed_time_ns,
                 plan.symbol,
@@ -189,12 +243,21 @@ class EasyChartRE1SkilledContinuationBundle:
         return output
 
     def drain_trace(self) -> list[dict[str, Any]]:
-        output = self.base.drain_trace() + self.continuation.drain_trace() + self._trace
+        output = (
+            self.h4_acceptance.drain_trace()
+            + self.continuation.drain_trace()
+            + self.local.drain_trace()
+            + self._trace
+        )
         self._trace = []
         return output
 
     def find_zone(self, zone_id: str) -> Any | None:
-        return self.base.find_zone(zone_id) or self.continuation.find_zone(zone_id)
+        return (
+            self.h4_acceptance.find_zone(zone_id)
+            or self.continuation.find_zone(zone_id)
+            or self.local.find_zone(zone_id)
+        )
 
     @property
     def plans(self) -> list[V5TradePlan]:
@@ -202,28 +265,30 @@ class EasyChartRE1SkilledContinuationBundle:
 
     @property
     def setups(self) -> list[Any]:
-        # The legacy result writer summarizes standard ScenarioSetup.state enums.
-        # Daily/H4/local-continuation machines expose their own richer lifecycle
-        # counts in diagnostics and intentionally use dedicated setup contracts.
-        values = list(self.base.setups) + list(self.continuation.setups)
+        # Standard setup enums feed the legacy generic summary.  The two custom
+        # causal machines expose their complete lifecycle in diagnostics below.
         return [
             setup
-            for setup in values
+            for setup in self.local.setups
             if hasattr(getattr(setup, "state", None), "value")
         ]
 
     @property
     def diagnostics(self) -> dict[str, Any]:
         return {
-            "skilled_continuation_router": {
+            "complete_mechanism_router": {
                 "counts": dict(sorted(self._counts.items())),
                 "priority": (
-                    "DAILY_OR_H4_AUCTION",
+                    "ACCEPTED_H4_AUCTION",
                     "NESTED_LOCAL_CONTINUATION",
-                    "GENERIC_LOCAL_STRUCTURE",
+                    "LOCAL_ACCEPTANCE_OR_REJECTION",
                 ),
+                "generic_previous_day_sweep_executable": False,
+                "generic_previous_h4_sweep_executable": False,
+                "rule_provenance": COMPLETE_MECHANISM_OPPORTUNITY_POLICY,
             },
-            "base": self.base.diagnostics,
+            "local": self.local.diagnostics,
+            "h4_acceptance": self.h4_acceptance.diagnostics,
             "local_continuation": self.continuation.diagnostics,
         }
 
