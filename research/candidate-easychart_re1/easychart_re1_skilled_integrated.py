@@ -1,12 +1,13 @@
 """Mechanism-routed EasyChart RE1 day-trading policy.
 
-This module is intentionally small.  It does not invent another score or
-validation layer.  It joins the two strongest already-implemented decisions:
+This module joins two complete auction decisions rather than accumulating
+filters:
 
-* reversal/rejection opportunities use the response-confirmed core with the
-  first significant causal micro objective;
-* accepted structure transfers use the embedded acceptance policy and its
-  first completed response.
+* reversal/rejection opportunities use the significant live objective policy;
+  visual OB/FVG returns remain direct, while a flow-only substitute must first
+  complete the five-minute control-transfer event;
+* accepted structure transfers use the embedded acceptance policy and its first
+  completed response.
 
 The two policies are evaluated from the same completed bars, but only the
 mechanism each owns is executable.  A simultaneous overlap is one causal
@@ -21,17 +22,18 @@ from typing import Any
 import contracts_v5 as _contracts
 from contracts_v5 import ScenarioPath, V5TradePlan
 from domain import Candle
+from easychart_re1_controlled_significant import (
+    MultiScaleScenarioBundle as ControlledSignificantResponseBundle,
+)
 from easychart_re1_embedded_acceptance_response import (
     MultiScaleScenarioBundle as EmbeddedAcceptanceResponseBundle,
-)
-from easychart_re1_significant_response import (
-    MultiScaleScenarioBundle as SignificantResponseBundle,
 )
 
 
 MECHANISM_ROUTED_SKILLED_POLICY_RULE = (
-    "RESEARCH_HYPOTHESIS:RESPONSE_CONFIRMED_SIGNIFICANT_OBJECTIVE_REVERSALS_AND_"
-    "EMBEDDED_RESPONSE_CONFIRMED_ACCEPTANCE_CONTINUATIONS_OWN_DISTINCT_AUCTION_MECHANISMS"
+    "RESEARCH_HYPOTHESIS:CONTROL_TRANSFER_CONFIRMED_SIGNIFICANT_OBJECTIVE_"
+    "REVERSALS_AND_EMBEDDED_RESPONSE_CONFIRMED_ACCEPTANCE_CONTINUATIONS_"
+    "OWN_DISTINCT_AUCTION_MECHANISMS"
 )
 SIMULTANEOUS_EPISODE_OWNERSHIP_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:A_COMPLETED_ACCEPTANCE_RESPONSE_OWNS_A_"
@@ -56,7 +58,7 @@ class EasyChartRE1SkilledIntegratedBundle:
     ) -> None:
         self.symbol = symbol
         self.tick_size = tick_size
-        self.reversal = SignificantResponseBundle(
+        self.reversal = ControlledSignificantResponseBundle(
             symbol,
             tick_size,
             minimum_gross_rr,
@@ -66,9 +68,6 @@ class EasyChartRE1SkilledIntegratedBundle:
             tick_size,
             minimum_gross_rr,
         )
-        # The shared result writer expects an audit-frame mapping.  Zone lookup
-        # below searches both policies, while the primary mapping remains the
-        # reversal core's deterministic audit registry.
         self.detectors = self.reversal.detectors
         self._plans: list[V5TradePlan] = []
         self._counts: dict[str, int] = {}
@@ -102,12 +101,11 @@ class EasyChartRE1SkilledIntegratedBundle:
     ) -> list[V5TradePlan]:
         rejection = [plan for plan in reversal_raw if not self._is_acceptance(plan)]
         continuation = [plan for plan in acceptance_raw if self._is_acceptance(plan)]
-        self._inc("reversal_owned_plan") if rejection else None
-        self._inc("acceptance_owned_plan") if continuation else None
+        if rejection:
+            self._inc("reversal_owned_plan")
+        if continuation:
+            self._inc("acceptance_owned_plan")
 
-        # A completed accepted transfer is stronger evidence than a simultaneous
-        # rejection label at the same boundary.  This is a categorical auction
-        # responsibility, not a fitted score.
         selected: list[V5TradePlan] = []
         for plan in sorted(
             continuation,
@@ -155,9 +153,6 @@ class EasyChartRE1SkilledIntegratedBundle:
                 continue
             selected.append(plan)
 
-        # Defensive exact-plan de-duplication only.  Different completed
-        # mechanisms remain independent opportunities and are left to the one
-        # global account slot for real arbitration.
         unique = {plan.plan_id: plan for plan in selected}
         output = sorted(
             unique.values(),
@@ -202,7 +197,7 @@ class EasyChartRE1SkilledIntegratedBundle:
         return {
             "mechanism_routed_skilled_policy": {
                 "counts": dict(sorted(self._counts.items())),
-                "reversal_owner": "SIGNIFICANT_RESPONSE",
+                "reversal_owner": "CONTROLLED_SIGNIFICANT_RESPONSE",
                 "acceptance_owner": "EMBEDDED_ACCEPTANCE_RESPONSE",
                 "rules": (
                     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
