@@ -115,7 +115,7 @@ class FlowValidatedLiquidityDrawV6(FlowValidatedLiquidityDrawV5):
             "recovery": recovery,
             "adverse_impact_per_quote": adverse_impact,
             "recovery_impact_per_quote": recovery_impact,
-            "rule_provenance": MECHANISM_SPECIFIC_ACTIVE_FLOW_RULE,
+            "mechanism_rule": MECHANISM_SPECIFIC_ACTIVE_FLOW_RULE,
         }
 
     @property
