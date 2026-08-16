@@ -6,12 +6,21 @@ OB pullback and first response.  Generic local structure labels at the same
 price episode are suppressed while that specific continuation is pending or on
 its terminal response bar.  Distinct causal locations remain independent and
 are arbitrated by the one global account slot.
+
+The canonical runner exposes completed 60m bars rather than a fifth H4 bar type.
+A UTC-aligned H4 candle is therefore synthesized only after four contiguous
+completed hours and is processed before the same-timestamp 60m decision.  This
+keeps the H4 auction families executable without exposing a partial candle.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import contracts_v5 as _contracts
+from completed_h4_from_hourly import (
+    COMPLETED_H4_FROM_HOURLY_RULE,
+    CompletedH4FromHourly,
+)
 from contracts_v5 import V5TradePlan
 from domain import Candle
 from easychart_re1_local_continuation import LocalAuctionContinuationEngine
@@ -23,8 +32,12 @@ LOCAL_AUCTION_SKILLED_ROUTER_RULE = (
     "OVERLAPPING_EPISODES_BEFORE_NESTED_5M_CONTINUATION_AND_GENERIC_LOCAL_"
     "STRUCTURE_WHILE_DISTINCT_CAUSAL_LOCATIONS_REMAIN_INDEPENDENT"
 )
-if LOCAL_AUCTION_SKILLED_ROUTER_RULE not in _contracts.TRANSLATION_RULES:
-    _contracts.TRANSLATION_RULES += (LOCAL_AUCTION_SKILLED_ROUTER_RULE,)
+for _rule in (
+    LOCAL_AUCTION_SKILLED_ROUTER_RULE,
+    COMPLETED_H4_FROM_HOURLY_RULE,
+):
+    if _rule not in _contracts.TRANSLATION_RULES:
+        _contracts.TRANSLATION_RULES += (_rule,)
 
 
 class EasyChartRE1SkilledContinuationBundle:
@@ -53,6 +66,7 @@ class EasyChartRE1SkilledContinuationBundle:
             tick_size,
             minimum_gross_rr,
         )
+        self.h4_from_hourly = CompletedH4FromHourly(symbol)
         self.detectors = self.base.detectors
         self._plans: list[V5TradePlan] = []
         self._trace: list[dict[str, Any]] = []
@@ -95,7 +109,11 @@ class EasyChartRE1SkilledContinuationBundle:
             setup.source_zone.upper,
         )
 
-    def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+    def _route_completed_bar(
+        self,
+        timeframe_minutes: int,
+        bar: Candle,
+    ) -> list[V5TradePlan]:
         continuation_before = self.continuation._active
         continuation_raw = self.continuation.on_bar(timeframe_minutes, bar)
         continuation_resolved = (
@@ -180,9 +198,45 @@ class EasyChartRE1SkilledContinuationBundle:
                 continue
             routed.append(plan)
 
-        unique = {plan.plan_id: plan for plan in routed}
+        return sorted(
+            {plan.plan_id: plan for plan in routed}.values(),
+            key=lambda plan: (
+                plan.interaction_time_ns,
+                0
+                if self._higher(plan)
+                else 1
+                if self._continuation(plan)
+                else 2,
+                plan.observed_time_ns,
+                plan.symbol,
+                plan.plan_id,
+            ),
+        )
+
+    def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        routed: list[V5TradePlan] = []
+        if timeframe_minutes == 60:
+            completed_h4 = self.h4_from_hourly.update(bar)
+            if completed_h4 is not None:
+                self._inc("completed_h4_processed_before_hourly")
+                self._trace.append(
+                    {
+                        "scenario_kind": "completed_h4_synthesized_from_closed_hourly",
+                        "event_time_ns": completed_h4.ts_close_ns,
+                        "symbol": self.symbol,
+                        "open": completed_h4.open,
+                        "high": completed_h4.high,
+                        "low": completed_h4.low,
+                        "close": completed_h4.close,
+                        "volume": completed_h4.volume,
+                        "rule_provenance": COMPLETED_H4_FROM_HOURLY_RULE,
+                    },
+                )
+                routed.extend(self._route_completed_bar(240, completed_h4))
+
+        routed.extend(self._route_completed_bar(timeframe_minutes, bar))
         output = sorted(
-            unique.values(),
+            {plan.plan_id: plan for plan in routed}.values(),
             key=lambda plan: (
                 plan.interaction_time_ns,
                 0
@@ -226,6 +280,7 @@ class EasyChartRE1SkilledContinuationBundle:
                 ),
                 "rule_provenance": LOCAL_AUCTION_SKILLED_ROUTER_RULE,
             },
+            "completed_h4_from_hourly": self.h4_from_hourly.diagnostics,
             "base": self.base.diagnostics,
             "local_continuation": self.continuation.diagnostics,
         }
