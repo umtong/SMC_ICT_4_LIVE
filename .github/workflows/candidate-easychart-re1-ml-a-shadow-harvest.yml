@@ -1,0 +1,85 @@
+name: candidate-easychart-re1-ml-a-shadow-harvest
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - "research/candidate-easychart_re1/execution_re1_ml_a_shadow.py"
+      - "research/candidate-easychart_re1/ml_a_extract_shadow.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_shadow.py"
+      - "research/candidate-easychart_re1/.ml_a_shadow_harvest_dispatch_marker"
+      - ".github/workflows/candidate-easychart-re1-ml-a-shadow-harvest.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-easychart-re1-ml-a-shadow-harvest-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024, start: 2024-05-01, end: 2024-05-07}
+          - {period: november-2024, start: 2024-11-01, end: 2024-11-07}
+          - {period: february-2025, start: 2025-02-01, end: 2025-02-07}
+          - {period: august-2025, start: 2025-08-01, end: 2025-08-07}
+          - {period: november-2025, start: 2025-11-01, end: 2025-11-07}
+          - {period: february-2026, start: 2026-02-01, end: 2026-02-07}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml-a-shadow/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-ml-a-shadow/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the one-pass research path
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v5.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_balance_system_v5.py \
+            research/candidate-easychart_re1/execution_re1_ml_a_shadow.py \
+            research/candidate-easychart_re1/ml_a_enrich_counterfactual.py \
+            research/candidate-easychart_re1/ml_a_extract_shadow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_shadow.py
+      - name: Run one account and label all emitted plans in parallel
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_shadow.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Materialize the causal plan table without reloading market data
+        run: |
+          python research/candidate-easychart_re1/ml_a_extract_shadow.py \
+            --events "$OUT/decision_events.csv" \
+            --output "$OUT/counterfactual_plans.csv" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Upload compact plan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-a-shadow-${{ matrix.period }}-${{ github.sha }}
+          path: |
+            ${{ env.OUT }}/counterfactual_plans.csv
+            ${{ env.OUT }}/counterfactual_summary.json
+            ${{ env.OUT }}/metrics.json
+            ${{ env.OUT }}/run.json
+            ${{ env.OUT }}/trade_audit.csv
+          if-no-files-found: warn
+          retention-days: 30
