@@ -222,3 +222,20 @@ class EasyChartRE1MLAStrategy(EasyChartRE1Strategy):
         self.bar_bucket.clear()
         self.bar_bucket_seen.clear()
         self.bar_bucket_ts = None
+
+
+class EasyChartRE1MLAEnvStrategy(EasyChartRE1MLAStrategy):
+    """Runner-compatible wrapper whose immutable model settings come from env."""
+
+    def __init__(self, config: EasyChartMTFConfig) -> None:
+        import os
+
+        model_path = os.environ.get("ML_A_MODEL_PATH")
+        if not model_path:
+            raise RuntimeError("ML_A_MODEL_PATH is required")
+        super().__init__(
+            config,
+            model_path=model_path,
+            policy=os.environ.get("ML_A_POLICY", "quality"),
+            minimum_probability=float(os.environ.get("ML_A_MIN_PROBABILITY", "0.60")),
+        )
