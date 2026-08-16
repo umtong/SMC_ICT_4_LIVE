@@ -8,12 +8,16 @@ completed hourly candles, and uses the existing explicit market-entry plus
 reduce-only protective lifecycle.
 
 This is demo/paper only.  Unknown reconciled exposure is flattened and the
-strategy remains halted until a clean restart.
+strategy remains halted until a clean restart.  Every decision/execution event
+is appended to durable JSONL and critical lifecycle state is atomically
+snapshotted for operational diagnosis.
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import os
+from pathlib import Path
 import sys
 
 from easychart_re1_higher_structure_router import (
@@ -23,6 +27,11 @@ from easychart_re1_higher_structure_router import (
 )
 from easychart_re1_skilled_continuation import (
     LOCAL_AUCTION_SKILLED_ROUTER_RULE,
+)
+from paper_re1_durable_audit import (
+    PAPER_EVENT_LOG_ENV,
+    PAPER_STATE_SNAPSHOT_ENV,
+    DurablePaperAuditMixin,
 )
 from paper_re1_flow import (
     FLOW_PAPER_DATA_RULE,
@@ -35,9 +44,12 @@ import run_binance_demo_re1 as base
 
 
 CANDIDATE = "candidate-easychart_re1_completed_60m_structure_router"
+DEFAULT_EVENT_LOG = Path(f".state/{CANDIDATE}/paper_events.jsonl")
+DEFAULT_STATE_SNAPSHOT = Path(f".state/{CANDIDATE}/paper_state.json")
 
 
 class EasyChartRE1HigherStructurePaperStrategy(
+    DurablePaperAuditMixin,
     EasyChartRE1FlowCoherentPaperStrategy,
 ):
     """Paper runtime for the exact frozen higher-structure decision policy."""
@@ -66,6 +78,14 @@ def _check_config() -> None:
         "higher_structure_rule": COMPLETED_60M_STRUCTURE_RULE,
         "local_router_rule": LOCAL_STRUCTURE_ROUTER_RULE,
         "auction_router_rule": LOCAL_AUCTION_SKILLED_ROUTER_RULE,
+        "durable_event_log": os.environ.get(
+            PAPER_EVENT_LOG_ENV,
+            str(DEFAULT_EVENT_LOG),
+        ),
+        "atomic_state_snapshot": os.environ.get(
+            PAPER_STATE_SNAPSHOT_ENV,
+            str(DEFAULT_STATE_SNAPSHOT),
+        ),
         "check_time_utc": datetime.now(UTC).isoformat(),
         "credentials_or_network_used": False,
     }
@@ -76,6 +96,12 @@ def main() -> None:
     if "--check-config" in sys.argv:
         _check_config()
         return
+
+    os.environ.setdefault(PAPER_EVENT_LOG_ENV, str(DEFAULT_EVENT_LOG))
+    os.environ.setdefault(
+        PAPER_STATE_SNAPSHOT_ENV,
+        str(DEFAULT_STATE_SNAPSHOT),
+    )
 
     # ``base.main`` owns the battle-tested node, client, reconciliation and
     # protective-order construction.  Replace only the scenario, warmup and
