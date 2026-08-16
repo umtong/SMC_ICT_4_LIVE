@@ -51,12 +51,12 @@ class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine)
     ) -> bool:
         if setup.side is Side.LONG:
             return (
-                setup.pullback_high is not None
-                and setup.target_price <= setup.pullback_high
+                setup.retest_high is not None
+                and setup.target_price <= setup.retest_high
             )
         return (
-            setup.pullback_low is not None
-            and setup.target_price >= setup.pullback_low
+            setup.retest_low is not None
+            and setup.target_price >= setup.retest_low
         )
 
     def _target_touched(
@@ -83,8 +83,8 @@ class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine)
                 side=setup.side.name,
                 state=setup.state,
                 provisional_impulse_extreme=setup.target_price,
-                pullback_high=setup.pullback_high,
-                pullback_low=setup.pullback_low,
+                retest_high=setup.retest_high,
+                retest_low=setup.retest_low,
                 bar_high=bar.high,
                 bar_low=bar.low,
                 rule_provenance=CONTINUATION_TARGET_LIFECYCLE_RULE,
