@@ -19,6 +19,11 @@ import pandas as pd
 
 import counterfactual_plan_harvest as _base
 from counterfactual_plan_harvest import HarvestConfig
+from counterfactual_sequential_features import (
+    SEQUENTIAL_FEATURE_POLICY,
+    SYNCHRONIZED_COMMON_POLICY,
+    build_sequential_state,
+)
 from data_re1_flow import load_range_flow
 
 
@@ -61,6 +66,8 @@ def _summary(labelled: pd.DataFrame) -> dict[str, Any]:
         "label_policy": _base.LABEL_POLICY,
         "market_state_policy": _base.MARKET_STATE_POLICY,
         "identity_policy": IDENTITY_POLICY,
+        "sequential_feature_policy": SEQUENTIAL_FEATURE_POLICY,
+        "synchronized_common_policy": SYNCHRONIZED_COMMON_POLICY,
         "by_family": {},
     }
     for family, group in labelled.groupby("family", dropna=False):
@@ -87,6 +94,8 @@ def harvest_counterfactual_plans(config: HarvestConfig) -> dict[str, Any]:
             "label_policy": _base.LABEL_POLICY,
             "market_state_policy": _base.MARKET_STATE_POLICY,
             "identity_policy": IDENTITY_POLICY,
+            "sequential_feature_policy": SEQUENTIAL_FEATURE_POLICY,
+            "synchronized_common_policy": SYNCHRONIZED_COMMON_POLICY,
         }
         (config.output / "counterfactual_summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -114,7 +123,10 @@ def harvest_counterfactual_plans(config: HarvestConfig) -> dict[str, Any]:
         tape = raw.copy()
         tape.index = pd.DatetimeIndex(tape.pop("open_time_dt")) + pd.Timedelta(minutes=1)
         tapes[symbol] = tape.sort_index()
-    state = _base._market_state(frames)
+    state = _base._market_state(frames).join(
+        build_sequential_state(frames).drop(columns=["symbol"], errors="ignore"),
+        how="left",
+    )
 
     labels = [
         _base._label_plan(plan, tapes[str(plan["symbol"])], state, config)
@@ -129,6 +141,16 @@ def harvest_counterfactual_plans(config: HarvestConfig) -> dict[str, Any]:
     labelled["risk_bps"] = 10_000.0 * risk / labelled["entry"].astype(float).abs()
     labelled["target_bps"] = 10_000.0 * reward / labelled["entry"].astype(float).abs()
     labelled["zero_drift_target_first_prior"] = risk / (risk + reward).replace(0.0, pd.NA)
+    labelled["risk_in_prior_sigma"] = risk / (
+        labelled["entry"].astype(float).abs() * labelled["seq_prior_sigma_1m"]
+    ).replace(0.0, pd.NA)
+    labelled["target_in_prior_sigma"] = reward / (
+        labelled["entry"].astype(float).abs() * labelled["seq_prior_sigma_1m"]
+    ).replace(0.0, pd.NA)
+    labelled["risk_in_prior_range"] = risk / (
+        labelled["entry"].astype(float).abs()
+        * labelled["seq_prior_range_fraction_1m"]
+    ).replace(0.0, pd.NA)
     labelled.to_csv(config.output / "counterfactual_plans.csv", index=False)
 
     summary = _summary(labelled)
