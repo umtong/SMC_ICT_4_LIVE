@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import contracts_v5 as _contracts
 from contracts_v5 import V5TradePlan
+from domain import Candle
 from easychart_re1_delivery_channel_core import (
     EasyChartRE1DeliveryChannelCoreBundle,
+)
+from easychart_re1_rejection_micro_target_v2 import (
+    EasyChartRE1RejectionMicroTargetV2Bundle,
 )
 
 
@@ -59,6 +63,51 @@ class EasyChartRE1DeliveryChannelCoreV2Bundle(
                 )
             return []
         return super()._route_continuation(raw)
+
+    def on_bar(
+        self,
+        timeframe_minutes: int,
+        bar: Candle,
+    ) -> list[V5TradePlan]:
+        # The account also carries a 60-minute context stream.  Dedicated
+        # 15/5/1 engines must not receive unsupported frames, while the shared
+        # rejection bundle retains its own 60-minute context handling.
+        self.delivery_draw.on_bar(timeframe_minutes, bar)
+        self.delivery_continuation.set_common_auction_snapshot(
+            self.delivery_draw.common_snapshot
+        )
+
+        channel: list[V5TradePlan] = []
+        continuation: list[V5TradePlan] = []
+        if timeframe_minutes in {15, 5, 1}:
+            raw_channel = self.delivery_channel_acceptance.on_bar(
+                timeframe_minutes,
+                bar,
+            )
+            self._sync_channel_acceptance_audit()
+            channel = self._route_channel_acceptance(raw_channel)
+
+            raw_continuation = self.delivery_continuation.on_bar(
+                timeframe_minutes,
+                bar,
+            )
+            self._sync_delivery_audit()
+            continuation = self._route_continuation(raw_continuation)
+
+        rejection = EasyChartRE1RejectionMicroTargetV2Bundle.on_bar(
+            self,
+            timeframe_minutes,
+            bar,
+        )
+        return sorted(
+            channel + continuation + rejection,
+            key=lambda plan: (
+                plan.interaction_time_ns,
+                -plan.higher_timeframe_minutes,
+                plan.symbol,
+                plan.plan_id,
+            ),
+        )
 
     @property
     def diagnostics(self):  # type: ignore[no-untyped-def]
