@@ -1,0 +1,182 @@
+name: candidate-easychart-re1-delivery-aligned-response-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-delivery-aligned-response-diagnostic.yml"
+      - "research/candidate-easychart_re1/.delivery_aligned_response_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_delivery_aligned_response.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_aligned_response.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py"
+      - "research/candidate-easychart-v5/mtf_backtest_support_v5.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-delivery-aligned-response-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile completed-hour delivery policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_aligned_response.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_aligned_response.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py \
+            research/candidate-easychart-v5/mtf_backtest_support_v5.py
+      - name: Verify exact completed-hour state contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from domain import Candle, Side
+          from easychart_re1_delivery_aligned_response import (
+              COMPLETED_HOURLY_DELIVERY_OWNERSHIP_RULE,
+              EasyChartRE1DeliveryAlignedResponseBundle,
+          )
+
+          bundle = EasyChartRE1DeliveryAlignedResponseBundle("BTCUSDT", 0.1, 1.0)
+          up = Candle(
+              symbol="BTCUSDT",
+              timeframe_minutes=60,
+              ts_close_ns=3_600_000_000_000,
+              open=100.0,
+              high=102.0,
+              low=99.0,
+              close=101.0,
+              volume=1.0,
+          )
+          flat = Candle(
+              symbol="BTCUSDT",
+              timeframe_minutes=60,
+              ts_close_ns=7_200_000_000_000,
+              open=101.0,
+              high=102.0,
+              low=100.0,
+              close=101.0,
+              volume=1.0,
+          )
+          assert bundle._hour_side(up) is Side.LONG
+          assert bundle._hour_side(flat) is None
+          bundle.on_bar(60, up)
+          assert bundle._last_completed_hour is up
+          assert "COMPLETED_HOURLY" in COMPLETED_HOURLY_DELIVERY_OWNERSHIP_RULE
+          print({
+              "scenario_engine": type(bundle).__name__,
+              "completed_hour_side": bundle._hour_side(up).name,
+              "flat_hour_state": bundle._hour_side(flat),
+              "rule": COMPLETED_HOURLY_DELIVERY_OWNERSHIP_RULE,
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: fresh-march-2024
+            start: 2024-03-05
+            end: 2024-03-07
+          - period: fresh-december-2024
+            start: 2024-12-05
+            end: 2024-12-07
+          - period: fresh-june-2025
+            start: 2025-06-05
+            end: 2025-06-07
+          - period: fresh-march-2026
+            start: 2026-03-05
+            end: 2026-03-07
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-delivery-aligned-response/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-delivery-aligned-response/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run significant-response baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run completed-hour delivery candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/delivery_aligned"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_aligned_response.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/delivery_aligned" \
+            --fee-profile usd_m_vip0
+      - name: Print matched continuous-account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {
+              "period": "${{ matrix.period }}",
+              "start": "${{ matrix.start }}",
+              "end": "${{ matrix.end }}",
+          }
+          keys = (
+              "candidate", "calendar_days", "closed_positions",
+              "independent_completed_trades", "independent_trades_per_day",
+              "final_nav", "ending_nav", "total_return", "max_drawdown",
+              "max_drawdown_pct", "liquidations", "trade_windows",
+          )
+          for name in ("baseline", "delivery_aligned"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              result[name] = {key: data.get(key) for key in keys if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("MATCHED_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trades and delivery-routing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-delivery-aligned-response-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-delivery-aligned-response/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
