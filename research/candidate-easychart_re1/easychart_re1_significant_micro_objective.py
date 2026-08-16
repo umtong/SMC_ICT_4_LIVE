@@ -2,28 +2,26 @@
 
 Every tiny one-minute pivot is not a meaningful obstacle.  The source repeatedly
 uses an important prior high/low or opposing structure, and the existing RE1
-translation already assigns span 6 to the larger local auction while span 2 is
-the smallest reaction.  Using both spans for the objective made ordinary noise
-block otherwise valid trades and rejected strong winners with less than 1R to a
-minor pivot.
+translation assigns span 6 to the larger local auction while span 2 is the
+smallest reaction.  Only a causally confirmed span-6 opposing swing may refine
+the inherited objective.
 
-This candidate keeps the efficient pivot-only implementation but admits only a
-causally confirmed span-6 one-minute swing as a refinement of the inherited
-5m/15m objective.  Such a pivot needs six completed bars on each side before it
-exists, yet can become visible earlier than a five-minute swing.  The nearest
-still-unspent opposing span-6 swing available before entry is the immutable
-first significant obstacle.  If it leaves less than the existing 1.0 gross R,
-the trade is rejected.
+A completed channel acceptance or rejection is a price-transfer event, so its
+first meaningful opposing swing is still an obstacle.  Only an actual channel
+rotation retains the explicit opposite channel edge; the previous blanket
+"any channel member" exception allowed accepted breaks to manufacture distant
+5R+ objectives through already visible local structure.
 
 No fitted distance, R cap, post-entry movement, partial exit or outcome
-information is introduced.  Channel rotations retain channel objectives and
-channel-edge reversals remain diagnostic-only.
+information is introduced.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import contracts_v5 as _contracts
+from contracts_v5 import ScenarioPath, ScenarioSetup
+from domain import Candle
 from easychart_re1_channel_abstention import (
     ChannelAbstainingMicroEngine,
     EasyChartRE1ChannelAbstentionBundle,
@@ -42,12 +40,21 @@ SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "FIRST_SIGNIFICANT_MICRO_OBSTACLE_IS_THE_NEAREST_STILL_UNSPENT_CAUSALLY_CONFIRMED_SPAN6_ONE_MINUTE_OPPOSING_SWING_AVAILABLE_BEFORE_ENTRY"
 )
-if SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE not in _contracts.TRANSLATION_RULES:
-    _contracts.TRANSLATION_RULES += (SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,)
+CHANNEL_TRANSFER_FIRST_OBSTACLE_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:CHANNEL_ACCEPTANCE_OR_REJECTION_TARGETS_THE_"
+    "FIRST_SIGNIFICANT_OPPOSING_STRUCTURE_WHILE_ONLY_CHANNEL_ROTATION_RETAINS_"
+    "THE_EXPLICIT_OPPOSITE_CHANNEL_EDGE"
+)
+for _rule in (
+    SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,
+    CHANNEL_TRANSFER_FIRST_OBSTACLE_RULE,
+):
+    if _rule not in _contracts.TRANSLATION_RULES:
+        _contracts.TRANSLATION_RULES += (_rule,)
 
 
 class SignificantMicroObjectiveMixin(EfficientFirstMicroObstacleMixin):
-    """Restrict the pivot-only objective book to the existing major-local span."""
+    """Use span-6 micro structure for every non-rotation day-trade event."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -56,6 +63,46 @@ class SignificantMicroObjectiveMixin(EfficientFirstMicroObstacleMixin):
             self.trigger_minutes,
             self.tick_size,
             pivot_spans=(6,),
+        )
+
+    def _refine_target(self, setup: ScenarioSetup, bar: Candle) -> None:
+        if setup.path is ScenarioPath.ROTATION:
+            self._minc("channel_rotation_objective_retained")
+            return
+        if setup.target_price is None:
+            return
+        target = self.entry_micro_structure.target_for(
+            setup.side,
+            interaction_time_ns=bar.ts_close_ns,
+            source_span=setup.context.source_pivot_span,
+            current_high=bar.high,
+            current_low=bar.low,
+        )
+        if target is None:
+            self._minc("no_significant_micro_obstacle_before_entry")
+            return
+        zone, price = target
+        if not self._closer(setup.side, price, setup.target_price):
+            self._minc("existing_objective_already_nearer")
+            return
+        previous_zone_id = None if setup.target_zone is None else setup.target_zone.zone_id
+        previous_price = setup.target_price
+        setup.target_zone = zone
+        setup.target_price = price
+        self._audit(zone)
+        self._minc("objective_replaced_by_first_significant_micro_obstacle")
+        self._trace(
+            "objective_replaced_by_first_significant_micro_obstacle",
+            bar.ts_close_ns,
+            setup,
+            previous_target_zone_id=previous_zone_id,
+            previous_target_price=previous_price,
+            selected_target_zone_id=zone.zone_id,
+            selected_target_price=price,
+            rule_provenance=(
+                SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,
+                CHANNEL_TRANSFER_FIRST_OBSTACLE_RULE,
+            ),
         )
 
     @property
@@ -67,6 +114,7 @@ class SignificantMicroObjectiveMixin(EfficientFirstMicroObstacleMixin):
                 FIRST_MICRO_OBSTACLE_RULE,
                 PIVOT_ONLY_OBJECTIVE_BOOK_RULE,
                 SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,
+                CHANNEL_TRANSFER_FIRST_OBSTACLE_RULE,
             ),
         }
 
@@ -135,7 +183,10 @@ class EasyChartRE1SignificantMicroObjectiveBundle(EasyChartRE1ChannelAbstentionB
             "micro": self.micro.significant_micro_objective_diagnostics,
             "major_swing": self.major_swing.significant_micro_objective_diagnostics,
             "flow_decision_ob": self.flow_decision_ob.significant_micro_objective_diagnostics,
-            "rule_provenance": SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,
+            "rules": (
+                SIGNIFICANT_MICRO_SWING_OBJECTIVE_RULE,
+                CHANNEL_TRANSFER_FIRST_OBSTACLE_RULE,
+            ),
         }
         return output
 
