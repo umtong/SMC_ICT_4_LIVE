@@ -106,7 +106,8 @@ class CurrentAbsorptionFirstResponseMixin:
         *,
         acceptance: bool,
     ) -> V5TradePlan | None:
-        if acceptance or signal.mechanism != "CURRENT_BOUNDARY_ABSORPTION":
+        current_absorption = signal.mechanism.endswith("CURRENT_ABSORPTION")
+        if acceptance or not current_absorption:
             return super()._create_flow_plan(
                 setup,
                 bar,
@@ -224,7 +225,7 @@ class CurrentAbsorptionFirstResponseMixin:
             self._pending_current_absorption.pop(setup_id, None)
             confirmed_signal = replace(
                 pending.signal,
-                mechanism="CURRENT_BOUNDARY_ABSORPTION_FIRST_RESPONSE",
+                mechanism=f"{pending.signal.mechanism}_FIRST_RESPONSE",
                 episode_bars=max(2, pending.signal.episode_bars + 1),
             )
             self._trace(
