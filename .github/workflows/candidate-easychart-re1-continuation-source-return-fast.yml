@@ -1,0 +1,65 @@
+name: candidate-easychart-re1-continuation-source-return-fast
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-continuation-source-return-fast.yml"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_source_return.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-continuation-source-return-fast
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  source-return:
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-continuation-source-return/${{ matrix.symbol }}
+      OUT: artifacts/candidate-easychart-re1-continuation-source-return/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile source-return alpha
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_continuation_source_return.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py
+      - name: Run source-footprint first-return policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py \
+            --start 2026-07-01 \
+            --end 2026-07-03 \
+            --warmup-days 7 \
+            --symbols "${{ matrix.symbol }}" \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve causal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-continuation-source-return-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-continuation-source-return/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
