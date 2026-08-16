@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from contracts_v5 import V5TradePlan
@@ -10,8 +11,14 @@ from easychart_re1_daily_liquidity import DailyLiquiditySweepEngine
 from easychart_re1_skilled_integrated import EasyChartRE1SkilledIntegratedBundle
 
 
+class PreviousDayStructureKind(str, Enum):
+    PREVIOUS_DAY_HIGH = "PREVIOUS_DAY_HIGH"
+    PREVIOUS_DAY_LOW = "PREVIOUS_DAY_LOW"
+    PREVIOUS_DAY_MIDPOINT = "PREVIOUS_DAY_MIDPOINT"
+
+
 class ExchangeCloseAlignedDailyLiquiditySweepEngine(DailyLiquiditySweepEngine):
-    """Assign a close-stamped bar to the interval which ended at that stamp."""
+    """Assign close-stamped bars correctly and keep plan kinds serializable."""
 
     @staticmethod
     def _utc_date(time_ns: int):  # type: ignore[no-untyped-def]
@@ -19,6 +26,14 @@ class ExchangeCloseAlignedDailyLiquiditySweepEngine(DailyLiquiditySweepEngine):
             (time_ns - 1) / 1_000_000_000,
             timezone.utc,
         ).date()
+
+    def _level_zone(self, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        zone = super()._level_zone(*args, **kwargs)
+        raw = kwargs.get("kind")
+        if raw is None:
+            raise RuntimeError("previous-day structure kind is missing")
+        zone.kind = PreviousDayStructureKind(raw)
+        return zone
 
 
 class EasyChartRE1SkilledDailyBundle:
