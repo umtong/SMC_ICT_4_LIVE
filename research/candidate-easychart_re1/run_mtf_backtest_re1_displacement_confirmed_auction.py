@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the full auction stream with body-dominant 5m delivery confirmation."""
+"""Run the displacement-confirmed core in one continuous account."""
 from __future__ import annotations
 
 import json
@@ -9,6 +9,7 @@ import sys
 from easychart_re1_displacement_confirmed_auction import (
     BODY_DOMINANT_DELIVERY_RULE,
     DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+    WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
     EasyChartRE1DisplacementConfirmedAuctionBundle,
 )
 from execution_re1_flow import EasyChartRE1FlowStrategy
@@ -32,11 +33,13 @@ def _output_path(argv: list[str]) -> Path | None:
 
 def _rewrite_metadata(output: Path) -> None:
     values = {
-        "candidate": "candidate-easychart_re1_displacement_confirmed_auction",
+        "candidate": "candidate-easychart_re1_displacement_confirmed_core",
         "scenario_engine": "EasyChartRE1DisplacementConfirmedAuctionBundle",
-        "policy": "FULL_AUCTION_STREAM_WITH_COMPLETED_HIGHER_DELIVERY_AND_BODY_DOMINANT_5M_RESPONSE",
+        "policy": "AUCTION_CORE_WITH_COMPLETED_HIGHER_DELIVERY_BODY_DOMINANT_5M_RESPONSE_AND_WEAK_LOCAL_RETIREMENT",
         "body_dominant_delivery_rule": BODY_DOMINANT_DELIVERY_RULE,
         "displacement_confirmed_auction_rule": DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+        "weak_local_family_retirement_rule": WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
+        "retired_local_scales": ["FLOW_DECISION_OB", "HORIZONTAL"],
         "market_data": "BINANCE_EXTENDED_KLINE_AGGRESSOR_FLOW_PRESERVED",
         "position_contract": "ONE_ACCOUNT_ONE_GLOBAL_POSITION_FIXED_3PCT_NAV_RISK",
     }
