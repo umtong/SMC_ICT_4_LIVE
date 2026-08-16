@@ -1,0 +1,136 @@
+name: candidate-easychart-re1-higher-structure-paper-smoke
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-higher-structure-paper-smoke.yml"
+      - "research/candidate-easychart_re1/.higher_structure_paper_dispatch_marker"
+      - "research/candidate-easychart_re1/paper_re1_flow.py"
+      - "research/candidate-easychart_re1/run_binance_demo_re1_higher_structure.py"
+      - "research/candidate-easychart_re1/easychart_re1_higher_structure_router.py"
+      - "research/candidate-easychart_re1/easychart_re1_skilled_continuation.py"
+      - "research/candidate-easychart_re1/completed_h4_from_hourly.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-higher-structure-paper-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  paper-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile paper runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/paper_re1_flow.py \
+            research/candidate-easychart_re1/run_binance_demo_re1_higher_structure.py
+      - name: Validate configuration without network or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart_re1/run_binance_demo_re1_higher_structure.py \
+            --check-config > /tmp/paper-config.json
+          cat /tmp/paper-config.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          record = json.loads(Path("/tmp/paper-config.json").read_text())
+          assert record["candidate"] == "candidate-easychart_re1_completed_60m_structure_router"
+          assert record["scenario_bundle"] == "EasyChartRE1HigherStructureRouterBundle"
+          assert record["paper_strategy"] == "EasyChartRE1HigherStructurePaperStrategy"
+          assert record["credentials_or_network_used"] is False
+          assert len(record["symbols"]) == 4
+          assert all("EXTERNAL" in value for value in record["execution_bar_types"])
+          assert "TAKER_BUY" in record["flow_data_rule"]
+          assert "FLATTENED" in record["restart_reconciliation_rule"]
+          PY
+      - name: Verify flow aggregation and live BinanceBar conversion contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import UTC, datetime
+          from decimal import Decimal
+          from types import SimpleNamespace
+
+          import pandas as pd
+
+          from easychart_re1_flow import FlowCandle
+          from paper_re1_flow import (
+              EasyChartRE1FlowCoherentPaperStrategy,
+              _flow_candles,
+              resample_flow,
+          )
+
+          opens = pd.date_range("2026-01-01T00:00:00Z", periods=5, freq="1min")
+          frame = pd.DataFrame({
+              "open_time_dt": opens,
+              "open": [100, 101, 102, 103, 104],
+              "high": [102, 103, 104, 105, 106],
+              "low": [99, 100, 101, 102, 103],
+              "close": [101, 102, 103, 104, 105],
+              "volume": [1, 2, 3, 4, 5],
+              "quote_volume": [100, 202, 306, 412, 525],
+              "count": [10, 20, 30, 40, 50],
+              "taker_buy_volume": [0.5, 1, 1.5, 2, 2.5],
+              "taker_buy_quote_volume": [50, 101, 153, 206, 262.5],
+          })
+          five = resample_flow(frame, 5)
+          assert len(five) == 1
+          row = five.iloc[0]
+          assert row.open == 100
+          assert row.high == 106
+          assert row.low == 99
+          assert row.close == 105
+          assert row.volume == 15
+          assert row.quote_volume == 1545
+          assert row["count"] == 150
+          assert row.taker_buy_volume == 7.5
+          assert row.taker_buy_quote_volume == 772.5
+
+          candles = _flow_candles(
+              frame,
+              5,
+              datetime(2026, 1, 1, 0, 5, tzinfo=UTC),
+          )
+          assert len(candles) == 1
+          assert isinstance(candles[0], FlowCandle)
+          assert candles[0].ts_close_ns == int(pd.Timestamp("2026-01-01T00:05:00Z").value)
+          assert candles[0].trade_count == 150
+
+          bar = SimpleNamespace(
+              ts_event=candles[0].ts_close_ns,
+              open=Decimal("100"),
+              high=Decimal("106"),
+              low=Decimal("99"),
+              close=Decimal("105"),
+              volume=Decimal("15"),
+              quote_volume=Decimal("1545"),
+              count=150,
+              taker_buy_base_volume=Decimal("7.5"),
+              taker_buy_quote_volume=Decimal("772.5"),
+          )
+          converted = EasyChartRE1FlowCoherentPaperStrategy._candle(bar)
+          assert converted == candles[0]
+          print({
+              "five_minute_flow": converted,
+              "paper_strategy": EasyChartRE1FlowCoherentPaperStrategy.__name__,
+          })
+          PY
