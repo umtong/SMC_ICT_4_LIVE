@@ -1,0 +1,135 @@
+name: candidate-easychart-re1-higher-structure-medium-continuous
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - "research/candidate-easychart_re1/.higher_structure_medium_dispatch_marker"
+
+concurrency:
+  group: candidate-easychart-re1-higher-structure-medium-continuous
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  matched-continuous:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: unseen-summer-2024
+            start: 2024-06-15
+            end: 2024-07-12
+          - period: unseen-spring-2026
+            start: 2026-03-15
+            end: 2026-04-11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-higher-structure-medium/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-higher-structure-medium/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_higher_structure_router.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_higher_structure_router.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py
+      - name: Run matched baseline continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 21 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run frozen higher-structure continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/candidate"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_higher_structure_router.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 21 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/candidate" \
+            --fee-profile usd_m_vip0
+      - name: Enforce evidence integrity and print economics
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {
+              "period": "${{ matrix.period }}",
+              "start": "${{ matrix.start }}",
+              "end": "${{ matrix.end }}",
+          }
+          for name in ("baseline", "candidate"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text())
+              audit_path = root / name / "trade_audit.csv"
+              audit = pd.read_csv(audit_path) if audit_path.exists() else pd.DataFrame()
+              result[name] = {
+                  "final_nav": data.get("final_nav", data.get("ending_nav", data.get("ending_balance"))),
+                  "return_pct": data.get("return_pct", data.get("total_return")),
+                  "closed_trades": data.get("closed_trades", data.get("completed_trades")),
+                  "trades_per_calendar_day": data.get("trades_per_calendar_day"),
+                  "win_rate": data.get("win_rate"),
+                  "sum_actual_net_r": (
+                      None if audit.empty or "actual_net_r" not in audit else float(audit["actual_net_r"].sum())
+                  ),
+                  "mean_actual_net_r": (
+                      None if audit.empty or "actual_net_r" not in audit else float(audit["actual_net_r"].mean())
+                  ),
+                  "profit_factor_r": (
+                      None
+                      if audit.empty or "actual_net_r" not in audit or not (audit["actual_net_r"] < 0).any()
+                      else float(
+                          audit.loc[audit["actual_net_r"] > 0, "actual_net_r"].sum()
+                          / -audit.loc[audit["actual_net_r"] < 0, "actual_net_r"].sum()
+                      )
+                  ),
+                  "max_drawdown_pct": data.get("max_drawdown_pct"),
+                  "risk_budget_breaches": data.get("risk_budget_breaches"),
+                  "orphan_trade_audits": data.get("orphan_trade_audits"),
+                  "missing_exit_roles": data.get("missing_exit_roles"),
+                  "liquidations": data.get("liquidations"),
+                  "metric_keys": sorted(data),
+              }
+          print("HIGHER_STRUCTURE_MEDIUM_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve full continuous-account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-higher-structure-medium-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-higher-structure-medium/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 45
