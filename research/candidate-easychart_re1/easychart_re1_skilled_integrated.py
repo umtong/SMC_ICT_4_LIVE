@@ -1,19 +1,21 @@
 """Mechanism-routed EasyChart RE1 day-trading policy.
 
-This module joins two complete auction decisions rather than accumulating
-filters:
+This module joins complete auction decisions rather than accumulating filters:
 
-* reversal/rejection opportunities use the significant live objective policy;
-  visual OB/FVG returns remain direct, while a flow-only substitute must first
-  complete the five-minute control-transfer event;
+* rejection opportunities are actual sweep/reclaim rejection episodes; visual
+  OB/FVG returns remain direct, while a flow-only substitute must first complete
+  the five-minute control-transfer event;
 * accepted structure transfers use the embedded acceptance policy and its first
-  completed response.
+  completed response;
+* an unbroken decision-OB bounce is not relabeled as a reversal.  Continuation
+  responsibility belongs to the dedicated nested-initiative pullback family
+  composed above this bundle.
 
-The two policies are evaluated from the same completed bars, but only the
-mechanism each owns is executable.  A simultaneous overlap is one causal
-opportunity: accepted control has priority over a rejection interpretation.
-There is no PnL-dependent routing, threshold fitting, trade cap, partial exit,
-stop movement or target movement after entry.
+The policies see the same completed bars, but only the mechanism each owns is
+executable.  A simultaneous overlap is one causal opportunity: accepted control
+has priority over a rejection interpretation.  There is no PnL-dependent
+routing, fitted score, trade cap, partial exit, stop movement or target movement
+after entry.
 """
 from __future__ import annotations
 
@@ -39,9 +41,14 @@ SIMULTANEOUS_EPISODE_OWNERSHIP_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:A_COMPLETED_ACCEPTANCE_RESPONSE_OWNS_A_"
     "SIMULTANEOUS_OVERLAPPING_BOUNDARY_EPISODE_OVER_A_REJECTION_INTERPRETATION"
 )
+UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:AN_UNBROKEN_ORDER_BLOCK_BOUNCE_IS_A_"
+    "CONTINUATION_MECHANISM_AND_CANNOT_ENTER_THROUGH_THE_REJECTION_OWNER"
+)
 for _rule in (
     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
     SIMULTANEOUS_EPISODE_OWNERSHIP_RULE,
+    UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -94,20 +101,40 @@ class EasyChartRE1SkilledIntegratedBundle:
     def _is_acceptance(plan: V5TradePlan) -> bool:
         return plan.scenario_path == ScenarioPath.ACCEPTANCE.value
 
+    @staticmethod
+    def _is_rejection(plan: V5TradePlan) -> bool:
+        return plan.scenario_path == ScenarioPath.REJECTION.value
+
     def _route_current_bar(
         self,
         reversal_raw: list[V5TradePlan],
         acceptance_raw: list[V5TradePlan],
     ) -> list[V5TradePlan]:
-        rejection = [plan for plan in reversal_raw if not self._is_acceptance(plan)]
+        rejection = [plan for plan in reversal_raw if self._is_rejection(plan)]
+        deferred_bounce = [
+            plan
+            for plan in reversal_raw
+            if plan.scenario_path == ScenarioPath.BOUNCE.value
+        ]
+        for plan in deferred_bounce:
+            self._inc("unbroken_ob_bounce_deferred_to_continuation_owner")
+            self._trace.append(
+                {
+                    "scenario_kind": "unbroken_ob_bounce_deferred",
+                    "event_time_ns": plan.observed_time_ns,
+                    "symbol": plan.symbol,
+                    "suppressed_plan_id": plan.plan_id,
+                    "interaction_time_ns": plan.interaction_time_ns,
+                    "rule_provenance": UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE,
+                },
+            )
         continuation = [plan for plan in acceptance_raw if self._is_acceptance(plan)]
         if rejection:
             self._inc("reversal_owned_plan")
         if continuation:
             self._inc("acceptance_owned_plan")
 
-        selected: list[V5TradePlan] = []
-        for plan in sorted(
+        selected: list[V5TradePlan] = sorted(
             continuation,
             key=lambda item: (
                 item.interaction_time_ns,
@@ -115,9 +142,7 @@ class EasyChartRE1SkilledIntegratedBundle:
                 item.symbol,
                 item.plan_id,
             ),
-        ):
-            selected.append(plan)
-
+        )
         for plan in sorted(
             rejection,
             key=lambda item: (
@@ -197,11 +222,13 @@ class EasyChartRE1SkilledIntegratedBundle:
         return {
             "mechanism_routed_skilled_policy": {
                 "counts": dict(sorted(self._counts.items())),
-                "reversal_owner": "CONTROLLED_SIGNIFICANT_RESPONSE",
+                "reversal_owner": "CONTROLLED_SIGNIFICANT_RESPONSE_REJECTION_ONLY",
                 "acceptance_owner": "EMBEDDED_ACCEPTANCE_RESPONSE",
+                "bounce_owner": "NESTED_LOCAL_CONTINUATION",
                 "rules": (
                     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
                     SIMULTANEOUS_EPISODE_OWNERSHIP_RULE,
+                    UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE,
                 ),
             },
             "reversal": self.reversal.diagnostics,
