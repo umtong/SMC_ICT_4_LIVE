@@ -1,0 +1,116 @@
+name: candidate-easychart-re1-displacement-core-medium-continuous
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-displacement-core-medium-continuous.yml"
+      - "research/candidate-easychart_re1/.displacement_core_medium_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_displacement_confirmed_auction.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_displacement_confirmed_auction.py"
+      - "research/candidate-easychart-v5/mtf_backtest_support_v5.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-displacement-core-medium-continuous
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous-account:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-displacement-core-medium-2026-07
+      OUT: artifacts/candidate-easychart-re1-displacement-core-medium-2026-07
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_displacement_confirmed_auction.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_displacement_confirmed_auction.py \
+            research/candidate-easychart-v5/mtf_backtest_support_v5.py
+      - name: Verify frozen opportunity ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_displacement_confirmed_auction import (
+              BODY_DOMINANT_DELIVERY_RULE,
+              DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+              WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
+              EasyChartRE1DisplacementConfirmedAuctionBundle,
+          )
+
+          bundle = EasyChartRE1DisplacementConfirmedAuctionBundle("BTCUSDT", 0.1, 1.0)
+          assert bundle.RETIRED_LOCAL_SCALES == {"FLOW_DECISION_OB", "HORIZONTAL"}
+          assert "FIVE_MINUTE" in BODY_DOMINANT_DELIVERY_RULE
+          assert "60M_15M" in DISPLACEMENT_CONFIRMED_AUCTION_RULE
+          assert "RETIRED" in WEAK_LOCAL_FAMILY_RETIREMENT_RULE
+          assert bundle.plans == []
+          print({
+              "scenario_engine": type(bundle).__name__,
+              "retired_local_scales": sorted(bundle.RETIRED_LOCAL_SCALES),
+              "rules": (
+                  BODY_DOMINANT_DELIVERY_RULE,
+                  DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+                  WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
+              ),
+          })
+          PY
+      - name: Run one 28-day four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_displacement_confirmed_auction.py \
+            --start 2026-07-01 \
+            --end 2026-07-28 \
+            --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Print continuous account result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          path = Path("${{ env.OUT }}") / "metrics.json"
+          if not path.exists():
+              print("CONTINUOUS_RESULT=" + json.dumps({"status": "MISSING_METRICS"}, sort_keys=True))
+              raise SystemExit(0)
+          data = json.loads(path.read_text(encoding="utf-8"))
+          keys = (
+              "candidate", "start", "end", "calendar_days", "closed_positions",
+              "independent_completed_trades", "independent_trades_per_day",
+              "final_nav", "ending_nav", "total_return", "max_drawdown",
+              "max_drawdown_pct", "liquidations", "trade_windows",
+              "fees", "funding",
+          )
+          result = {key: data.get(key) for key in keys if key in data}
+          result["all_metric_keys"] = sorted(data)
+          print("CONTINUOUS_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve continuous account, trades and state routing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-displacement-core-medium-2026-07-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-displacement-core-medium-2026-07/**
+          if-no-files-found: warn
+          retention-days: 30
