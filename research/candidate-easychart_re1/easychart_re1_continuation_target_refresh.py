@@ -9,9 +9,10 @@ objective, then touching that extreme before any pullback retired the setup.
 That treats healthy post-break expansion as if the future pullback trade had
 already consumed its objective.  In an expansion -> return -> rebalancing ->
 continuation auction, pre-pullback extension confirms initiative.  It is not a
-trade outcome because no entry exists yet.  The actual immutable objective is
-chosen at the response close by the existing causal target refresh, which uses
-only pre-existing unspent 5m/15m structure beyond the entry.
+trade outcome because no entry exists yet.  At the response close, a spent
+provisional extreme is replaced by the nearest then-unspent, already observed
+5m/15m opposing structure.  If no such structure exists, or its geometry is
+below 1R, no trade is created.
 
 This module changes only that lifecycle interpretation.  It does not relax the
 impulse, flow, source-zone, first-pullback, first-response, stop, minimum-RR,
@@ -22,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 import contracts_v5 as _contracts
-from domain import Candle
+from domain import Candle, Side
 from easychart_re1_displacement_confirmed_auction import (
     EasyChartRE1DisplacementConfirmedAuctionBundle,
 )
@@ -35,7 +36,7 @@ from easychart_re1_local_continuation import (
 CONTINUATION_TARGET_LIFECYCLE_RULE = (
     "RESEARCH_SYNTHESIS:A_PREENTRY_EXTENSION_BEYOND_THE_INITIAL_IMPULSE_EXTREME_"
     "CONFIRMS_INITIATIVE_AND_DOES_NOT_SPEND_A_FUTURE_PULLBACK_TRADE_OBJECTIVE_"
-    "WHICH_IS_REFRESHED_CAUSALLY_AT_THE_FIRST_RESPONSE_CLOSE"
+    "WHICH_IS_REPLACED_AT_RESPONSE_BY_THE_NEAREST_PREEXISTING_UNSPENT_STRUCTURE"
 )
 if CONTINUATION_TARGET_LIFECYCLE_RULE not in _contracts.RESEARCH_RULES:
     _contracts.RESEARCH_RULES += (CONTINUATION_TARGET_LIFECYCLE_RULE,)
@@ -64,6 +65,56 @@ class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine)
             )
             return False
         return touched
+
+    def _refresh_target(
+        self,
+        setup: LocalContinuationSetup,
+        bar: Candle,
+    ) -> None:
+        """Replace a spent provisional extreme with the nearest unspent target."""
+        frozen_valid = (
+            setup.target_price > bar.high
+            if setup.side is Side.LONG
+            else setup.target_price < bar.low
+        )
+        choices = self._structure_targets(setup.side, bar)
+        valid = [
+            item
+            for item in choices
+            if (
+                item[2] > bar.high
+                if setup.side is Side.LONG
+                else item[2] < bar.low
+            )
+        ]
+        if frozen_valid:
+            valid.append(("FROZEN", setup.target_zone, setup.target_price))
+        if not valid:
+            self._inc("local_continuation_no_unspent_target_at_response")
+            return
+
+        source, zone, price = self._nearest(setup.side, valid)
+        changed = zone.zone_id != setup.target_zone.zone_id or price != setup.target_price
+        if not changed:
+            return
+        previous_zone_id = setup.target_zone.zone_id
+        previous_price = setup.target_price
+        setup.target_zone = zone
+        setup.target_price = price
+        self._audit(zone)
+        self._inc("local_continuation_target_replaced_after_extension")
+        self._record(
+            "local_continuation_target_replaced_after_extension",
+            bar.ts_close_ns,
+            setup_id=setup.setup_id,
+            side=setup.side.name,
+            previous_target_zone_id=previous_zone_id,
+            previous_target_price=previous_price,
+            target_source=source,
+            target_zone_id=zone.zone_id,
+            target_price=price,
+            rule_provenance=CONTINUATION_TARGET_LIFECYCLE_RULE,
+        )
 
 
 class EasyChartRE1ContinuationTargetRefreshBundle(
@@ -94,8 +145,8 @@ class EasyChartRE1ContinuationTargetRefreshBundle(
         output["continuation_target_lifecycle"] = {
             "rule_provenance": CONTINUATION_TARGET_LIFECYCLE_RULE,
             "policy": (
-                "PRESERVE_PRE_PULLBACK_EXTENSION_THEN_REFRESH_UNSPENT_"
-                "STRUCTURE_OBJECTIVE_AT_FIRST_RESPONSE"
+                "PRESERVE_PRE_PULLBACK_EXTENSION_THEN_REPLACE_SPENT_"
+                "PROVISIONAL_EXTREME_WITH_NEAREST_UNSPENT_STRUCTURE"
             ),
         }
         return output
