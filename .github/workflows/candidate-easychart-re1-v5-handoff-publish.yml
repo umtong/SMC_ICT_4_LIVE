@@ -1,0 +1,146 @@
+name: candidate-easychart-re1-v5-handoff-publish
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.v5_handoff_publish_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-v5-handoff-publish
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Publish handoff files only after the trade-level evidence is ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root=Path('research/candidate-easychart_re1')
+          evidence=root/'evidence/auction_router_v5_evidence.json'
+          if not evidence.exists():
+              raise SystemExit('v5 evidence has not been published yet')
+          record=json.loads(evidence.read_text())
+          if not record.get('ready_for_long_continuous_and_paper'):
+              print('Evidence is not ready; no handoff files are created.')
+              raise SystemExit(0)
+          if not (root/'easychart_re1_bot.py').exists():
+              raise SystemExit('ready evidence exists but selected bot alias is missing')
+
+          handoff={
+              'candidate':'candidate-easychart_re1_auction_router_v5',
+              'strategy_module':'easychart_re1_bot',
+              'bundle_class':'EasyChartRE1BotBundle',
+              'strategy_class':'EasyChartRE1BotStrategy',
+              'runner':'run_mtf_backtest_re1_bot.py',
+              'account':'ONE_CONTINUOUS_ACCOUNT_ONE_GLOBAL_POSITION',
+              'symbols':['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'],
+              'risk_fraction':0.03,
+              'minimum_gross_rr':1.0,
+              'position_management':'ONE_FULL_POSITION_IMMUTABLE_PREENTRY_STOP_AND_TARGET',
+              'paper_mode':'NAUTILUSTRADER_PAPER_OR_SANDBOX_EXECUTION_WITH_IDENTICAL_STRATEGY_CLASS',
+              'required_observations':[
+                  'order_accept_reject_cancel_and_partial_fill differences',
+                  'planned versus filled entry stop and target',
+                  'latency from completed signal bar to order acceptance',
+                  'restart state reconciliation and open OCO recovery',
+                  'continuous NAV risk sizing before each submission',
+              ],
+              'evidence_file':'evidence/auction_router_v5_evidence.json',
+          }
+          (root/'paper_shadow_handoff.json').write_text(json.dumps(handoff,indent=2,ensure_ascii=False)+'\n')
+          (root/'PAPER_SHADOW_HANDOFF.md').write_text('''# EasyChart RE1 paper/shadow handoff\n\nThis handoff exists only because `evidence/auction_router_v5_evidence.json` marked the integrated policy ready for long continuous evaluation and paper/shadow execution.\n\n## Immutable trading contract\n\n- One continuous account and at most one global position across BTC, ETH, SOL and XRP.\n- Current NAV risk to the original structural stop: 3%.\n- One full-position entry and one full-position exit; no partials or pyramiding.\n- Entry, stop and first pre-existing opposing objective fixed before submission.\n- Gross planned reward/risk must be at least 1.0R.\n- The same `EasyChartRE1BotStrategy` class is used in backtest and paper/shadow; only data and execution clients change.\n\n## Paper observations\n\nRecord planned versus accepted and filled prices, fee/slippage deltas, order rejection or partial-fill behavior, signal-to-accept latency, sibling stop/target cancellation, restart recovery and account/position reconciliation. Strategy rules must not be changed from paper outcomes until the recorded causal episode is reviewed.\n\n## Entry points\n\n- Strategy: `easychart_re1_bot.py`\n- Four-symbol continuous backtest: `run_mtf_backtest_re1_bot.py`\n- Long manual workflow: `.github/workflows/candidate-easychart-re1-bot-long-continuous.yml`\n''')
+          PY
+
+          if [[ -f research/candidate-easychart_re1/paper_shadow_handoff.json ]]; then
+            cat > .github/workflows/candidate-easychart-re1-bot-long-continuous.yml <<'YAML'
+          name: candidate-easychart-re1-bot-long-continuous
+
+          on:
+            workflow_dispatch:
+              inputs:
+                start:
+                  description: UTC start date
+                  required: true
+                  default: "2024-01-01"
+                end:
+                  description: UTC end date
+                  required: true
+                  default: "2026-07-31"
+                warmup_days:
+                  description: causal warmup days
+                  required: true
+                  default: "30"
+
+          permissions:
+            contents: read
+            packages: read
+
+          jobs:
+            continuous:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 720
+              container:
+                image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+                options: --user 0
+              env:
+                PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+                CACHE: .cache/candidate-easychart-re1-bot-long
+                OUT: artifacts/candidate-easychart-re1-bot-long
+              steps:
+                - uses: actions/checkout@v4
+                - name: Compile selected bot
+                  run: |
+                    python -m py_compile \
+                      research/candidate-easychart_re1/easychart_re1_bot.py \
+                      research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py
+                - name: Run one four-symbol continuous account
+                  run: |
+                    mkdir -p "$CACHE" "$OUT"
+                    python research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py \
+                      --start "${{ inputs.start }}" \
+                      --end "${{ inputs.end }}" \
+                      --warmup-days "${{ inputs.warmup_days }}" \
+                      --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+                      --cache "$CACHE" \
+                      --output "$OUT" \
+                      --fee-profile usd_m_vip0
+                - name: Preserve complete account evidence
+                  if: always()
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: candidate-easychart-re1-bot-long-${{ inputs.start }}-${{ inputs.end }}-${{ github.sha }}
+                    path: artifacts/candidate-easychart-re1-bot-long/**
+                    if-no-files-found: warn
+                    retention-days: 30
+          YAML
+          fi
+
+      - name: Commit ready handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart_re1/paper_shadow_handoff.json research/candidate-easychart_re1/PAPER_SHADOW_HANDOFF.md .github/workflows/candidate-easychart-re1-bot-long-continuous.yml 2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research: publish ready long and paper-shadow handoff"
+          git pull --rebase origin research/candidate-easychart_re1
+          git push origin HEAD:research/candidate-easychart_re1
