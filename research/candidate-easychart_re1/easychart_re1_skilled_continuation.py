@@ -11,10 +11,20 @@ from __future__ import annotations
 
 from typing import Any
 
+import contracts_v5 as _contracts
 from contracts_v5 import V5TradePlan
 from domain import Candle
 from easychart_re1_local_continuation import LocalAuctionContinuationEngine
 from easychart_re1_skilled_h4_auction import EasyChartRE1SkilledH4AuctionBundle
+
+
+LOCAL_AUCTION_SKILLED_ROUTER_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:PREVIOUS_DAY_AND_COMPLETED_H4_AUCTIONS_OWN_"
+    "OVERLAPPING_EPISODES_BEFORE_NESTED_5M_CONTINUATION_AND_GENERIC_LOCAL_"
+    "STRUCTURE_WHILE_DISTINCT_CAUSAL_LOCATIONS_REMAIN_INDEPENDENT"
+)
+if LOCAL_AUCTION_SKILLED_ROUTER_RULE not in _contracts.TRANSLATION_RULES:
+    _contracts.TRANSLATION_RULES += (LOCAL_AUCTION_SKILLED_ROUTER_RULE,)
 
 
 class EasyChartRE1SkilledContinuationBundle:
@@ -214,6 +224,7 @@ class EasyChartRE1SkilledContinuationBundle:
                     "NESTED_LOCAL_CONTINUATION",
                     "GENERIC_LOCAL_STRUCTURE",
                 ),
+                "rule_provenance": LOCAL_AUCTION_SKILLED_ROUTER_RULE,
             },
             "base": self.base.diagnostics,
             "local_continuation": self.continuation.diagnostics,
