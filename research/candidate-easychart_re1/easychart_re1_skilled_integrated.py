@@ -19,6 +19,7 @@ after entry.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import contracts_v5 as _contracts
@@ -45,10 +46,16 @@ UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:AN_UNBROKEN_ORDER_BLOCK_BOUNCE_IS_A_"
     "CONTINUATION_MECHANISM_AND_CANNOT_ENTER_THROUGH_THE_REJECTION_OWNER"
 )
+PLAN_ID_NAMESPACE_RULE = (
+    "IMPLEMENTATION_VALIDITY:EACH_MECHANISM_OWNER_NAMESPACES_PLAN_AND_CAUSAL_"
+    "EVENT_IDENTITIES_BEFORE_GLOBAL_ROUTING_SO_INDEPENDENT_ENGINE_COUNTERS_"
+    "CANNOT_CORRUPT_AUDIT_OR_COUNTERFACTUAL_JOIN_KEYS"
+)
 for _rule in (
     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
     SIMULTANEOUS_EPISODE_OWNERSHIP_RULE,
     UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE,
+    PLAN_ID_NAMESPACE_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -79,9 +86,50 @@ class EasyChartRE1SkilledIntegratedBundle:
         self._plans: list[V5TradePlan] = []
         self._counts: dict[str, int] = {}
         self._trace: list[dict[str, Any]] = []
+        self._plan_id_maps: dict[str, dict[str, str]] = {
+            "reversal": {},
+            "acceptance": {},
+        }
+        self._seen_plan_ids: set[str] = set()
 
     def _inc(self, key: str) -> None:
         self._counts[key] = self._counts.get(key, 0) + 1
+
+    def _namespace_plan(self, owner: str, plan: V5TradePlan) -> V5TradePlan:
+        mapping = self._plan_id_maps[owner]
+        existing = mapping.get(plan.plan_id)
+        if existing is not None:
+            raise RuntimeError(
+                f"{owner} emitted duplicate raw plan id {plan.plan_id!r}; "
+                "plan identity must be unique within one mechanism owner"
+            )
+        namespaced = f"skilled-{owner}-{plan.plan_id}"
+        if namespaced in self._seen_plan_ids:
+            raise RuntimeError(f"global skilled plan id collision {namespaced!r}")
+        mapping[plan.plan_id] = namespaced
+        self._seen_plan_ids.add(namespaced)
+        self._inc(f"{owner}_plan_id_namespaced")
+        return replace(
+            plan,
+            plan_id=namespaced,
+            causal_event_id=f"SKILLED_{owner.upper()}:{plan.causal_event_id}",
+        )
+
+    def _rewrite_owner_trace(
+        self,
+        owner: str,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        mapping = self._plan_id_maps[owner]
+        for row in rows:
+            for key in ("plan_id", "suppressed_plan_id", "owner_plan_id"):
+                value = row.get(key)
+                if isinstance(value, str) and value in mapping:
+                    row[key] = mapping[value]
+            causal = row.get("causal_event_id")
+            if isinstance(causal, str) and not causal.startswith("SKILLED_"):
+                row["causal_event_id"] = f"SKILLED_{owner.upper()}:{causal}"
+        return rows
 
     def _same_completed_episode(
         self,
@@ -110,6 +158,12 @@ class EasyChartRE1SkilledIntegratedBundle:
         reversal_raw: list[V5TradePlan],
         acceptance_raw: list[V5TradePlan],
     ) -> list[V5TradePlan]:
+        reversal_raw = [
+            self._namespace_plan("reversal", plan) for plan in reversal_raw
+        ]
+        acceptance_raw = [
+            self._namespace_plan("acceptance", plan) for plan in acceptance_raw
+        ]
         rejection = [plan for plan in reversal_raw if self._is_rejection(plan)]
         deferred_bounce = [
             plan
@@ -199,8 +253,8 @@ class EasyChartRE1SkilledIntegratedBundle:
 
     def drain_trace(self) -> list[dict[str, Any]]:
         output = (
-            self.reversal.drain_trace()
-            + self.acceptance.drain_trace()
+            self._rewrite_owner_trace("reversal", self.reversal.drain_trace())
+            + self._rewrite_owner_trace("acceptance", self.acceptance.drain_trace())
             + self._trace
         )
         self._trace = []
@@ -225,10 +279,12 @@ class EasyChartRE1SkilledIntegratedBundle:
                 "reversal_owner": "CONTROLLED_SIGNIFICANT_RESPONSE_REJECTION_ONLY",
                 "acceptance_owner": "RESPONSE_CONFIRMED_TRANSFER_LOCAL_GEOMETRY",
                 "bounce_owner": "NESTED_LOCAL_CONTINUATION",
+                "plan_identity": "MECHANISM_OWNER_NAMESPACED",
                 "rules": (
                     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
                     SIMULTANEOUS_EPISODE_OWNERSHIP_RULE,
                     UNBROKEN_OB_BOUNCE_RESPONSIBILITY_RULE,
+                    PLAN_ID_NAMESPACE_RULE,
                 ),
             },
             "reversal": self.reversal.diagnostics,
