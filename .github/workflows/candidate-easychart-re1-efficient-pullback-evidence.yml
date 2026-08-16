@@ -1,0 +1,269 @@
+name: candidate-easychart-re1-efficient-pullback-evidence
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.efficient_pullback_evidence_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-efficient-pullback-evidence
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: research/candidate-easychart_re1
+      SOURCE_WORKFLOW: candidate-easychart-re1-efficient-pullback-research.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Wait for the integrated research run and download all evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .efficient-pullback-evidence
+          mkdir -p .efficient-pullback-evidence
+          run_id=""
+          for attempt in $(seq 1 240); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$SOURCE_WORKFLOW" --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion --jq '.[0] // {}')"
+            run_id="$(python -c 'import json,sys; print(json.load(sys.stdin).get("databaseId", ""))' <<<"$row")"
+            status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$row")"
+            conclusion="$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion", ""))' <<<"$row")"
+            if [[ "$status" == "completed" ]]; then
+              if [[ "$conclusion" != "success" ]]; then
+                echo "$SOURCE_WORKFLOW completed with $conclusion" >&2
+                exit 1
+              fi
+              break
+            fi
+            sleep 30
+          done
+          [[ -n "$run_id" ]] || { echo "No efficient-pullback run found" >&2; exit 1; }
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --dir .efficient-pullback-evidence
+
+      - name: Build one trade-level research record and select only on real improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json, re
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import pandas as pd
+
+          root=Path('.efficient-pullback-evidence')
+          out=Path('research/candidate-easychart_re1/evidence')
+          out.mkdir(parents=True,exist_ok=True)
+          days={
+              'may-2024-guard':14,
+              'february-2025-short':10,
+              'live-examples-2025-short':11,
+              'november-2025-guard':14,
+              'february-2026-guard':14,
+              'fresh-medium-2024-q1':90,
+          }
+          def norm(x):return re.sub(r'[^a-z0-9]+','_',str(x).lower()).strip('_')
+          def flatten(o,p=''):
+              r={}
+              if isinstance(o,dict):
+                  for k,v in o.items():r.update(flatten(v,f'{p}.{k}' if p else str(k)))
+              elif isinstance(o,list):
+                  for i,v in enumerate(o):r.update(flatten(v,f'{p}[{i}]'))
+              else:r[p]=o
+              return r
+          def metric(flat,names):
+              hits=[]
+              for k,v in flat.items():
+                  if isinstance(v,bool) or not isinstance(v,(int,float)):continue
+                  for name in names:
+                      if norm(name) in norm(k):hits.append((len(norm(k)),float(v)));break
+              return min(hits,default=(0,None))[1]
+          def pick(df,names,numeric=False):
+              hits=[]
+              for col in df.columns:
+                  nc=norm(col)
+                  for name in names:
+                      nn=norm(name)
+                      if nc==nn or nn in nc:
+                          if numeric and pd.to_numeric(df[col],errors='coerce').notna().sum()==0:continue
+                          hits.append((0 if nc==nn else 1,len(nc),col));break
+              return min(hits,default=(9,999,None))[2]
+          def parse_time(series):
+              if pd.api.types.is_numeric_dtype(series):
+                  values=pd.to_numeric(series,errors='coerce');med=values.dropna().abs().median()
+                  unit='ns' if med and med>1e17 else 'ms' if med and med>1e11 else 's'
+                  return pd.to_datetime(values,unit=unit,utc=True,errors='coerce')
+              return pd.to_datetime(series,utc=True,errors='coerce')
+
+          rows=[]; trade_tables=[]
+          for mpath in root.rglob('metrics.json'):
+              text=str(mpath).lower()
+              period=next((name for name in days if name in text),None)
+              if period is None:continue
+              metrics=json.loads(mpath.read_text())
+              flat=flatten(metrics)
+              audits=list(mpath.parent.rglob('trade_audit.csv'))
+              df=pd.read_csv(audits[0]) if audits else pd.DataFrame()
+              reported=metric(flat,['completed_trades','closed_trades','trade_count','total_trades'])
+              n=len(df) if len(df) else int(reported or 0)
+              work=pd.DataFrame(index=df.index)
+              rr=pick(df,['gross_rr','planned_rr','plan_rr','reward_risk'],True) if len(df) else None
+              rcol=pick(df,['realized_r','net_r','r_multiple','pnl_r','result_r'],True) if len(df) else None
+              pnl=pick(df,['net_pnl','realized_pnl','pnl'],True) if len(df) else None
+              outcome=pick(df,['outcome','exit_reason','result']) if len(df) else None
+              family=pick(df,['family','scenario_family','scale_name']) if len(df) else None
+              side=pick(df,['side','direction']) if len(df) else None
+              entry=pick(df,['entry_time_ns','entry_time','entry_ts']) if len(df) else None
+              exit_=pick(df,['exit_time_ns','exit_time','exit_ts']) if len(df) else None
+              if rr:work['planned_rr']=pd.to_numeric(df[rr],errors='coerce')
+              if rcol:work['r']=pd.to_numeric(df[rcol],errors='coerce')
+              if pnl:work['pnl']=pd.to_numeric(df[pnl],errors='coerce')
+              if family:work['family']=df[family].astype(str)
+              if side:work['side']=df[side].astype(str)
+              if entry and exit_:work['hold_minutes']=(parse_time(df[exit_])-parse_time(df[entry])).dt.total_seconds()/60
+              if outcome:
+                  value=df[outcome].astype(str).str.upper()
+                  work['win']=value.str.contains('TP|TARGET|WIN|PROFIT')
+                  unknown=~value.str.contains('TP|TARGET|WIN|PROFIT|SL|STOP|LOSS')
+                  if 'r' in work:work.loc[unknown,'win']=work.loc[unknown,'r']>0
+                  elif 'pnl' in work:work.loc[unknown,'win']=work.loc[unknown,'pnl']>0
+              elif 'r' in work:work['win']=work.r>0
+              elif 'pnl' in work:work['win']=work.pnl>0
+              work['period']=period
+              trade_tables.append(work)
+
+              wr=float(work.win.mean()) if 'win' in work and len(work) else metric(flat,['win_rate','winning_percentage'])
+              if wr is not None and 1<wr<=100:wr/=100
+              avg_r=float(work.r.mean()) if 'r' in work and work.r.notna().any() else metric(flat,['expectancy_r','average_r','mean_r'])
+              total_r=float(work.r.sum()) if 'r' in work and work.r.notna().any() else metric(flat,['total_r','sum_r'])
+              avg_rr=float(work.planned_rr.mean()) if 'planned_rr' in work and work.planned_rr.notna().any() else metric(flat,['average_gross_rr','average_planned_rr','avg_gross_rr'])
+              med_rr=float(work.planned_rr.median()) if 'planned_rr' in work and work.planned_rr.notna().any() else None
+              med_hold=float(work.hold_minutes.median()) if 'hold_minutes' in work and work.hold_minutes.notna().any() else metric(flat,['median_hold_minutes','median_holding_minutes'])
+              initial=metric(flat,['initial_nav','starting_balance','initial_balance','starting_equity'])
+              final=metric(flat,['final_nav','ending_balance','final_balance','ending_equity'])
+              ret=(final/initial-1) if final and initial and initial>0 else metric(flat,['net_return','total_return'])
+              if ret is not None and 1<ret<=100:ret/=100
+              dd=metric(flat,['max_drawdown','maximum_drawdown'])
+              if dd is not None and 1<dd<=100:dd/=100
+              rows.append({
+                  'period':period,'days':days[period],'trades':n,'trades_per_day':n/days[period],
+                  'win_rate':wr,'average_r':avg_r,'total_r':total_r,
+                  'average_planned_rr':avg_rr,'median_planned_rr':med_rr,
+                  'median_hold_minutes':med_hold,'initial_nav':initial,'final_nav':final,
+                  'net_return':ret,'max_drawdown':dd,'trade_audit_rows':len(df),
+                  'reported_trade_count':reported,
+              })
+
+          frame=pd.DataFrame(rows).sort_values('period')
+          trades=pd.concat(trade_tables,ignore_index=True) if trade_tables else pd.DataFrame()
+          frame.to_csv(out/'efficient_pullback_periods.csv',index=False)
+          trades.to_csv(out/'efficient_pullback_trades.csv',index=False)
+          medium=frame[frame.period=='fresh-medium-2024-q1']
+          diagnostic=frame[frame.period!='fresh-medium-2024-q1']
+          blockers=[];ready=False;promotion=False;robust=False;weighted=None
+          if len(medium)==1:
+              m=medium.iloc[0]
+              ready=bool((m.trades_per_day or 0)>=1.0 and (m.win_rate or 0)>=0.70 and (m.average_r is None or m.average_r>0) and (m.net_return is None or m.net_return>0) and (m.median_planned_rr is None or 1.0<=m.median_planned_rr<=2.5) and (m.median_hold_minutes is None or 15<=m.median_hold_minutes<=360) and (m.max_drawdown is None or m.max_drawdown<0.30))
+              promotion=bool((m.trades_per_day or 0)>=0.75 and (m.win_rate or 0)>=0.65 and (m.average_r is None or m.average_r>0) and (m.net_return is None or m.net_return>0) and (m.max_drawdown is None or m.max_drawdown<0.35))
+              if (m.trades_per_day or 0)<1:blockers.append('FRESH_MEDIUM_FREQUENCY_BELOW_ONE_PER_DAY')
+              if (m.win_rate or 0)<0.70:blockers.append('FRESH_MEDIUM_WIN_RATE_BELOW_70_PERCENT')
+              if m.average_r is not None and m.average_r<=0:blockers.append('FRESH_MEDIUM_NONPOSITIVE_EXPECTANCY_R')
+              if m.net_return is not None and m.net_return<=0:blockers.append('FRESH_MEDIUM_NONPOSITIVE_NAV_RETURN')
+          else:blockers.append('FRESH_MEDIUM_EVIDENCE_MISSING_OR_DUPLICATE')
+          if len(diagnostic):
+              total=max(diagnostic.trades.fillna(0).sum(),1)
+              weighted=float((diagnostic.win_rate.fillna(0)*diagnostic.trades.fillna(0)).sum()/total)
+              positive=int(((diagnostic.total_r.fillna(0)>0)|(diagnostic.net_return.fillna(0)>0)).sum())
+              robust=bool(weighted>=0.65 and positive>=max(1,len(diagnostic)-1))
+              if not robust:blockers.append('SHORT_REGIME_ROBUSTNESS_NOT_ESTABLISHED')
+          else:blockers.append('SHORT_EVIDENCE_MISSING')
+          final_ready=bool(ready and robust)
+
+          prior_path=out/'final_integrated_selection.json'
+          prior=json.loads(prior_path.read_text()) if prior_path.exists() else {}
+          prior_ready=bool(prior.get('selected_ready'))
+          prior_candidate=prior.get('selected_candidate')
+          prior_score=max((float(item.get('selection_score') or -999) for item in prior.get('candidates',[])),default=-999)
+          m=medium.iloc[0].to_dict() if len(medium)==1 else {}
+          score=(4 if final_ready else 0)+(2 if promotion else 0)+(1 if robust else 0)+(m.get('win_rate') or 0)+(m.get('average_r') or 0)+0.35*min(m.get('trades_per_day') or 0,2)
+          selected=bool(final_ready and (not prior_ready or score>prior_score))
+          record={
+              'generated_at':datetime.now(timezone.utc).isoformat(),
+              'candidate':'candidate-easychart_re1_efficient_pullback',
+              'periods':frame.to_dict('records'),
+              'diagnostic_weighted_win_rate':weighted,
+              'diagnostic_robust':robust,
+              'fresh_medium_promotion_profile':promotion,
+              'strict_target_profile':ready,
+              'ready_for_long_continuous_and_paper':final_ready,
+              'selection_score':score,
+              'prior_selected_candidate':prior_candidate,
+              'prior_selected_ready':prior_ready,
+              'prior_selection_score':prior_score,
+              'selected_over_prior':selected,
+              'blockers':[] if final_ready else blockers,
+          }
+          (out/'efficient_pullback_evidence.json').write_text(json.dumps(record,indent=2,ensure_ascii=False,default=str)+'\n')
+          lines=[
+              '# EasyChart RE1 efficient-pullback evidence','',
+              f"Ready for long continuous and paper: **{final_ready}**",
+              f"Selected over prior integrated candidate: **{selected}**",'',
+              frame.to_markdown(index=False),'',
+              'Blockers: '+(', '.join(record['blockers']) if record['blockers'] else 'none'),
+          ]
+          (out/'EFFICIENT_PULLBACK_EVIDENCE.md').write_text('\n'.join(lines)+'\n')
+          if selected:
+              (out/'EFFICIENT_PULLBACK_SELECTED').write_text('candidate-easychart_re1_efficient_pullback\n')
+          else:
+              (out/'EFFICIENT_PULLBACK_NOT_SELECTED').write_text(('\n'.join(record['blockers']) or 'PRIOR_INTEGRATED_CANDIDATE_RETAINED')+'\n')
+          PY
+
+      - name: Publish the efficient-pullback bot only when it is the stronger ready policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f research/candidate-easychart_re1/evidence/EFFICIENT_PULLBACK_SELECTED ]]; then
+            cat > research/candidate-easychart_re1/easychart_re1_bot.py <<'PY'
+          """Evidence-selected EasyChart RE1 production candidate."""
+          from easychart_re1_efficient_pullback import EasyChartRE1EfficientPullbackBundle
+          from easychart_re1_local_auction_continuation import EasyChartRE1LocalAuctionStrategy
+
+          EasyChartRE1BotBundle = EasyChartRE1EfficientPullbackBundle
+          EasyChartRE1BotStrategy = EasyChartRE1LocalAuctionStrategy
+          MultiScaleScenarioBundle = EasyChartRE1BotBundle
+          StrategyClass = EasyChartRE1BotStrategy
+          PY
+            cat > research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py <<'PY'
+          #!/usr/bin/env python3
+          """Run the evidence-selected EasyChart RE1 bot."""
+          import runpy
+          if __name__ == "__main__":
+              runpy.run_module("run_mtf_backtest_re1_efficient_pullback",run_name="__main__")
+          PY
+          fi
+
+      - name: Commit the actual trade evidence and selected implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart_re1/evidence
+          git add research/candidate-easychart_re1/easychart_re1_bot.py research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research: publish efficient-pullback trade evidence and selected bot"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
