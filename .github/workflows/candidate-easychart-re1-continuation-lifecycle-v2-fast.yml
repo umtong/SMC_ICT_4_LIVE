@@ -1,14 +1,18 @@
-name: candidate-easychart-re1-continuation-lifecycle-v2-fast
+name: candidate-easychart-re1-continuation-lifecycle-v3-fast
 
 on:
   push:
     branches: ["ML_a"]
     paths:
       - ".github/workflows/candidate-easychart-re1-continuation-lifecycle-v2-fast.yml"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_target_refresh.py"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_first_return.py"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_footprint.py"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_source_return.py"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-easychart-re1-continuation-lifecycle-v2-fast
+  group: candidate-easychart-re1-continuation-lifecycle-v3-fast
   cancel-in-progress: true
 
 permissions:
@@ -30,8 +34,8 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}
-      OUT: artifacts/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}
+      CACHE: .cache/candidate-easychart-re1-continuation-v3/${{ matrix.policy }}-${{ matrix.symbol }}
+      OUT: artifacts/candidate-easychart-re1-continuation-v3/${{ matrix.policy }}-${{ matrix.symbol }}
     steps:
       - uses: actions/checkout@v4
       - name: Select corrected policy
@@ -46,7 +50,12 @@ jobs:
             *) exit 2 ;;
           esac
           echo "$runner" > /tmp/runner
-          python -m py_compile research/candidate-easychart_re1/$runner
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_continuation_target_refresh.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_first_return.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_footprint.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_source_return.py \
+            research/candidate-easychart_re1/$runner
       - name: Run corrected continuation lifecycle
         shell: bash
         run: |
@@ -61,11 +70,52 @@ jobs:
             --cache "$CACHE" \
             --output "$OUT" \
             --fee-profile usd_m_vip0
+      - name: Print corrected trade and lifecycle result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("${{ env.OUT }}")
+          result = {"policy": "${{ matrix.policy }}", "symbol": "${{ matrix.symbol }}"}
+          metrics_path = root / "metrics.json"
+          trades_path = root / "trade_audit.csv"
+          events_path = root / "scenario_events.jsonl"
+          if metrics_path.exists():
+              metrics = json.loads(metrics_path.read_text())
+              result["account"] = {
+                  key: metrics.get(key)
+                  for key in (
+                      "calendar_days", "independent_trades_per_day", "final_nav",
+                      "total_return", "max_drawdown_pct", "closed_positions",
+                  )
+              }
+          trades = pd.read_csv(trades_path) if trades_path.exists() else pd.DataFrame()
+          result["trades"] = trades[[
+              column for column in (
+                  "symbol", "side", "family", "planned_gross_rr", "actual_net_r",
+                  "duration_ns", "exit_role", "ts_opened", "planned_entry",
+                  "planned_stop", "planned_target",
+              ) if column in trades
+          ]].to_dict("records") if not trades.empty else []
+          counts = {}
+          if events_path.exists():
+              for line in events_path.read_text().splitlines():
+                  event = json.loads(line)
+                  kind = str(event.get("scenario_kind", ""))
+                  if "local_continuation" in kind or "fvg_fallback" in kind:
+                      counts[kind] = counts.get(kind, 0) + 1
+          result["continuation_event_counts"] = counts
+          print("CORRECTED_LIFECYCLE_RESULT=" + json.dumps(result, sort_keys=True, default=str))
+          PY
       - name: Preserve actual account and scenario evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-easychart-re1-continuation-v2-${{ matrix.policy }}-${{ matrix.symbol }}-${{ github.sha }}
-          path: artifacts/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}/**
+          name: candidate-easychart-re1-continuation-v3-${{ matrix.policy }}-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-continuation-v3/${{ matrix.policy }}-${{ matrix.symbol }}/**
           if-no-files-found: warn
           retention-days: 30
