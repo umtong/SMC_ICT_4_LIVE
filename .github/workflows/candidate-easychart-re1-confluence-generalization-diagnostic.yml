@@ -1,0 +1,162 @@
+name: candidate-easychart-re1-confluence-generalization-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-confluence-generalization-diagnostic.yml"
+      - "research/candidate-easychart_re1/.confluence_generalization_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_confluence_flip.py"
+      - "research/candidate-easychart_re1/easychart_re1_confluence_flip_v2.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_confluence_flip.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py"
+      - "research/candidate-easychart-v5/mtf_backtest_support_v5.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-confluence-generalization-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile matched local policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_confluence_flip.py \
+            research/candidate-easychart_re1/easychart_re1_confluence_flip_v2.py \
+            research/candidate-easychart_re1/easychart_re1_significant_response.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_confluence_flip.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py \
+            research/candidate-easychart-v5/mtf_backtest_support_v5.py
+      - name: Verify categorical acceptance ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_confluence_flip_v2 import EasyChartRE1ConfluenceFlipBundle
+          from easychart_re1_significant_response import EasyChartRE1SignificantResponseBundle
+
+          confluence = EasyChartRE1ConfluenceFlipBundle("BTCUSDT", 0.1, 1.0)
+          significant = EasyChartRE1SignificantResponseBundle("BTCUSDT", 0.1, 1.0)
+          assert confluence.micro.scale_name == "MICRO"
+          assert confluence.confluence_flip.scale_name == "CONFLUENCE_FLIP"
+          assert "confluence_flip" in confluence._audit_offsets
+          assert significant.micro.scale_name == "MICRO"
+          assert confluence.plans == [] and significant.plans == []
+          print({
+              "candidate": type(confluence).__name__,
+              "matched_baseline": type(significant).__name__,
+              "isolated_diagonal_acceptance": "RETIRED_TO_MULTI_STRUCTURE_OWNER",
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: guard-may-2024
+            start: 2024-05-01
+            end: 2024-05-14
+          - period: fresh-july-2024
+            start: 2024-07-15
+            end: 2024-07-17
+          - period: fresh-november-2025
+            start: 2025-11-15
+            end: 2025-11-17
+          - period: guard-february-2026
+            start: 2026-02-01
+            end: 2026-02-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-confluence-generalization/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-confluence-generalization/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run significant-response local baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/significant_response"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_significant_response.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/significant_response" \
+            --fee-profile usd_m_vip0
+      - name: Run reversal-owner plus confluence-flip candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/confluence_flip"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_confluence_flip.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/confluence_flip" \
+            --fee-profile usd_m_vip0
+      - name: Print matched continuous-account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {
+              "period": "${{ matrix.period }}",
+              "start": "${{ matrix.start }}",
+              "end": "${{ matrix.end }}",
+          }
+          keys = (
+              "candidate", "calendar_days", "closed_positions",
+              "independent_completed_trades", "independent_trades_per_day",
+              "final_nav", "ending_nav", "total_return", "max_drawdown",
+              "max_drawdown_pct", "liquidations", "trade_windows",
+          )
+          for name in ("significant_response", "confluence_flip"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              result[name] = {key: data.get(key) for key in keys if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("MATCHED_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trades and confluence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-confluence-generalization-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-confluence-generalization/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
