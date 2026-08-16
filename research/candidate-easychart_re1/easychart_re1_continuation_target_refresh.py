@@ -45,20 +45,46 @@ if CONTINUATION_TARGET_LIFECYCLE_RULE not in _contracts.RESEARCH_RULES:
 class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine):
     """Preserve a valid impulse until its first pullback or true invalidation."""
 
+    @staticmethod
+    def _provisional_target_already_spent(
+        setup: LocalContinuationSetup,
+    ) -> bool:
+        if setup.side is Side.LONG:
+            return (
+                setup.pullback_high is not None
+                and setup.target_price <= setup.pullback_high
+            )
+        return (
+            setup.pullback_low is not None
+            and setup.target_price >= setup.pullback_low
+        )
+
     def _target_touched(
         self,
         setup: LocalContinuationSetup,
         bar: Candle,
     ) -> bool:
         touched = super()._target_touched(setup, bar)
-        if setup.state == "WAITING_PULLBACK" and touched:
-            self._inc("pre_pullback_impulse_extension_preserved")
+        preserve = setup.state == "WAITING_PULLBACK" or (
+            setup.state == "WAITING_RESPONSE"
+            and self._provisional_target_already_spent(setup)
+        )
+        if preserve and touched:
+            key = (
+                "pre_pullback_impulse_extension_preserved"
+                if setup.state == "WAITING_PULLBACK"
+                else "spent_provisional_target_preserved_for_response_refresh"
+            )
+            self._inc(key)
             self._record(
-                "local_continuation_pre_pullback_impulse_extension_preserved",
+                f"local_continuation_{key}",
                 bar.ts_close_ns,
                 setup_id=setup.setup_id,
                 side=setup.side.name,
+                state=setup.state,
                 provisional_impulse_extreme=setup.target_price,
+                pullback_high=setup.pullback_high,
+                pullback_low=setup.pullback_low,
                 bar_high=bar.high,
                 bar_low=bar.low,
                 rule_provenance=CONTINUATION_TARGET_LIFECYCLE_RULE,
@@ -129,10 +155,6 @@ class EasyChartRE1ContinuationTargetRefreshBundle(
         minimum_gross_rr: float = 1.0,
     ) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
-        # The parent created an untouched continuation engine during
-        # construction.  Replace it before the first bar so all state belongs
-        # to the repaired engine and the parent router continues to own episode
-        # arbitration unchanged.
         self.continuation = PostImpulseTargetRefreshContinuationEngine(
             symbol,
             tick_size,
@@ -145,8 +167,8 @@ class EasyChartRE1ContinuationTargetRefreshBundle(
         output["continuation_target_lifecycle"] = {
             "rule_provenance": CONTINUATION_TARGET_LIFECYCLE_RULE,
             "policy": (
-                "PRESERVE_PRE_PULLBACK_EXTENSION_THEN_REPLACE_SPENT_"
-                "PROVISIONAL_EXTREME_WITH_NEAREST_UNSPENT_STRUCTURE"
+                "PRESERVE_PRE_PULLBACK_EXTENSION_AND_ALREADY_SPENT_"
+                "PROVISIONAL_TARGET_THROUGH_RESPONSE_REFRESH"
             ),
         }
         return output
