@@ -16,8 +16,10 @@ This policy assigns those facts without inventing a strength score:
   combined;
 * H4 and MICRO acceptance require completed 60m, 15m and 5m bodies in the
   intended direction, again with a body-dominant 5m response;
-* flow-validated decision OBs, horizontal mechanisms and anchored local
-  continuations retain their existing complete scenarios.
+* generic decision-OB and isolated horizontal labels are retired rather than
+  repeatedly patched: they do not establish the full higher-delivery scenario;
+* anchored local continuation and any other independently completed mechanism
+  retain their existing entry, invalidation and objective.
 
 ``body > upper_wick + lower_wick`` is the candle's own categorical geometry
 (body occupies more than half of its full range), not an optimized magnitude,
@@ -47,9 +49,14 @@ DISPLACEMENT_CONFIRMED_AUCTION_RULE = (
     "DIRECTION_PLUS_BODY_DOMINANT_5M_DELIVERY_WHILE_H4_AND_LOCAL_ACCEPTANCE_"
     "REQUIRE_COMPLETED_60M_15M_AND_BODY_DOMINANT_5M_DELIVERY"
 )
+WEAK_LOCAL_FAMILY_RETIREMENT_RULE = (
+    "RESEARCH_SYNTHESIS:GENERIC_FLOW_DECISION_OB_AND_ISOLATED_HORIZONTAL_LABELS_"
+    "ARE_RETIRED_BECAUSE_THEY_LACK_A_COMPLETE_HIGHER_DELIVERY_CONTROL_SCENARIO"
+)
 for _rule in (
     BODY_DOMINANT_DELIVERY_RULE,
     DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+    WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -60,6 +67,8 @@ class EasyChartRE1DisplacementConfirmedAuctionBundle(
 ):
     """Full auction stream with categorical body-dominant response ownership."""
 
+    RETIRED_LOCAL_SCALES = frozenset({"FLOW_DECISION_OB", "HORIZONTAL"})
+
     @staticmethod
     def _body_dominant(bar: Candle | None) -> bool:
         if bar is None:
@@ -68,6 +77,10 @@ class EasyChartRE1DisplacementConfirmedAuctionBundle(
         upper_wick = bar.high - max(bar.open, bar.close)
         lower_wick = min(bar.open, bar.close) - bar.low
         return body > upper_wick + lower_wick
+
+    @classmethod
+    def _retired_weak_local(cls, plan: V5TradePlan) -> bool:
+        return plan.scale_name in cls.RETIRED_LOCAL_SCALES
 
     def _displacement_aligns(
         self,
@@ -146,6 +159,22 @@ class EasyChartRE1DisplacementConfirmedAuctionBundle(
     def _route_delivery(self, raw: list[V5TradePlan]) -> list[V5TradePlan]:
         output: list[V5TradePlan] = []
         for plan in raw:
+            if self._retired_weak_local(plan):
+                self._dinc("weak_local_family_retired")
+                self._delivery_trace.append(
+                    {
+                        "scenario_kind": "weak_local_family_retired",
+                        "event_time_ns": plan.observed_time_ns,
+                        "symbol": plan.symbol,
+                        "plan_id": plan.plan_id,
+                        "family": plan.family,
+                        "scale_name": plan.scale_name,
+                        "scenario_path": plan.scenario_path,
+                        "side": plan.side.name,
+                        "rule_provenance": WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
+                    },
+                )
+                continue
             if self._rejection_requires_delivery(plan):
                 higher_frames = (60,)
                 allowed = self._displacement_aligns(plan, higher_frames)
@@ -201,9 +230,11 @@ class EasyChartRE1DisplacementConfirmedAuctionBundle(
                     "close": five.close,
                 }
             ),
+            "retired_local_scales": tuple(sorted(self.RETIRED_LOCAL_SCALES)),
             "rules": (
                 BODY_DOMINANT_DELIVERY_RULE,
                 DISPLACEMENT_CONFIRMED_AUCTION_RULE,
+                WEAK_LOCAL_FAMILY_RETIREMENT_RULE,
             ),
         }
         return output
