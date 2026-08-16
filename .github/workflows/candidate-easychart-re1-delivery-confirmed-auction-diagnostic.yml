@@ -1,0 +1,181 @@
+name: candidate-easychart-re1-delivery-confirmed-auction-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-delivery-confirmed-auction-diagnostic.yml"
+      - "research/candidate-easychart_re1/.delivery_confirmed_auction_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_delivery_confirmed_auction.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_confirmed_auction.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py"
+      - "research/candidate-easychart-v5/mtf_backtest_support_v5.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-delivery-confirmed-auction-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unified auction policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_confirmed_auction.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_confirmed_auction.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            research/candidate-easychart-v5/mtf_backtest_support_v5.py
+      - name: Verify causal frame ownership contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from domain import Candle, Side
+          from easychart_re1_delivery_confirmed_auction import (
+              MULTIFRAME_DELIVERY_CONFIRMATION_RULE,
+              EasyChartRE1DeliveryConfirmedAuctionBundle,
+          )
+
+          bundle = EasyChartRE1DeliveryConfirmedAuctionBundle("BTCUSDT", 0.1, 1.0)
+          values = {
+              60: (100.0, 102.0, 99.0, 101.0),
+              15: (101.0, 103.0, 100.5, 102.0),
+              5: (102.0, 103.0, 101.5, 102.5),
+          }
+          for index, (timeframe, ohlc) in enumerate(values.items(), start=1):
+              open_price, high, low, close = ohlc
+              bar = Candle(
+                  symbol="BTCUSDT",
+                  timeframe_minutes=timeframe,
+                  ts_close_ns=index * timeframe * 60_000_000_000,
+                  open=open_price,
+                  high=high,
+                  low=low,
+                  close=close,
+                  volume=1.0,
+              )
+              bundle.on_bar(timeframe, bar)
+          assert bundle._frames_align(Side.LONG, (60, 5))
+          assert bundle._frames_align(Side.LONG, (15, 5))
+          assert not bundle._frames_align(Side.SHORT, (60, 5))
+          assert "60M" in MULTIFRAME_DELIVERY_CONFIRMATION_RULE
+          assert "15M" in MULTIFRAME_DELIVERY_CONFIRMATION_RULE
+          print({
+              "scenario_engine": type(bundle).__name__,
+              "rejection_frames": (60, 5),
+              "h4_acceptance_frames": (15, 5),
+              "long_delivery_confirmed": True,
+              "rule": MULTIFRAME_DELIVERY_CONFIRMATION_RULE,
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: fresh-april-2024
+            start: 2024-04-15
+            end: 2024-04-17
+          - period: fresh-november-2024
+            start: 2024-11-05
+            end: 2024-11-07
+          - period: fresh-april-2025
+            start: 2025-04-15
+            end: 2025-04-17
+          - period: fresh-january-2026
+            start: 2026-01-15
+            end: 2026-01-17
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-delivery-confirmed-auction/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-delivery-confirmed-auction/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run full skilled opportunity baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run delivery-confirmed auction candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/delivery_confirmed"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_confirmed_auction.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/delivery_confirmed" \
+            --fee-profile usd_m_vip0
+      - name: Print matched continuous-account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {
+              "period": "${{ matrix.period }}",
+              "start": "${{ matrix.start }}",
+              "end": "${{ matrix.end }}",
+          }
+          keys = (
+              "candidate", "calendar_days", "closed_positions",
+              "independent_completed_trades", "independent_trades_per_day",
+              "final_nav", "ending_nav", "total_return", "max_drawdown",
+              "max_drawdown_pct", "liquidations", "trade_windows",
+          )
+          for name in ("baseline", "delivery_confirmed"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              result[name] = {key: data.get(key) for key in keys if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("MATCHED_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trades and delivery-state evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-delivery-confirmed-auction-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-delivery-confirmed-auction/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
