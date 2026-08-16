@@ -20,7 +20,6 @@ from contracts_v5 import V5TradePlan
 from domain import Candle, Side
 from easychart_re1_local_continuation import (
     LocalAuctionContinuationEngine,
-    LocalContinuationKind,
     MinuteWeight,
 )
 
@@ -48,8 +47,7 @@ class CloseHeldLocalAuctionContinuationEngine(LocalAuctionContinuationEngine):
         if bar.ts_close_ns <= setup.impulse_time_ns:
             return []
 
-        setup.vwap_numerator += minute.typical_price * minute.weight
-        setup.vwap_denominator += minute.weight
+        self._update_vwap(setup, minute)
         if self._target_touched(setup, bar):
             self._finish(
                 setup,
@@ -57,7 +55,7 @@ class CloseHeldLocalAuctionContinuationEngine(LocalAuctionContinuationEngine):
                 bar.ts_close_ns,
             )
             return []
-        if self._source_invalidated(setup, bar):
+        if self._zone_invalidated(setup, bar):
             self._finish(
                 setup,
                 "local_continuation_source_invalidated_before_entry",
