@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import json
 from pathlib import Path
 import sys
+import traceback
 
 from counterfactual_plan_harvest import HarvestConfig, harvest_counterfactual_plans
 import run_mtf_backtest_re1_flow as _flow
@@ -41,19 +42,26 @@ if __name__ == "__main__":
 
     _flow._runner.main()
     _flow._rewrite_metadata(output)
-    summary = harvest_counterfactual_plans(
-        HarvestConfig(
-            start=start,
-            end=end,
-            load_start=start - timedelta(days=warmup_days),
-            symbols=symbols,
-            cache=cache,
-            output=output,
-            fee_profile=fee_profile,
-            entry_slippage_ticks=entry_slippage_ticks,
-            stop_slippage_ticks=stop_slippage_ticks,
-        ),
+    config = HarvestConfig(
+        start=start,
+        end=end,
+        load_start=start - timedelta(days=warmup_days),
+        symbols=symbols,
+        cache=cache,
+        output=output,
+        fee_profile=fee_profile,
+        entry_slippage_ticks=entry_slippage_ticks,
+        stop_slippage_ticks=stop_slippage_ticks,
     )
+    try:
+        summary = harvest_counterfactual_plans(config)
+    except Exception:
+        output.mkdir(parents=True, exist_ok=True)
+        failure = traceback.format_exc()
+        (output / "counterfactual_failure.txt").write_text(failure, encoding="utf-8")
+        print(failure, file=sys.stderr, flush=True)
+        raise
+
     for name in ("metrics.json", "run.json"):
         path = output / name
         if not path.exists():
