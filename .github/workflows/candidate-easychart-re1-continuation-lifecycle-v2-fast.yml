@@ -1,0 +1,71 @@
+name: candidate-easychart-re1-continuation-lifecycle-v2-fast
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-continuation-lifecycle-v2-fast.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-continuation-lifecycle-v2-fast
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  corrected-lifecycle:
+    strategy:
+      fail-fast: false
+      matrix:
+        policy: [target_refresh, first_return, ob_or_fvg, source_return]
+        symbol: [BTCUSDT, SOLUSDT]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}
+      OUT: artifacts/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select corrected policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.policy }}" in
+            target_refresh) runner=run_mtf_backtest_re1_continuation_target_refresh.py ;;
+            first_return) runner=run_mtf_backtest_re1_continuation_first_return.py ;;
+            ob_or_fvg) runner=run_mtf_backtest_re1_continuation_footprint.py ;;
+            source_return) runner=run_mtf_backtest_re1_continuation_source_return.py ;;
+            *) exit 2 ;;
+          esac
+          echo "$runner" > /tmp/runner
+          python -m py_compile research/candidate-easychart_re1/$runner
+      - name: Run corrected continuation lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner=$(cat /tmp/runner)
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/$runner \
+            --start 2026-07-01 \
+            --end 2026-07-03 \
+            --warmup-days 7 \
+            --symbols "${{ matrix.symbol }}" \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve actual account and scenario evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-continuation-v2-${{ matrix.policy }}-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-continuation-v2/${{ matrix.policy }}-${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
