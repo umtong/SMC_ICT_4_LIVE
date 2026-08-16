@@ -1,0 +1,87 @@
+name: candidate-easychart-re1-skilled-daily-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.skilled_daily_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-skilled-daily-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: may-2024-guard
+            start: 2024-05-01
+            end: 2024-05-14
+          - period: live-examples-2025
+            start: 2025-08-10
+            end: 2025-08-20
+          - period: february-2026-guard
+            start: 2026-02-01
+            end: 2026-02-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-skilled-daily/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-skilled-daily/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_daily_liquidity.py \
+            research/candidate-easychart_re1/easychart_re1_skilled_integrated.py \
+            research/candidate-easychart_re1/easychart_re1_skilled_daily.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_daily.py
+      - name: Researcher construction check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date
+          from easychart_re1_skilled_daily import EasyChartRE1SkilledDailyBundle
+          bundle = EasyChartRE1SkilledDailyBundle("BTCUSDT", 0.1, 1.0)
+          assert bundle.local is not bundle.daily
+          assert bundle.detectors is bundle.local.detectors
+          midnight = 1738368000000000000  # 2025-02-01 00:00 UTC close
+          assert bundle.daily._utc_date(midnight) == date(2025, 1, 31)
+          PY
+      - name: Run one four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_daily.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve trade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-skilled-daily-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-skilled-daily/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
