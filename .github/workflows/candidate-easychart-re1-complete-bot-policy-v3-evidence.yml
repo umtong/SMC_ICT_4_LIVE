@@ -1,0 +1,173 @@
+name: candidate-easychart-re1-complete-bot-policy-v3-evidence
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.complete_bot_policy_v3_evidence_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-complete-bot-policy-v3-evidence
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: research/candidate-easychart_re1
+      SOURCE_WORKFLOW: candidate-easychart-re1-complete-bot-policy-v3-research.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Wait for persistent-context runs and download actual account artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .complete-policy-v3-evidence
+          mkdir -p .complete-policy-v3-evidence
+          run_id=""
+          for attempt in $(seq 1 240); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$SOURCE_WORKFLOW" --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion --jq '.[0] // {}')"
+            run_id="$(python -c 'import json,sys; print(json.load(sys.stdin).get("databaseId", ""))' <<<"$row")"
+            status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$row")"
+            conclusion="$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion", ""))' <<<"$row")"
+            if [[ "$status" == "completed" ]]; then
+              [[ "$conclusion" == "success" ]] || { echo "$SOURCE_WORKFLOW completed with $conclusion" >&2; exit 1; }
+              break
+            fi
+            sleep 30
+          done
+          [[ -n "$run_id" ]] || { echo "No complete-policy-v3 run found" >&2; exit 1; }
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --dir .complete-policy-v3-evidence
+
+      - name: Summarize completed trades and continuous NAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/period-days.json <<'JSON'
+          {
+            "may-2024-guard": 14,
+            "february-2025-short": 10,
+            "live-examples-2025-short": 11,
+            "november-2025-guard": 14,
+            "february-2026-guard": 14,
+            "fresh-medium-2024-winter": 62
+          }
+          JSON
+          python research/candidate-easychart_re1/summarize_candidate_evidence.py \
+            --root .complete-policy-v3-evidence \
+            --candidate candidate-easychart_re1_complete_bot_policy_v3 \
+            --period-days-json /tmp/period-days.json \
+            --medium-period fresh-medium-2024-winter \
+            --output-dir research/candidate-easychart_re1/evidence \
+            --prefix complete_bot_policy_v3
+
+      - name: Select the strongest ready complete policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root=Path('research/candidate-easychart_re1')
+          evidence=root/'evidence'
+          current=json.loads((evidence/'complete_bot_policy_v3_evidence.json').read_text())
+          names=(
+              'complete_bot_policy_v2_evidence.json',
+              'complete_bot_policy_evidence.json',
+              'efficient_pullback_final_evidence.json',
+              'efficient_pullback_v2_evidence.json',
+              'auction_router_v6_evidence.json',
+              'auction_router_v5_evidence.json',
+          )
+          prior=[]
+          for name in names:
+              path=evidence/name
+              if path.exists():
+                  try: prior.append(json.loads(path.read_text()))
+                  except Exception: pass
+          final_path=evidence/'final_integrated_selection.json'
+          final=json.loads(final_path.read_text()) if final_path.exists() else {}
+          prior.extend(final.get('candidates',[]))
+          prior_ready=any(bool(item.get('ready_for_long_continuous_and_paper')) for item in prior) or bool(final.get('selected_ready'))
+          prior_score=max((float(item.get('selection_score') or -999) for item in prior),default=-999)
+          current_ready=bool(current.get('ready_for_long_continuous_and_paper'))
+          current_score=float(current.get('selection_score') or -999)
+          selected=bool(current_ready and (not prior_ready or current_score>prior_score))
+          decision={
+              'candidate':current['candidate'],
+              'current_ready':current_ready,
+              'current_score':current_score,
+              'prior_ready':prior_ready,
+              'prior_score':prior_score,
+              'selected_over_prior':selected,
+              'blockers':current.get('blockers',[]),
+          }
+          (evidence/'complete_bot_policy_v3_selection.json').write_text(json.dumps(decision,indent=2,ensure_ascii=False)+'\n')
+          if selected:
+              (evidence/'COMPLETE_BOT_POLICY_V3_SELECTED').write_text(current['candidate']+'\n')
+          else:
+              (evidence/'COMPLETE_BOT_POLICY_V3_RESEARCH_ONLY').write_text(('\n'.join(current.get('blockers',[])) or 'CURRENT_READY_BOT_RETAINED')+'\n')
+          PY
+
+          if [[ -f research/candidate-easychart_re1/evidence/COMPLETE_BOT_POLICY_V3_SELECTED ]]; then
+            cat > research/candidate-easychart_re1/easychart_re1_bot.py <<'PY'
+          """Evidence-selected complete EasyChart RE1 production candidate."""
+          from easychart_re1_complete_bot_policy_v3 import (
+              EasyChartRE1CompleteBotPolicyV3Bundle,
+              EasyChartRE1CompletePersistentStrategy,
+          )
+
+          EasyChartRE1BotBundle = EasyChartRE1CompleteBotPolicyV3Bundle
+          EasyChartRE1BotStrategy = EasyChartRE1CompletePersistentStrategy
+          MultiScaleScenarioBundle = EasyChartRE1BotBundle
+          StrategyClass = EasyChartRE1BotStrategy
+          PY
+            cat > research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py <<'PY'
+          #!/usr/bin/env python3
+          """Run the evidence-selected complete EasyChart RE1 bot."""
+          import runpy
+          if __name__ == "__main__":
+              runpy.run_module("run_mtf_backtest_re1_complete_bot_policy_v3",run_name="__main__")
+          PY
+            cat > research/candidate-easychart_re1/paper_shadow_handoff.json <<'JSON'
+          {
+            "candidate": "candidate-easychart_re1_complete_bot_policy_v3",
+            "strategy_module": "easychart_re1_bot",
+            "bundle_class": "EasyChartRE1BotBundle",
+            "strategy_class": "EasyChartRE1BotStrategy",
+            "runner": "run_mtf_backtest_re1_bot.py",
+            "account": "ONE_CONTINUOUS_ACCOUNT_ONE_GLOBAL_POSITION",
+            "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+            "risk_fraction": 0.03,
+            "minimum_gross_rr": 1.0,
+            "partials": false,
+            "pyramiding": false,
+            "evidence": "evidence/complete_bot_policy_v3_evidence.json"
+          }
+          JSON
+          fi
+
+      - name: Commit real evidence and the selected bot when warranted
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart_re1/evidence
+          git add research/candidate-easychart_re1/easychart_re1_bot.py research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py research/candidate-easychart_re1/paper_shadow_handoff.json 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research: publish persistent-context complete bot evidence"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
