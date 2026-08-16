@@ -1,6 +1,6 @@
 """Full skilled opportunity router with nested anchored pullback continuation.
 
-Higher daily/H4 auctions keep their established ownership.  The new local
+Higher daily/H4 auctions keep their established ownership.  The local
 continuation family owns a nested 5m initiative, its anchored fair-value/source
 OB pullback and first response.  Generic local structure labels at the same
 price episode are suppressed while that specific continuation is pending or on
@@ -202,7 +202,15 @@ class EasyChartRE1SkilledContinuationBundle:
 
     @property
     def setups(self) -> list[Any]:
-        return list(self.base.setups) + list(self.continuation.setups)
+        # The legacy result writer summarizes standard ScenarioSetup.state enums.
+        # Daily/H4/local-continuation machines expose their own richer lifecycle
+        # counts in diagnostics and intentionally use dedicated setup contracts.
+        values = list(self.base.setups) + list(self.continuation.setups)
+        return [
+            setup
+            for setup in values
+            if hasattr(getattr(setup, "state", None), "value")
+        ]
 
     @property
     def diagnostics(self) -> dict[str, Any]:
