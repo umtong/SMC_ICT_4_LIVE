@@ -1,0 +1,66 @@
+name: candidate-easychart-re1-delivery-channel-acceptance-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.delivery_channel_acceptance_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-delivery-channel-acceptance-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024-guard, start: 2024-05-01, end: 2024-05-14}
+          - {period: february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {period: february-2026-guard, start: 2026-02-01, end: 2026-02-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-delivery-channel-acceptance/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-delivery-channel-acceptance/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidate
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_channel_acceptance.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_channel_acceptance.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_delivery_channel_acceptance import EasyChartRE1DeliveryChannelAcceptanceBundle
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartRE1DeliveryChannelAcceptanceBundle(symbol, tick)
+              assert bundle.delivery_channel_acceptance.scale_name == "DELIVERY_CHANNEL_ACCEPTANCE"
+              assert bundle.delivery_draw.TRIGGER_MINUTES == 1
+              assert "flow_impact_delivery" in bundle.delivery_draw.diagnostics
+              assert "delivery_continuation_geometry" in bundle.delivery_continuation.diagnostics
+              assert "draw_aligned_channel_acceptance" in bundle.diagnostics
+              assert bundle.delivery_channel_acceptance.minimum_gross_rr == 1.0
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_channel_acceptance.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-delivery-channel-acceptance-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-delivery-channel-acceptance/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
