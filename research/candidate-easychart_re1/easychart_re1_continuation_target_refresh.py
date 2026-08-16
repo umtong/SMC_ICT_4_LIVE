@@ -45,19 +45,9 @@ if CONTINUATION_TARGET_LIFECYCLE_RULE not in _contracts.RESEARCH_RULES:
 class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine):
     """Preserve a valid impulse until its first pullback or true invalidation."""
 
-    @staticmethod
-    def _provisional_target_already_spent(
-        setup: LocalContinuationSetup,
-    ) -> bool:
-        if setup.side is Side.LONG:
-            return (
-                setup.retest_high is not None
-                and setup.target_price <= setup.retest_high
-            )
-        return (
-            setup.retest_low is not None
-            and setup.target_price >= setup.retest_low
-        )
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._spent_provisional_targets: set[str] = set()
 
     def _target_touched(
         self,
@@ -65,19 +55,29 @@ class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine)
         bar: Candle,
     ) -> bool:
         touched = super()._target_touched(setup, bar)
-        preserve = setup.state == "WAITING_PULLBACK" or (
-            setup.state == "WAITING_RESPONSE"
-            and self._provisional_target_already_spent(setup)
-        )
-        if preserve and touched:
-            key = (
-                "pre_pullback_impulse_extension_preserved"
-                if setup.state == "WAITING_PULLBACK"
-                else "spent_provisional_target_preserved_for_response_refresh"
-            )
-            self._inc(key)
+        if setup.state == "WAITING_PULLBACK" and touched:
+            self._spent_provisional_targets.add(setup.setup_id)
+            self._inc("pre_pullback_impulse_extension_preserved")
             self._record(
-                f"local_continuation_{key}",
+                "local_continuation_pre_pullback_impulse_extension_preserved",
+                bar.ts_close_ns,
+                setup_id=setup.setup_id,
+                side=setup.side.name,
+                state=setup.state,
+                provisional_impulse_extreme=setup.target_price,
+                bar_high=bar.high,
+                bar_low=bar.low,
+                rule_provenance=CONTINUATION_TARGET_LIFECYCLE_RULE,
+            )
+            return False
+        if (
+            setup.state == "WAITING_RESPONSE"
+            and setup.setup_id in self._spent_provisional_targets
+            and touched
+        ):
+            self._inc("spent_provisional_target_preserved_for_response_refresh")
+            self._record(
+                "local_continuation_spent_provisional_target_preserved_for_response_refresh",
                 bar.ts_close_ns,
                 setup_id=setup.setup_id,
                 side=setup.side.name,
@@ -99,9 +99,12 @@ class PostImpulseTargetRefreshContinuationEngine(LocalAuctionContinuationEngine)
     ) -> None:
         """Replace a spent provisional extreme with the nearest unspent target."""
         frozen_valid = (
-            setup.target_price > bar.high
-            if setup.side is Side.LONG
-            else setup.target_price < bar.low
+            setup.setup_id not in self._spent_provisional_targets
+            and (
+                setup.target_price > bar.high
+                if setup.side is Side.LONG
+                else setup.target_price < bar.low
+            )
         )
         choices = self._structure_targets(setup.side, bar)
         valid = [
@@ -167,8 +170,8 @@ class EasyChartRE1ContinuationTargetRefreshBundle(
         output["continuation_target_lifecycle"] = {
             "rule_provenance": CONTINUATION_TARGET_LIFECYCLE_RULE,
             "policy": (
-                "PRESERVE_PRE_PULLBACK_EXTENSION_AND_ALREADY_SPENT_"
-                "PROVISIONAL_TARGET_THROUGH_RESPONSE_REFRESH"
+                "TRACK_PREENTRY_IMPULSE_EXTENSION_THEN_REPLACE_SPENT_"
+                "PROVISIONAL_EXTREME_WITH_NEAREST_UNSPENT_STRUCTURE"
             ),
         }
         return output
