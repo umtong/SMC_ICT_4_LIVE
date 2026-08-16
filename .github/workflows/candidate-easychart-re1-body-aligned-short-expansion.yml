@@ -1,0 +1,103 @@
+name: candidate-easychart-re1-body-aligned-short-expansion
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-body-aligned-short-expansion.yml"
+      - "research/candidate-easychart_re1/easychart_re1_body_aligned_system.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_body_aligned_system.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-body-aligned-short-expansion
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: unseen-oct-2024
+            start: 2024-10-01
+            end: 2024-10-07
+          - period: unseen-may-2025
+            start: 2025-05-01
+            end: 2025-05-07
+          - period: live-2025
+            start: 2025-08-10
+            end: 2025-08-16
+          - period: unseen-may-2026
+            start: 2026-05-01
+            end: 2026-05-07
+          - period: july-2026
+            start: 2026-07-01
+            end: 2026-07-07
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-body-aligned/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-body-aligned/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile body-aligned system
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_body_aligned_system.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_body_aligned_system.py
+      - name: Run one four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_body_aligned_system.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Print actual economic result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          root=Path("${{ env.OUT }}")
+          result={"period":"${{ matrix.period }}"}
+          mp=root/"metrics.json"; tp=root/"trade_audit.csv"; ep=root/"scenario_events.jsonl"
+          if mp.exists(): result["metrics"]=json.loads(mp.read_text())
+          if tp.exists() and tp.stat().st_size:
+              t=pd.read_csv(tp)
+              result["trades"]=t[[c for c in ("symbol","side","family","planned_gross_rr","actual_net_r","duration_ns","exit_role","ts_opened") if c in t]].to_dict("records")
+          counts={}
+          if ep.exists():
+              for line in ep.read_text().splitlines():
+                  e=json.loads(line); k=str(e.get("scenario_kind",""))
+                  if k.startswith("body_aligned_"): counts[k]=counts.get(k,0)+1
+          result["router_counts"]=counts
+          print("BODY_ALIGNED_RESULT="+json.dumps(result,sort_keys=True,default=str))
+          PY
+      - name: Preserve actual account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-body-aligned-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-body-aligned/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
