@@ -5,8 +5,8 @@ This module joins complete auction decisions rather than accumulating filters:
 * rejection opportunities are actual sweep/reclaim rejection episodes; visual
   OB/FVG returns remain direct, while a flow-only substitute must first complete
   the five-minute control-transfer event;
-* accepted structure transfers use the embedded acceptance policy and its first
-  completed response;
+* accepted structure transfers require the first completed response and use the
+  return extreme plus the first transfer-local opposing swing for geometry;
 * an unbroken decision-OB bounce is not relabeled as a reversal.  Continuation
   responsibility belongs to the dedicated nested-initiative pullback family
   composed above this bundle.
@@ -24,17 +24,17 @@ from typing import Any
 import contracts_v5 as _contracts
 from contracts_v5 import ScenarioPath, V5TradePlan
 from domain import Candle
+from easychart_re1_acceptance_geometry import (
+    MultiScaleScenarioBundle as AcceptanceGeometryBundle,
+)
 from easychart_re1_controlled_significant import (
     MultiScaleScenarioBundle as ControlledSignificantResponseBundle,
-)
-from easychart_re1_embedded_acceptance_response import (
-    MultiScaleScenarioBundle as EmbeddedAcceptanceResponseBundle,
 )
 
 
 MECHANISM_ROUTED_SKILLED_POLICY_RULE = (
     "RESEARCH_HYPOTHESIS:CONTROL_TRANSFER_CONFIRMED_SIGNIFICANT_OBJECTIVE_"
-    "REVERSALS_AND_EMBEDDED_RESPONSE_CONFIRMED_ACCEPTANCE_CONTINUATIONS_"
+    "REVERSALS_AND_RESPONSE_CONFIRMED_TRANSFER_LOCAL_GEOMETRY_ACCEPTANCE_"
     "OWN_DISTINCT_AUCTION_MECHANISMS"
 )
 SIMULTANEOUS_EPISODE_OWNERSHIP_RULE = (
@@ -70,7 +70,7 @@ class EasyChartRE1SkilledIntegratedBundle:
             tick_size,
             minimum_gross_rr,
         )
-        self.acceptance = EmbeddedAcceptanceResponseBundle(
+        self.acceptance = AcceptanceGeometryBundle(
             symbol,
             tick_size,
             minimum_gross_rr,
@@ -223,7 +223,7 @@ class EasyChartRE1SkilledIntegratedBundle:
             "mechanism_routed_skilled_policy": {
                 "counts": dict(sorted(self._counts.items())),
                 "reversal_owner": "CONTROLLED_SIGNIFICANT_RESPONSE_REJECTION_ONLY",
-                "acceptance_owner": "EMBEDDED_ACCEPTANCE_RESPONSE",
+                "acceptance_owner": "RESPONSE_CONFIRMED_TRANSFER_LOCAL_GEOMETRY",
                 "bounce_owner": "NESTED_LOCAL_CONTINUATION",
                 "rules": (
                     MECHANISM_ROUTED_SKILLED_POLICY_RULE,
