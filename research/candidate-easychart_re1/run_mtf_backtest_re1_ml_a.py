@@ -17,6 +17,7 @@ from easychart_re1_skilled_continuation import (
 )
 from execution_re1_ml_a import EasyChartRE1MLAEnvStrategy
 from mtf_data_re1_flow import add_symbol_mtf_flow_data
+from plan_event_values_re1 import plan_event_values
 import run_mtf_backtest_re1 as runner
 
 
@@ -26,6 +27,7 @@ os.environ.setdefault("ML_A_MODEL_PATH", str(DEFAULT_MODEL))
 os.environ.setdefault("ML_A_POLICY", "rank")
 
 runner.EasyChartRE1NaturalBundle = EasyChartRE1SkilledContinuationBundle
+EasyChartRE1MLAEnvStrategy._plan_event_values = staticmethod(plan_event_values)
 runner.EasyChartRE1Strategy = EasyChartRE1MLAEnvStrategy
 runner.add_symbol_mtf_data = add_symbol_mtf_flow_data
 
