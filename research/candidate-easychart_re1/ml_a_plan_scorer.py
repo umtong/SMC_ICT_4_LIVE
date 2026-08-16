@@ -1,6 +1,6 @@
 """Portable plan-only scorer for EasyChart ML_a.
 
-The scorer consumes only immutable V5TradePlan fields. It never changes entry,
+The scorer consumes only immutable V5TradePlan fields.  It never changes entry,
 stop, target or risk and it has no access to future labels.
 """
 from __future__ import annotations
@@ -13,7 +13,12 @@ from typing import Any, Mapping
 
 
 def _kind(value: Any) -> str:
-    return str(getattr(value, "value", value))
+    raw = getattr(value, "value", value)
+    # Side is an integer Enum and the training table stores LONG/SHORT names.
+    # String-valued structure Enums store their semantic value.
+    if isinstance(raw, (int, float)) and hasattr(value, "name"):
+        return str(value.name)
+    return str(raw)
 
 
 def plan_features(plan: Any) -> dict[str, Any]:
