@@ -1,7 +1,7 @@
-"""ML_a plan-quality routing for the existing RE1 execution lifecycle.
+"""ML_a plan-quality routing for the current flow-aware RE1 lifecycle.
 
 The deterministic EasyChart engine still creates a complete immutable plan.
-This strategy can only rank or decline plans; it never changes entry, stop,
+This strategy only ranks or declines plans. It never changes entry, stop,
 target, quantity sizing, protection, or the one-global-position contract.
 """
 from __future__ import annotations
@@ -14,7 +14,8 @@ from typing import Any
 from nautilus_trader.model.identifiers import InstrumentId
 
 from contracts_v5 import V5TradePlan
-from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy
+from execution_re1 import EasyChartMTFConfig
+from execution_re1_flow import EasyChartRE1FlowStrategy
 from ml_a_plan_scorer import PortableLogisticPlanScorer, plan_features
 
 
@@ -28,15 +29,15 @@ class MLAScore:
     approved: bool
 
 
-class EasyChartRE1MLAStrategy(EasyChartRE1Strategy):
-    """One-account RE1 strategy with a portable plan-only quality model."""
+class EasyChartRE1MLAStrategy(EasyChartRE1FlowStrategy):
+    """One-account flow-aware RE1 strategy with immutable-plan ML routing."""
 
     def __init__(
         self,
         config: EasyChartMTFConfig,
         *,
         model_path: str | Path,
-        policy: str = "quality",
+        policy: str = "rank",
         minimum_probability: float = 0.60,
     ) -> None:
         super().__init__(config)
@@ -164,8 +165,9 @@ class EasyChartRE1MLAStrategy(EasyChartRE1Strategy):
             (item for item in scored if item[2].approved),
             key=self._tie_key,
         )
-        rejected = [item for item in scored if not item[2].approved]
-        for instrument_id, plan, score in rejected:
+        for instrument_id, plan, score in scored:
+            if score.approved:
+                continue
             self._record(
                 "ml_a_plan_rejected",
                 plan_id=plan.plan_id,
@@ -225,7 +227,7 @@ class EasyChartRE1MLAStrategy(EasyChartRE1Strategy):
 
 
 class EasyChartRE1MLAEnvStrategy(EasyChartRE1MLAStrategy):
-    """Runner-compatible wrapper whose immutable model settings come from env."""
+    """Runner-compatible wrapper with a frozen model path and policy."""
 
     def __init__(self, config: EasyChartMTFConfig) -> None:
         import os
@@ -236,6 +238,6 @@ class EasyChartRE1MLAEnvStrategy(EasyChartRE1MLAStrategy):
         super().__init__(
             config,
             model_path=model_path,
-            policy=os.environ.get("ML_A_POLICY", "quality"),
+            policy=os.environ.get("ML_A_POLICY", "rank"),
             minimum_probability=float(os.environ.get("ML_A_MIN_PROBABILITY", "0.60")),
         )
