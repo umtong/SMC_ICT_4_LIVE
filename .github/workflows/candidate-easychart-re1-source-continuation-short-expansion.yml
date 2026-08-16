@@ -1,0 +1,109 @@
+name: candidate-easychart-re1-source-continuation-short-expansion
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-source-continuation-short-expansion.yml"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_target_refresh.py"
+      - "research/candidate-easychart_re1/easychart_re1_continuation_source_return.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-source-continuation-short-expansion
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: may-2024
+            start: 2024-05-01
+            end: 2024-05-07
+          - period: feb-2025
+            start: 2025-02-01
+            end: 2025-02-07
+          - period: live-2025
+            start: 2025-08-10
+            end: 2025-08-16
+          - period: feb-2026
+            start: 2026-02-01
+            end: 2026-02-07
+          - period: july-2026
+            start: 2026-07-01
+            end: 2026-07-07
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-source-continuation/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-source-continuation/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile source-footprint continuation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_continuation_target_refresh.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_first_return.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_footprint.py \
+            research/candidate-easychart_re1/easychart_re1_continuation_source_return.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py
+      - name: Run one four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_continuation_source_return.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Print actual economic result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("${{ env.OUT }}")
+          metrics_path = root / "metrics.json"
+          trades_path = root / "trade_audit.csv"
+          result = {"period": "${{ matrix.period }}"}
+          if metrics_path.exists():
+              result["metrics"] = json.loads(metrics_path.read_text())
+          if trades_path.exists() and trades_path.stat().st_size:
+              trades = pd.read_csv(trades_path)
+              result["trades"] = trades[[
+                  c for c in (
+                      "symbol", "side", "family", "planned_gross_rr",
+                      "actual_net_r", "duration_ns", "exit_role", "ts_opened",
+                  ) if c in trades
+              ]].to_dict("records")
+          print("SOURCE_CONTINUATION_RESULT=" + json.dumps(result, sort_keys=True, default=str))
+          PY
+      - name: Preserve actual account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-source-continuation-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-source-continuation/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
