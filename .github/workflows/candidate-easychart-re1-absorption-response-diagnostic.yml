@@ -1,0 +1,165 @@
+name: candidate-easychart-re1-absorption-response-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-absorption-response-diagnostic.yml"
+      - "research/candidate-easychart_re1/.absorption_response_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_absorption_response.py"
+      - "research/candidate-easychart_re1/easychart_re1_skilled_continuation_response.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_absorption_response.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py"
+      - "research/candidate-easychart_re1/plan_event_values_re1.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-absorption-response-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_absorption_response.py \
+            research/candidate-easychart_re1/easychart_re1_skilled_continuation_response.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_absorption_response.py
+      - name: Construct full bundle and inspect replaced owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_absorption_response import (
+              CURRENT_ABSORPTION_FIRST_RESPONSE_RULE,
+              EasyChartRE1PersistentAbsorptionResponseBundle,
+          )
+          from easychart_re1_skilled_continuation_response import (
+              EasyChartRE1SkilledContinuationPersistentResponseBundle,
+              PersistentResponseSkilledIntegratedBundle,
+          )
+
+          local = EasyChartRE1PersistentAbsorptionResponseBundle("BTCUSDT", 0.1, 1.0)
+          integrated = PersistentResponseSkilledIntegratedBundle("BTCUSDT", 0.1, 1.0)
+          full = EasyChartRE1SkilledContinuationPersistentResponseBundle(
+              "BTCUSDT", 0.1, 1.0
+          )
+          daily = full.base.base.base
+          assert daily.local is not None
+          assert type(daily.local).__name__ == type(integrated).__name__
+          assert type(daily.local.reversal).__name__ == type(local).__name__
+          assert full.detectors is daily.local.detectors
+          assert "FIRST_LATER_COMPLETED_MINUTE" in CURRENT_ABSORPTION_FIRST_RESPONSE_RULE
+          print({
+              "full": type(full).__name__,
+              "daily_local": type(daily.local).__name__,
+              "rejection_owner": type(daily.local.reversal).__name__,
+              "rule": CURRENT_ABSORPTION_FIRST_RESPONSE_RULE,
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: may-2024
+            start: 2024-05-01
+            end: 2024-05-03
+          - period: august-2025
+            start: 2025-08-10
+            end: 2025-08-12
+          - period: february-2026
+            start: 2026-02-01
+            end: 2026-02-03
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-absorption-response/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-absorption-response/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run current skilled flow-aware baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run first-response absorption candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/candidate"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_absorption_response.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/candidate" \
+            --fee-profile usd_m_vip0
+      - name: Print actual matched account results
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {"period": "${{ matrix.period }}"}
+          for name in ("baseline", "candidate"):
+              metrics_path = root / name / "metrics.json"
+              if not metrics_path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(metrics_path.read_text())
+              keep = (
+                  "candidate", "start", "end", "calendar_days", "completed_trades",
+                  "independent_completed_trades", "win_rate", "profit_factor",
+                  "expectancy_r", "average_net_r", "sum_net_r", "total_return",
+                  "ending_balance", "ending_nav", "max_drawdown", "max_drawdown_pct",
+                  "gross_rr_mean", "mean_gross_rr", "fees", "funding", "liquidations",
+                  "risk_budget_breaches",
+              )
+              result[name] = {key: data.get(key) for key in keep if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("ABSORPTION_RESPONSE_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trade and causal trace evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-absorption-response-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-absorption-response/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
