@@ -10,13 +10,15 @@ from easychart_re1_skilled_continuation import (
     EasyChartRE1SkilledContinuationBundle,
     LOCAL_AUCTION_SKILLED_ROUTER_RULE,
 )
+from execution_re1_flow import EasyChartRE1FlowStrategy
 from mtf_data_re1_flow import add_symbol_mtf_flow_data
 from plan_event_values_re1 import plan_event_values
 import run_mtf_backtest_re1 as runner
 
 
 runner.EasyChartRE1NaturalBundle = EasyChartRE1SkilledContinuationBundle
-runner.EasyChartRE1Strategy._plan_event_values = staticmethod(plan_event_values)
+EasyChartRE1FlowStrategy._plan_event_values = staticmethod(plan_event_values)
+runner.EasyChartRE1Strategy = EasyChartRE1FlowStrategy
 runner.add_symbol_mtf_data = add_symbol_mtf_flow_data
 
 
@@ -32,6 +34,7 @@ def rewrite_metadata(output: Path) -> None:
         "candidate": "skilled_continuation_baseline",
         "scenario_engine": "EasyChartRE1SkilledContinuationBundle",
         "arbitration": "DETERMINISTIC_EXISTING_RE1_ORDER",
+        "market_data": "BINANCE_EXTENDED_KLINE_AGGRESSOR_FLOW_PRESERVED",
         "skilled_router_rule": LOCAL_AUCTION_SKILLED_ROUTER_RULE,
         "position_contract": "ONE_ACCOUNT_ONE_GLOBAL_POSITION_FIXED_3PCT_NAV_RISK",
     }
