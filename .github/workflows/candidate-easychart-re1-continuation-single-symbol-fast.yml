@@ -1,0 +1,104 @@
+name: candidate-easychart-re1-continuation-single-symbol-fast
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-continuation-single-symbol-fast.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-continuation-single-symbol-fast
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-geometry-diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        policy:
+          - target_refresh
+          - first_return
+          - ob_or_fvg
+        symbol:
+          - BTCUSDT
+          - SOLUSDT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-continuation-single/${{ matrix.policy }}-${{ matrix.symbol }}
+      OUT: artifacts/candidate-easychart-re1-continuation-single/${{ matrix.policy }}-${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select and run policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.policy }}" in
+            target_refresh) runner=run_mtf_backtest_re1_continuation_target_refresh.py ;;
+            first_return) runner=run_mtf_backtest_re1_continuation_first_return.py ;;
+            ob_or_fvg) runner=run_mtf_backtest_re1_continuation_footprint.py ;;
+            *) exit 2 ;;
+          esac
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/$runner \
+            --start 2026-07-01 \
+            --end 2026-07-03 \
+            --warmup-days 7 \
+            --symbols "${{ matrix.symbol }}" \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Print plans, trades and continuation lifecycle
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("${{ env.OUT }}")
+          result = {"policy": "${{ matrix.policy }}", "symbol": "${{ matrix.symbol }}"}
+          metrics = root / "metrics.json"
+          trades = root / "trade_audit.csv"
+          events = root / "scenario_events.jsonl"
+          if metrics.exists():
+              result["metrics"] = json.loads(metrics.read_text())
+          if trades.exists():
+              frame = pd.read_csv(trades)
+              result["trades"] = frame.to_dict("records")
+          counts = {}
+          plans = []
+          if events.exists():
+              for line in events.read_text().splitlines():
+                  event = json.loads(line)
+                  kind = str(event.get("scenario_kind", ""))
+                  if "local_continuation" in kind or "fvg_fallback" in kind:
+                      counts[kind] = counts.get(kind, 0) + 1
+                  if kind in {
+                      "local_continuation_plan_created",
+                      "local_continuation_first_return_plan_created",
+                  }:
+                      plans.append(event)
+          result["continuation_event_counts"] = counts
+          result["continuation_plans"] = plans
+          print("SINGLE_FAST_RESULT=" + json.dumps(result, sort_keys=True, default=str))
+          PY
+      - name: Preserve causal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-continuation-single-${{ matrix.policy }}-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-continuation-single/${{ matrix.policy }}-${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
