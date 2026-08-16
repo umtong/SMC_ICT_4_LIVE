@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import traceback
 
-from counterfactual_plan_harvest import HarvestConfig, harvest_counterfactual_plans
+from counterfactual_plan_harvest_fixed import HarvestConfig, harvest_counterfactual_plans
 import run_mtf_backtest_re1_flow as _flow
 
 
