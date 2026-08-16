@@ -1,0 +1,181 @@
+name: candidate-easychart-re1-selective-auction-diagnostic
+
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-selective-auction-diagnostic.yml"
+      - "research/candidate-easychart_re1/.selective_auction_dispatch_marker"
+      - "research/candidate-easychart_re1/easychart_re1_selective_auction.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_selective_auction.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_accepted_control.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py"
+      - "research/candidate-easychart-v5/mtf_backtest_support_v5.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-selective-auction-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile categorical opportunity routers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_selective_auction.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_selective_auction.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_accepted_control.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            research/candidate-easychart-v5/mtf_backtest_support_v5.py
+      - name: Construct both reduced opportunity sets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_selective_auction import (
+              EasyChartRE1AcceptedControlBundle,
+              EasyChartRE1SelectiveAuctionBundle,
+              H4_REJECTION_FAMILY_RETIREMENT_RULE,
+          )
+
+          selective = EasyChartRE1SelectiveAuctionBundle("BTCUSDT", 0.1, 1.0)
+          accepted = EasyChartRE1AcceptedControlBundle("BTCUSDT", 0.1, 1.0)
+          assert type(selective.base).__name__ == "EasyChartRE1SkilledDailyBundle"
+          assert type(accepted.base).__name__ == "EasyChartRE1SkilledIntegratedBundle"
+          assert type(selective.acceptance).__name__ == "H4AcceptanceEngine"
+          assert type(accepted.acceptance).__name__ == "H4AcceptanceEngine"
+          assert not hasattr(selective, "h4")
+          assert not hasattr(accepted, "h4")
+          assert "RETIRED" in H4_REJECTION_FAMILY_RETIREMENT_RULE
+          assert selective.plans == [] and accepted.plans == []
+          print({
+              "selective": type(selective).__name__,
+              "accepted_control": type(accepted).__name__,
+              "retired_family": "H4_LIQUIDITY_REJECTION",
+              "retirement_rule": H4_REJECTION_FAMILY_RETIREMENT_RULE,
+          })
+          PY
+
+  matched-diagnostic:
+    needs: contract-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: fresh-july-2024
+            start: 2024-07-15
+            end: 2024-07-17
+          - period: fresh-january-2025
+            start: 2025-01-15
+            end: 2025-01-17
+          - period: fresh-november-2025
+            start: 2025-11-15
+            end: 2025-11-17
+          - period: fresh-june-2026
+            start: 2026-06-15
+            end: 2026-06-17
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-selective-auction/${{ matrix.period }}
+      ROOT_OUT: artifacts/candidate-easychart-re1-selective-auction/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run current full skilled opportunity baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT_OUT/baseline"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_continuation.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/baseline" \
+            --fee-profile usd_m_vip0
+      - name: Run selective daily plus accepted-H4 auction candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/selective"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_selective_auction.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/selective" \
+            --fee-profile usd_m_vip0
+      - name: Run accepted-control-only candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/accepted_control"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_accepted_control.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ROOT_OUT/accepted_control" \
+            --fee-profile usd_m_vip0
+      - name: Print matched continuous-account comparison
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("${{ env.ROOT_OUT }}")
+          result = {
+              "period": "${{ matrix.period }}",
+              "start": "${{ matrix.start }}",
+              "end": "${{ matrix.end }}",
+          }
+          keys = (
+              "candidate", "calendar_days", "closed_positions",
+              "independent_completed_trades", "independent_trades_per_day",
+              "final_nav", "ending_nav", "total_return", "max_drawdown",
+              "max_drawdown_pct", "liquidations", "trade_windows",
+          )
+          for name in ("baseline", "selective", "accepted_control"):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  result[name] = {"status": "MISSING_METRICS"}
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              result[name] = {key: data.get(key) for key in keys if key in data}
+              result[name]["all_metric_keys"] = sorted(data)
+          print("MATCHED_RESULT=" + json.dumps(result, sort_keys=True))
+          PY
+      - name: Preserve account, trades and causal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-selective-auction-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-selective-auction/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
