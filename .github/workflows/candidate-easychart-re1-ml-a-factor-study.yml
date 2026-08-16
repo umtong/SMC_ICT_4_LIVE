@@ -1,0 +1,119 @@
+name: candidate-easychart-re1-ml-a-factor-study
+on:
+  push:
+    branches: ["ML_a"]
+    paths:
+      - "research/candidate-easychart_re1/ml_a_factor_study.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_harvest.py"
+      - "research/candidate-easychart_re1/.ml_a_factor_study_dispatch_marker"
+      - ".github/workflows/candidate-easychart-re1-ml-a-factor-study.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-easychart-re1-ml-a-factor-study-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024, start: 2024-05-01, end: 2024-05-21}
+          - {period: november-2024, start: 2024-11-01, end: 2024-11-21}
+          - {period: february-2025, start: 2025-02-01, end: 2025-02-21}
+          - {period: august-2025, start: 2025-08-01, end: 2025-08-21}
+          - {period: november-2025, start: 2025-11-01, end: 2025-11-21}
+          - {period: february-2026, start: 2026-02-01, end: 2026-02-21}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml-a/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-ml-a/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the research path
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v5.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_balance_system_v5.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_harvest.py \
+            research/candidate-easychart_re1/ml_a_factor_study.py
+      - name: Harvest all immutable plans
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v5_harvest.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Upload compact plan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-a-plan-harvest-${{ matrix.period }}-${{ github.sha }}
+          path: |
+            ${{ env.OUT }}/counterfactual_plans.csv
+            ${{ env.OUT }}/counterfactual_summary.json
+            ${{ env.OUT }}/metrics.json
+            ${{ env.OUT }}/run.json
+            ${{ env.OUT }}/trade_audit.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  factor-study:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      OUT: artifacts/candidate-easychart-re1-ml-a/factor-study
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compact ML dependencies
+        run: python -m pip install --quiet "scikit-learn>=1.5,<2" tabulate joblib
+      - name: Download plan datasets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ml-a-plan-harvest-*
+          path: datasets
+          merge-multiple: false
+      - name: Compare factor blocks with expanding-time OOS predictions
+        shell: bash
+        run: |
+          mapfile -t INPUTS < <(find datasets -name counterfactual_plans.csv -type f | sort)
+          test "${#INPUTS[@]}" -ge 3
+          mkdir -p "$OUT"
+          python research/candidate-easychart_re1/ml_a_factor_study.py \
+            --inputs "${INPUTS[@]}" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --min-train-periods 2
+      - name: Upload factor study
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-a-factor-study-${{ github.sha }}
+          path: ${{ env.OUT }}/**
+          if-no-files-found: warn
+          retention-days: 30
