@@ -33,17 +33,19 @@ jobs:
             research/candidate-easychart_re1/easychart_re1_delivery_draw_v6.py \
             research/candidate-easychart_re1/easychart_re1_delivery_continuation_cisd.py \
             research/candidate-easychart_re1/easychart_re1_delivery_channel_core.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_channel_core_v2.py \
             research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_channel_core.py
           python - <<'PY'
-          from easychart_re1_delivery_channel_core import EasyChartRE1DeliveryChannelCoreBundle
+          from easychart_re1_delivery_channel_core_v2 import EasyChartRE1DeliveryChannelCoreV2Bundle
           for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
-              bundle = EasyChartRE1DeliveryChannelCoreBundle(symbol, tick)
+              bundle = EasyChartRE1DeliveryChannelCoreV2Bundle(symbol, tick)
               assert bundle.delivery_draw.TRIGGER_MINUTES == 1
               assert "mechanism_specific_active_flow" in bundle.delivery_draw.diagnostics
               assert "post_touch_internal_structure_shift" in bundle.delivery_continuation.diagnostics
               assert bundle.delivery_channel_acceptance.scale_name == "DELIVERY_CHANNEL_ACCEPTANCE"
               assert bundle.delivery_continuation.minimum_gross_rr == 1.0
               assert bundle.diagnostics["lean_delivery_channel_core"]["mature_balance_executable"] is False
+              assert "accepted_break_execution_responsibility" in bundle.diagnostics
           PY
       - name: Run four-symbol continuous account
         run: |
