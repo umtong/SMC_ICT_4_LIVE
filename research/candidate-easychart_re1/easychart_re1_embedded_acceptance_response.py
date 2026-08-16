@@ -1,36 +1,29 @@
-"""Require the first completed micro response after an embedded accepted retest.
+"""Response-confirmed accepted breaks with the first transfer-wave objective.
 
 An accepted break has two causal events: the completed decision-frame hold which
 proves price can remain outside the old boundary, and the lower-frame response
-which proves that the boundary is actually being defended.  The embedded
-acceptance candidate recognized when the hold bar itself had already wicked
-back into the boundary, but entered on the last one-minute close inside that
-same hold bar.  That still admitted many bars whose next minute immediately
-failed.
+which proves that boundary is defended.  The hold may itself contain the first
+retest; otherwise the inherited detached first-return path remains available.
 
-This module keeps the embedded-ret​est ownership and adds the same immediate
-response semantics already used by detached accepted-break retests:
+The first objective is also part of this same auction.  Before an accepted
+transfer can seek a distant channel extension or coarse pivot it must first
+retake the extreme produced by its completed break-and-hold wave.  That extreme
+is already visible before entry, is the source material's "wave end", and is a
+natural nearby liquidity objective.  If the response candle already trades it,
+the objective is spent; if it leaves less than 1R, the plan is rejected rather
+than manufacturing a distant target.
 
-* the completed five-minute hold must itself touch the pre-existing boundary
-  and close outside;
-* the final completed one-minute bar at that timestamp records the retest and
-  fixes the executable structural stop;
-* the first later completed one-minute bar must close beyond the retest bar's
-  favorable extreme before either stop or target trades;
-* entry occurs at that response close and the original first structural target
-  must still provide at least 1R.
-
-A failed first response ends the causal episode.  No later rescue entry, score,
-ATR rule, clock timeout, session filter, partial exit or fitted threshold is
-introduced.
+No fitted R cap, score, ATR rule, clock timeout, session filter, partial exit or
+post-entry target movement is introduced.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import contracts_v5 as _contracts
-from contracts_v5 import SetupState, V5TradePlan
+from contracts_v5 import SetupState, StructureFamily, StructureZone, V5TradePlan
 from domain import Side
 from easychart_re1_embedded_acceptance import (
     EMBEDDED_ACCEPTANCE_RETEST_RULE,
@@ -46,14 +39,29 @@ from easychart_re1_flow_ob_sweep_responsibility import (
     ResponsiblePhaseFlowMicroEngine,
 )
 from easychart_re1_natural_geometry import NaturalHorizontalEngine
+from easychart_zones import ZoneSide
 
 
 EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE = (
     "SOURCE_AMBIGUITY_TRANSLATION:"
     "AN_ACCEPTANCE_HOLD_BAR_WHICH_ALREADY_RETESTED_THE_BOUNDARY_REQUIRES_THE_FIRST_LATER_COMPLETED_MICRO_CLOSE_BEYOND_ITS_FINAL_MICRO_RETEST_EXTREME"
 )
-if EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE not in _contracts.TRANSLATION_RULES:
-    _contracts.TRANSLATION_RULES += (EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,)
+ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:THE_FIRST_ACCEPTED_TRANSFER_OBJECTIVE_IS_THE_"
+    "UNRETAKEN_EXTREME_OF_THE_COMPLETED_BREAK_AND_REQUIRED_HOLD_WAVE_BEFORE_A_"
+    "MORE_DISTANT_CHANNEL_EXTENSION_OR_OPPOSING_STRUCTURE"
+)
+for _rule in (
+    EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+    ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
+):
+    if _rule not in _contracts.TRANSLATION_RULES:
+        _contracts.TRANSLATION_RULES += (_rule,)
+
+
+class AcceptanceTransferObjectiveKind(str, Enum):
+    BREAK_HOLD_WAVE_HIGH = "BREAK_HOLD_WAVE_HIGH"
+    BREAK_HOLD_WAVE_LOW = "BREAK_HOLD_WAVE_LOW"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +76,7 @@ class PendingEmbeddedAcceptanceResponse:
 
 
 class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
-    """Delay an embedded accepted-break entry until its first micro response."""
+    """Delay embedded entry until response and use its first wave objective."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -76,6 +84,12 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
             str,
             PendingEmbeddedAcceptanceResponse,
         ] = {}
+        self._acceptance_wave_objective_counts: dict[str, int] = {}
+
+    def _awinc(self, key: str) -> None:
+        self._acceptance_wave_objective_counts[key] = (
+            self._acceptance_wave_objective_counts.get(key, 0) + 1
+        )
 
     def _finish(
         self,
@@ -112,6 +126,102 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
             if setup.side is Side.LONG
             else bar.high >= pending.stop
         )
+
+    def _accepted_wave_bars(self, setup: Any) -> list[Any]:
+        index = setup.acceptance_break_index
+        if index is None or not 0 <= index < len(self.decision_bars):
+            return []
+        output = [self.decision_bars[index]]
+        confirmation = setup.confirmation_time_ns
+        if confirmation is not None:
+            hold = next(
+                (
+                    item
+                    for item in self.decision_bars[index + 1 :]
+                    if item.ts_close_ns == confirmation
+                ),
+                None,
+            )
+            if hold is not None:
+                output.append(hold)
+        return output
+
+    def _refine_acceptance_wave_objective(self, setup: Any, bar: Any) -> bool:
+        wave = self._accepted_wave_bars(setup)
+        if not wave or setup.target_price is None:
+            self._awinc("accepted_wave_geometry_missing")
+            return True
+        if setup.side is Side.LONG:
+            price = max(item.high for item in wave)
+            unspent = price > bar.high
+            closer = price < setup.target_price
+            kind = AcceptanceTransferObjectiveKind.BREAK_HOLD_WAVE_HIGH
+            zone_side = ZoneSide.RESISTANCE
+        else:
+            price = min(item.low for item in wave)
+            unspent = price < bar.low
+            closer = price > setup.target_price
+            kind = AcceptanceTransferObjectiveKind.BREAK_HOLD_WAVE_LOW
+            zone_side = ZoneSide.SUPPORT
+        if not unspent:
+            self._awinc("accepted_transfer_wave_spent_before_entry")
+            self._finish(
+                setup,
+                SetupState.TARGET_SPENT,
+                bar.ts_close_ns,
+                "accepted_transfer_wave_spent_before_entry",
+                transfer_wave_price=price,
+                response_high=bar.high,
+                response_low=bar.low,
+                rule_provenance=ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
+            )
+            return False
+        if not closer:
+            self._awinc("existing_objective_already_before_transfer_wave")
+            return True
+
+        source = f"ACCEPTED_TRANSFER_WAVE:{setup.setup_id}:{kind.value}"
+        zone = StructureZone(
+            zone_id=f"{source}:SNAP:{bar.ts_close_ns}",
+            kind=kind,
+            family=StructureFamily.HORIZONTAL,
+            side=zone_side,
+            timeframe_minutes=self.decision_minutes,
+            lower=price - self.tick_size * 0.5,
+            upper=price + self.tick_size * 0.5,
+            invalidation=(
+                price + self.tick_size
+                if setup.side is Side.LONG
+                else price - self.tick_size
+            ),
+            impulse_extreme=price,
+            formed_index=setup.acceptance_break_index or 0,
+            formed_time_ns=wave[0].ts_close_ns,
+            observed_time_ns=setup.confirmation_time_ns or wave[-1].ts_close_ns,
+            formation_indices=(),
+            strength_ratio=setup.context.strength_ratio,
+            source_structure_id=source,
+            source_pivot_span=max(1, setup.context.source_pivot_span),
+        )
+        previous_zone = None if setup.target_zone is None else setup.target_zone.zone_id
+        previous_price = setup.target_price
+        setup.target_zone = zone
+        setup.target_price = price
+        self._audit(zone)
+        self._awinc("objective_replaced_by_accepted_transfer_wave")
+        self._trace(
+            "accepted_transfer_wave_objective_selected",
+            bar.ts_close_ns,
+            setup,
+            previous_target_zone_id=previous_zone,
+            previous_target_price=previous_price,
+            selected_target_zone_id=zone.zone_id,
+            selected_target_price=price,
+            break_time_ns=wave[0].ts_close_ns,
+            hold_time_ns=wave[-1].ts_close_ns,
+            rule_provenance=ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
+        )
+        return True
 
     def _process_pending_embedded_response(
         self,
@@ -164,6 +274,8 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
 
         self._pending_embedded_acceptance_responses.pop(setup.setup_id, None)
         self._eainc("embedded_first_response_confirmed")
+        if not self._refine_acceptance_wave_objective(setup, bar):
+            return None
         self._trace(
             "embedded_acceptance_first_response_confirmed",
             bar.ts_close_ns,
@@ -175,7 +287,10 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
             response_close=bar.close,
             stop=pending.stop,
             trigger_zone_id=pending.trigger_zone.zone_id,
-            rule_provenance=EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+            rule_provenance=(
+                EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+                ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
+            ),
         )
         plan = self._make_plan(
             setup,
@@ -294,6 +409,7 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
                     EMBEDDED_ACCEPTANCE_RETEST_RULE,
                     SAME_TIMESTAMP_COMPLETED_ENTRY_RULE,
                     EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+                    ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
                 ),
             )
         return output
@@ -307,6 +423,12 @@ class EmbeddedAcceptanceFirstResponseMixin(EmbeddedAcceptanceRetestMixin):
                     self._pending_embedded_acceptance_responses
                 ),
                 "response_rule": EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+                "transfer_wave_objective_counts": dict(
+                    sorted(self._acceptance_wave_objective_counts.items())
+                ),
+                "transfer_wave_objective_rule": (
+                    ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE
+                ),
             }
         )
         return output
@@ -408,6 +530,7 @@ class EasyChartRE1EmbeddedAcceptanceResponseBundle(
                 EMBEDDED_ACCEPTANCE_RETEST_RULE,
                 SAME_TIMESTAMP_COMPLETED_ENTRY_RULE,
                 EMBEDDED_ACCEPTANCE_FIRST_RESPONSE_RULE,
+                ACCEPTANCE_TRANSFER_WAVE_OBJECTIVE_RULE,
             ),
         }
         return output
