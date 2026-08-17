@@ -49,7 +49,10 @@ def make_instrument(symbol: str) -> CryptoPerpetual:
         price_increment=Price.from_str(contract.price_increment),
         size_precision=_precision(contract.size_increment),
         size_increment=Quantity.from_str(contract.size_increment),
-        max_quantity=Quantity.from_str(contract.max_quantity),
+        # A frozen research metadata cap must not turn a structurally valid
+        # fixed-risk trade into a lower-risk trade or a skipped trade. Live
+        # transport can reconcile the venue's current order contract separately.
+        max_quantity=None,
         min_quantity=Quantity.from_str(contract.min_quantity),
         max_notional=None,
         min_notional=Money(Decimal(contract.min_notional), usdt),
