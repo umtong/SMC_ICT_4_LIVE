@@ -57,6 +57,10 @@ BASE_FEATURE_NAMES = (
     "gross_rr_log",
     "risk_bps_log",
     "target_bps_log",
+    "risk_to_prior_sigma_log",
+    "target_to_prior_sigma_log",
+    "risk_to_prior_range_log",
+    "target_to_prior_range_log",
     "higher_strength",
     "lower_strength",
     "trigger_strength",
@@ -519,6 +523,21 @@ def build_plan_features(
         raise ValueError(f"invalid plan geometry for {getattr(plan, 'plan_id', '<unknown>')}")
 
     gross_rr = _finite(getattr(plan, "gross_rr", reward / risk), reward / risk)
+    symbol = str(getattr(plan, "symbol"))
+    one_minute = feature_book.latest(symbol, 1)
+    if one_minute is None:
+        risk_to_prior_sigma = 0.0
+        target_to_prior_sigma = 0.0
+        risk_to_prior_range = 0.0
+        target_to_prior_range = 0.0
+    else:
+        risk_fraction = risk / entry
+        target_fraction = reward / entry
+        prior_range_fraction = one_minute.range_fraction / max(one_minute.range_ratio, 1e-12)
+        risk_to_prior_sigma = risk_fraction / max(one_minute.return_scale, 1e-12)
+        target_to_prior_sigma = target_fraction / max(one_minute.return_scale, 1e-12)
+        risk_to_prior_range = risk_fraction / max(prior_range_fraction, 1e-12)
+        target_to_prior_range = target_fraction / max(prior_range_fraction, 1e-12)
     higher_tf = max(1.0, _finite(getattr(plan, "higher_timeframe_minutes", 60), 60.0))
     decision_tf = max(1.0, _finite(getattr(plan, "decision_timeframe_minutes", 15), 15.0))
     trigger_tf = max(1.0, _finite(getattr(plan, "trigger_timeframe_minutes", 1), 1.0))
@@ -545,6 +564,10 @@ def build_plan_features(
             "gross_rr_log": _safe_log_ratio(gross_rr, 1.0),
             "risk_bps_log": _safe_log1p(10_000.0 * risk / entry),
             "target_bps_log": _safe_log1p(10_000.0 * reward / entry),
+            "risk_to_prior_sigma_log": _safe_log1p(risk_to_prior_sigma),
+            "target_to_prior_sigma_log": _safe_log1p(target_to_prior_sigma),
+            "risk_to_prior_range_log": _safe_log1p(risk_to_prior_range),
+            "target_to_prior_range_log": _safe_log1p(target_to_prior_range),
             "higher_strength": _clip(_finite(getattr(plan, "higher_strength_ratio", 0.0)), -12.0, 12.0),
             "lower_strength": _clip(_finite(getattr(plan, "lower_strength_ratio", 0.0)), -12.0, 12.0),
             "trigger_strength": _clip(_finite(getattr(plan, "trigger_strength_ratio", 0.0)), -12.0, 12.0),

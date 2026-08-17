@@ -147,3 +147,7 @@ def test_prior_only_feature_book_and_exact_schema() -> None:
     assert features["mechanism_wedge"] == 0.0
     assert features["mechanism_liquidity_sweep"] == 0.0
     assert abs(features["source_rule_count_log"] - 1.3862943611198906) < 1e-12
+    assert features["risk_to_prior_sigma_log"] > 0.0
+    assert features["target_to_prior_sigma_log"] > features["risk_to_prior_sigma_log"]
+    assert features["risk_to_prior_range_log"] > 0.0
+    assert features["target_to_prior_range_log"] > features["risk_to_prior_range_log"]
