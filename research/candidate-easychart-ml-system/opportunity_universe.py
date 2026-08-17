@@ -1,0 +1,173 @@
+"""Broad, mechanism-owned EasyChart opportunity universe.
+
+The previous candidates failed in opposite ways: a broad flow bundle traded many
+weak opportunities, while heavily translated deterministic policies produced too
+few independent trades. This universe preserves distinct causal scenario owners
+without pretending any one existing policy is the answer:
+
+* FLOW: broad structure/liquidity interactions with observable initiative or
+  absorption;
+* SKILLED: completed sweep/reclaim reversal and accepted-control-transfer plans;
+* PULLBACK: current-leg, latest-level first pullback continuation.
+
+Every owner still fixes direction, entry, invalidation and objective before the
+plan becomes executable. The ML router later selects among complete plans. No
+owner is a fallback and no existing policy receives benchmark or priority status.
+"""
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any
+
+from contracts_v5 import V5TradePlan
+from domain import Candle
+from easychart_re1_efficient_pullback_final import (
+    EasyChartRE1EfficientPullbackFinalBundle,
+)
+from easychart_re1_flow import EasyChartRE1FlowBundle
+from easychart_re1_skilled_integrated import EasyChartRE1SkilledIntegratedBundle
+
+OPPORTUNITY_UNIVERSE_POLICY = (
+    "ML_SYSTEM:FLOW_SKILLED_AND_CURRENT_LEG_FIRST_PULLBACK_OWN_DISTINCT_CAUSAL_"
+    "OPPORTUNITIES_AND_EMIT_COMPLETE_PREENTRY_PLANS_WITHOUT_POLICY_PRIORITY"
+)
+
+
+class EasyChartMLOpportunityUniverse:
+    """One namespaced plan stream from three distinct auction mechanisms."""
+
+    OWNER_ORDER = ("FLOW", "SKILLED", "PULLBACK")
+
+    def __init__(
+        self,
+        symbol: str,
+        tick_size: float,
+        minimum_gross_rr: float = 1.0,
+    ) -> None:
+        self.symbol = symbol
+        self.tick_size = tick_size
+        self.owners: dict[str, Any] = {
+            "FLOW": EasyChartRE1FlowBundle(symbol, tick_size, minimum_gross_rr),
+            "SKILLED": EasyChartRE1SkilledIntegratedBundle(
+                symbol,
+                tick_size,
+                minimum_gross_rr,
+            ),
+            "PULLBACK": EasyChartRE1EfficientPullbackFinalBundle(
+                symbol,
+                tick_size,
+                minimum_gross_rr,
+            ),
+        }
+        self.detectors = getattr(self.owners["FLOW"], "detectors", None)
+        self._plan_maps: dict[str, dict[str, str]] = {
+            owner: {} for owner in self.OWNER_ORDER
+        }
+        self._seen_plan_ids: set[str] = set()
+        self._plans: list[V5TradePlan] = []
+        self._counts: dict[str, int] = {}
+
+    def _inc(self, key: str) -> None:
+        self._counts[key] = self._counts.get(key, 0) + 1
+
+    def _namespace_plan(self, owner: str, plan: V5TradePlan) -> V5TradePlan:
+        mapping = self._plan_maps[owner]
+        if plan.plan_id in mapping:
+            raise RuntimeError(
+                f"{owner} emitted duplicate raw plan id {plan.plan_id!r}",
+            )
+        plan_id = f"mlsys-{owner.lower()}-{plan.plan_id}"
+        if plan_id in self._seen_plan_ids:
+            raise RuntimeError(f"global ML-system plan id collision {plan_id!r}")
+        mapping[plan.plan_id] = plan_id
+        self._seen_plan_ids.add(plan_id)
+        self._inc(f"{owner.lower()}_plan")
+        return replace(
+            plan,
+            plan_id=plan_id,
+            causal_event_id=f"{owner}|{plan.causal_event_id}",
+            family=f"{owner}|{plan.family}",
+        )
+
+    def _rewrite_trace(self, owner: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        mapping = self._plan_maps[owner]
+        for row in rows:
+            row["mechanism_owner"] = owner
+            for key in (
+                "plan_id",
+                "suppressed_plan_id",
+                "owner_plan_id",
+                "selected_plan_id",
+            ):
+                value = row.get(key)
+                if isinstance(value, str) and value in mapping:
+                    row[key] = mapping[value]
+            causal = row.get("causal_event_id")
+            if isinstance(causal, str) and not causal.startswith(f"{owner}|"):
+                row["causal_event_id"] = f"{owner}|{causal}"
+            family = row.get("family")
+            if isinstance(family, str) and not family.startswith(f"{owner}|"):
+                row["family"] = f"{owner}|{family}"
+        return rows
+
+    def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        emitted: list[V5TradePlan] = []
+        for owner in self.OWNER_ORDER:
+            raw = self.owners[owner].on_bar(timeframe_minutes, bar)
+            emitted.extend(self._namespace_plan(owner, plan) for plan in raw)
+        unique = {plan.plan_id: plan for plan in emitted}
+        output = sorted(
+            unique.values(),
+            key=lambda plan: (
+                plan.interaction_time_ns,
+                plan.observed_time_ns,
+                plan.symbol,
+                plan.plan_id,
+            ),
+        )
+        self._plans.extend(output)
+        return output
+
+    def drain_trace(self) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for owner in self.OWNER_ORDER:
+            output.extend(
+                self._rewrite_trace(owner, list(self.owners[owner].drain_trace())),
+            )
+        return output
+
+    def find_zone(self, zone_id: str) -> Any | None:
+        for owner in self.OWNER_ORDER:
+            found = self.owners[owner].find_zone(zone_id)
+            if found is not None:
+                return found
+        return None
+
+    @property
+    def plans(self) -> list[V5TradePlan]:
+        return list(self._plans)
+
+    @property
+    def setups(self) -> list[Any]:
+        output: list[Any] = []
+        for owner in self.OWNER_ORDER:
+            output.extend(list(getattr(self.owners[owner], "setups", [])))
+        return output
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "ml_opportunity_universe": {
+                "policy": OPPORTUNITY_UNIVERSE_POLICY,
+                "counts": dict(sorted(self._counts.items())),
+                "owners": self.OWNER_ORDER,
+                "owner_priority": "NONE_ALL_COMPLETE_PLANS_ENTER_SHARED_ML_ARBITRATION",
+            },
+            **{
+                owner.lower(): self.owners[owner].diagnostics
+                for owner in self.OWNER_ORDER
+            },
+        }
+
+
+MultiScaleScenarioBundle = EasyChartMLOpportunityUniverse
