@@ -1,0 +1,89 @@
+name: ml1-fix-fixed-risk-expectancy
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-fix-fixed-risk-expectancy.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Express expectancy in the same fixed-risk units as the account
+        env:
+          PYTHONPATH: research/candidate-easychart_ml1
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          model_path = Path("research/candidate-easychart_ml1/ml1_model.py")
+          text = model_path.read_text(encoding="utf-8")
+          old = '''    def expected_net_r(self, target_probability: float) -> float:\n        p = _clip(float(target_probability), 0.0, 1.0)\n        return p * self.win_net_r + (1.0 - p) * self.loss_net_r\n'''
+          new = '''    @property\n    def fixed_risk_win_r(self) -> float:\n        """Winning return per one stopped-trade account risk unit."""\n\n        stopped_loss = abs(self.loss_net_r)\n        return self.win_net_r / stopped_loss if stopped_loss > _EPS else -math.inf\n\n    def expected_net_r(self, target_probability: float) -> float:\n        """Expected return in fixed account-risk units.\n\n        Position size is chosen so the configured stop outcome loses one risk\n        budget (3% NAV in this project).  Raw price-distance R can be distorted\n        by fees and slippage when stops are tight, so candidate arbitration must\n        use the same normalization as the actual account.\n        """\n\n        p = _clip(float(target_probability), 0.0, 1.0)\n        return p * self.fixed_risk_win_r - (1.0 - p)\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"model expectancy block count={text.count(old)}")
+          model_path.write_text(text.replace(old, new), encoding="utf-8")
+
+          train_path = Path("research/candidate-easychart_ml1/train_ml1.py")
+          text = train_path.read_text(encoding="utf-8")
+          old = '''    realized = pd.to_numeric(\n        frame["counterfactual_net_r_conservative"],\n        errors="coerce",\n    ).to_numpy(float)\n    expected = probabilities * win_r + (1.0 - probabilities) * loss_r\n    selected = (probabilities > 0.5) & (expected > 0.0)\n    chosen = realized[selected]\n    labels = frame["label"].to_numpy(float)[selected]\n'''
+          new = '''    labels_all = frame["label"].to_numpy(float)\n    stopped_loss = np.maximum(np.abs(loss_r), 1e-12)\n    fixed_risk_win = win_r / stopped_loss\n    expected = probabilities * fixed_risk_win - (1.0 - probabilities)\n    realized_fixed_r = np.where(labels_all > 0.5, fixed_risk_win, -1.0)\n    selected = (probabilities > 0.5) & (expected > 0.0)\n    chosen = realized_fixed_r[selected]\n    labels = labels_all[selected]\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"training selection block count={text.count(old)}")
+          text = text.replace(old, new)
+          text = text.replace(
+              '"sum_observed_counterfactual_net_r": float(chosen.sum()) if len(chosen) else 0.0,',
+              '"sum_observed_fixed_risk_r": float(chosen.sum()) if len(chosen) else 0.0,',
+          ).replace(
+              '"mean_observed_counterfactual_net_r": None if not len(chosen) else float(chosen.mean()),',
+              '"mean_observed_fixed_risk_r": None if not len(chosen) else float(chosen.mean()),',
+          )
+          train_path.write_text(text, encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart_ml1/ml1_model.py \
+            research/candidate-easychart_ml1/train_ml1.py
+
+          python - <<'PY'
+          from enum import Enum
+          from ml1_model import estimate_trade_economics
+
+          class Side(Enum):
+              LONG = 1
+
+          economics = estimate_trade_economics(
+              side=Side.LONG,
+              entry=100.0,
+              stop=99.0,
+              target=102.0,
+              tick_size=0.1,
+              entry_fee_rate=0.001,
+              target_fee_rate=0.001,
+              stop_fee_rate=0.001,
+          )
+          assert economics.loss_net_r < -1.0
+          assert economics.fixed_risk_win_r == economics.win_net_r / abs(economics.loss_net_r)
+          p = 0.6
+          assert abs(economics.expected_net_r(p) - (p * economics.fixed_risk_win_r - (1.0 - p))) < 1e-12
+          PY
+
+      - name: Commit the account-unit correction
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add \
+            research/candidate-easychart_ml1/ml1_model.py \
+            research/candidate-easychart_ml1/train_ml1.py
+          git diff --cached --check
+          git commit -m "fix(ml1): rank expectancy in fixed-risk account units"
+          git push origin HEAD:research_ML1
