@@ -1,0 +1,100 @@
+name: candidate-easychart-ml1-training-windows
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml1-training-windows.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml1-training-windows
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: may-2024
+            start: "2024-05-01"
+            end: "2024-05-10"
+          - slug: summer-2024
+            start: "2024-08-01"
+            end: "2024-08-10"
+          - slug: feb-2025
+            start: "2025-02-01"
+            end: "2025-02-10"
+          - slug: nov-2025
+            start: "2025-11-01"
+            end: "2025-11-10"
+          - slug: feb-2026-holdout
+            start: "2026-02-01"
+            end: "2026-02-10"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml1/${{ matrix.slug }}
+      OUT: artifacts/candidate-easychart-ml1/${{ matrix.slug }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile current ML1 runtime
+        run: python -m py_compile research/candidate-easychart_ml1/*.py
+
+      - name: Run one continuous four-symbol shadow account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
+          python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --ml-mode shadow \
+            2>&1 | tee "$OUT/backtest.log"
+
+      - name: Label all frozen plans and build current-schema dataset
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/harvest_ml1.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+          python research/candidate-easychart_ml1/build_ml1_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+
+      - name: Preserve causal plans and continuous-account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml1-${{ matrix.slug }}-${{ github.sha }}
+          path: ${{ env.OUT }}/
+          if-no-files-found: warn
+          retention-days: 30
