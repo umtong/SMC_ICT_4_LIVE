@@ -1,0 +1,172 @@
+name: ml2-mine-prior-artifacts
+
+on:
+  push:
+    branches: ["research_ML2"]
+    paths:
+      - "research/candidate-easychart_ml2/.mine_prior_artifacts_dispatch"
+  workflow_dispatch:
+
+concurrency:
+  group: ml2-mine-prior-artifacts
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  mine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML2
+      - name: Download prior skilled-integrated evidence
+        uses: actions/download-artifact@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31968465303
+          artifact-ids: 9269389262,9269401309,9269490717
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: prior_artifacts
+          merge-multiple: false
+      - name: Mine actual result files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import math
+          from pathlib import Path
+          from typing import Any
+          import pandas as pd
+
+          root = Path('prior_artifacts')
+          out_dir = Path('research/candidate-easychart_ml2/mined_evidence')
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          def finite(v: Any) -> Any:
+              try:
+                  x = float(v)
+              except (TypeError, ValueError):
+                  return v
+              return x if math.isfinite(x) else None
+
+          def summarize_json(path: Path) -> dict[str, Any]:
+              try:
+                  obj = json.loads(path.read_text())
+              except Exception as exc:
+                  return {'parse_error': repr(exc)}
+              if not isinstance(obj, dict):
+                  return {'type': type(obj).__name__, 'value_preview': str(obj)[:1000]}
+              wanted_tokens = (
+                  'trade', 'win', 'loss', 'pnl', 'return', 'equity', 'nav', 'drawdown',
+                  'profit', 'expect', 'risk', 'reward', 'rr', 'sharpe', 'sortino',
+                  'start', 'end', 'symbol', 'family', 'scenario', 'fee', 'slippage',
+                  'count', 'rate', 'duration', 'holding', 'balance', 'outcome',
+              )
+              selected: dict[str, Any] = {}
+              def walk(prefix: str, value: Any, depth: int = 0) -> None:
+                  if depth > 5 or len(selected) > 1000:
+                      return
+                  if isinstance(value, dict):
+                      for k, v in value.items():
+                          walk(f'{prefix}.{k}' if prefix else str(k), v, depth + 1)
+                  elif isinstance(value, list):
+                      if value and len(value) <= 40 and all(not isinstance(x, (dict, list)) for x in value):
+                          if any(t in prefix.lower() for t in wanted_tokens):
+                              selected[prefix] = [finite(x) for x in value]
+                      else:
+                          selected[f'{prefix}.__len__'] = len(value)
+                  else:
+                      if any(t in prefix.lower() for t in wanted_tokens):
+                          selected[prefix] = finite(value)
+              walk('', obj)
+              return {'selected': selected, 'top_level_keys': sorted(obj)[:300]}
+
+          def summarize_csv(path: Path) -> dict[str, Any]:
+              try:
+                  df = pd.read_csv(path, low_memory=False)
+              except Exception as exc:
+                  return {'parse_error': repr(exc)}
+              result: dict[str, Any] = {
+                  'rows': int(len(df)),
+                  'columns': list(df.columns),
+              }
+              lower = {c.lower(): c for c in df.columns}
+              for key in ('outcome', 'counterfactual_outcome', 'exit_reason', 'reason', 'family', 'scenario_path', 'side', 'symbol', 'scale_name'):
+                  c = lower.get(key)
+                  if c:
+                      result[f'{key}_counts'] = {str(k): int(v) for k, v in df[c].fillna('<NA>').value_counts(dropna=False).head(100).items()}
+              numeric_tokens = ('pnl','return','net_r','account_r','log_growth','gross_rr','reward','risk','duration','minute','holding','fee','slippage','equity','balance','nav','mfe','mae')
+              stats: dict[str, Any] = {}
+              for c in df.columns:
+                  if not any(t in c.lower() for t in numeric_tokens):
+                      continue
+                  s = pd.to_numeric(df[c], errors='coerce').dropna()
+                  if s.empty:
+                      continue
+                  stats[c] = {
+                      'count': int(s.size),
+                      'mean': float(s.mean()),
+                      'median': float(s.median()),
+                      'min': float(s.min()),
+                      'max': float(s.max()),
+                      'positive_rate': float((s > 0).mean()),
+                  }
+              result['numeric_stats'] = stats
+              outcome_col = next((lower[k] for k in ('counterfactual_outcome','outcome','exit_reason') if k in lower), None)
+              if outcome_col:
+                  text = df[outcome_col].fillna('').astype(str).str.upper()
+                  wins = text.str.contains('TARGET|WIN|TAKE_PROFIT|TP', regex=True)
+                  losses = text.str.contains('STOP|LOSS|SL', regex=True)
+                  resolved = wins | losses
+                  result['derived_outcome'] = {
+                      'resolved_rows': int(resolved.sum()),
+                      'wins': int(wins.sum()),
+                      'losses': int(losses.sum()),
+                      'win_rate': None if int(resolved.sum()) == 0 else float(wins[resolved].mean()),
+                  }
+              return result
+
+          evidence: dict[str, Any] = {'source_run_id': 31968465303, 'artifacts': {}}
+          tree_lines: list[str] = []
+          for artifact_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+              item: dict[str, Any] = {'files': {}}
+              evidence['artifacts'][artifact_dir.name] = item
+              tree_lines.append(f'## {artifact_dir.name}')
+              for path in sorted(p for p in artifact_dir.rglob('*') if p.is_file()):
+                  rel = str(path.relative_to(artifact_dir))
+                  tree_lines.append(f'{rel}\t{path.stat().st_size}')
+                  suffix = path.suffix.lower()
+                  if suffix == '.json':
+                      item['files'][rel] = {'kind': 'json', **summarize_json(path)}
+                  elif suffix == '.csv':
+                      item['files'][rel] = {'kind': 'csv', **summarize_csv(path)}
+                  elif suffix in ('.txt', '.md', '.log') and path.stat().st_size <= 2_000_000:
+                      text = path.read_text(errors='replace')
+                      item['files'][rel] = {'kind': 'text', 'content': text[:500_000]}
+                  else:
+                      item['files'][rel] = {'kind': 'binary', 'bytes': path.stat().st_size}
+              tree_lines.append('')
+
+          (out_dir / 'prior_skilled_integrated_evidence.json').write_text(
+              json.dumps(evidence, indent=2, ensure_ascii=False, sort_keys=True)
+          )
+          (out_dir / 'prior_skilled_integrated_file_tree.txt').write_text('\n'.join(tree_lines))
+          PY
+      - name: Commit mined evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_ml2/mined_evidence
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research: mine prior skilled-integrated evidence"
+          git push origin HEAD:research_ML2
