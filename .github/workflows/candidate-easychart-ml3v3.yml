@@ -1,0 +1,80 @@
+name: candidate-easychart-ml3v3
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3v3.yml"
+      - "research/candidate-easychart_ml3v3/**"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml3v3
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml3v3/smoke
+      OUT: artifacts/candidate-easychart-ml3v3/smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and exercise causal growth contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_ml3v3/*.py \
+            research/candidate-easychart_ml3v3/tests/*.py
+          pytest -q research/candidate-easychart_ml3v3/tests
+      - name: Exercise union, feature harvest and post-run labels
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml3v3/run_mtf_backtest_ml3v3_shadow.py \
+            --start 2025-08-10 \
+            --end 2025-08-11 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/shadow.log"
+          python research/candidate-easychart_ml3v2/harvest_ml1.py \
+            --start 2025-08-10 \
+            --end 2025-08-11 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+          python research/candidate-easychart_ml3v3/build_ml3v3_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+          test -s "$OUT/ml3v3_dataset.csv"
+      - name: Preserve implementation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml3v3-smoke-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3v3/smoke/
+          if-no-files-found: warn
+          retention-days: 14
