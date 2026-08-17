@@ -1,0 +1,127 @@
+name: candidate-easychart-ml1-live-day
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml1-live-day.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml1-live-day
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose-live-day:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml1/live-day-2025-08-19
+      OUT: artifacts/candidate-easychart-ml1/live-day-2025-08-19
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile the exact runtime
+        run: |
+          python -m py_compile research/candidate-easychart_ml1/*.py
+
+      - name: Run the four-symbol continuous account on the supplied live-trade day
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
+          python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
+            --start 2025-08-19 \
+            --end 2025-08-19 \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --ml-mode shadow \
+            2>&1 | tee "$OUT/backtest.log"
+
+      - name: Label every frozen plan after execution
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/harvest_ml1.py \
+            --start 2025-08-19 \
+            --end 2025-08-19 \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+          python research/candidate-easychart_ml1/build_ml1_dataset.py \
+            --run-output "$OUT" \
+            --keep-unresolved \
+            2>&1 | tee "$OUT/build_dataset.log"
+
+      - name: Write plan-by-plan geometry and outcome diagnosis
+        run: |
+          python - <<'PY' 2>&1 | tee "$OUT/live_day_diagnosis.log"
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path("artifacts/candidate-easychart-ml1/live-day-2025-08-19")
+          plans = pd.read_csv(out / "counterfactual_plans.csv", low_memory=False)
+          events = pd.read_csv(out / "decision_events.csv", low_memory=False)
+          ml = events[events["kind"] == "ml_plan"].copy()
+          columns = [
+              "plan_id", "symbol", "family", "side", "entry", "stop", "target", "gross_rr",
+              "counterfactual_outcome", "counterfactual_minutes_to_resolution",
+              "counterfactual_mfe_r", "counterfactual_mae_r", "counterfactual_net_r_conservative",
+              "risk_bps", "target_bps",
+          ]
+          columns = [column for column in columns if column in plans.columns]
+          ordered = plans[columns].sort_values(
+              [column for column in ("symbol", "plan_id") if column in columns],
+              kind="mergesort",
+          )
+          ordered.to_csv(out / "live_day_plan_diagnosis.csv", index=False)
+
+          executed = events[events["kind"].isin(["submitted", "position_closed", "order_filled"])].copy()
+          executed.to_csv(out / "live_day_execution_events.csv", index=False)
+          summary = {
+              "date": "2025-08-19",
+              "plans": int(len(plans)),
+              "ml_plan_events": int(len(ml)),
+              "outcomes": plans.get("counterfactual_outcome", pd.Series(dtype=str)).value_counts(dropna=False).to_dict(),
+              "by_symbol": plans.groupby("symbol", dropna=False).size().to_dict() if not plans.empty else {},
+              "by_family": plans.groupby("family", dropna=False).size().to_dict() if not plans.empty else {},
+              "executed_submissions": int((events["kind"] == "submitted").sum()),
+              "note": "All plans are shown; the supplied human examples are diagnostic references, not labels or filters.",
+          }
+          (out / "live_day_summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          print(ordered.to_string(index=False))
+          PY
+
+      - name: Preserve the complete day diagnosis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml1-live-day-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml1/live-day-2025-08-19/
+          if-no-files-found: warn
+          retention-days: 30
