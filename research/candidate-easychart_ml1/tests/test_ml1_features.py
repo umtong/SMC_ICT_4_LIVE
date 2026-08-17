@@ -39,9 +39,9 @@ def _plan() -> SimpleNamespace:
         lower_zone_kind="FVG",
         trigger_zone_kind="ORDER_BLOCK",
         target_zone_kind="SWING_HIGH",
-        higher_zone_strength=2.0,
-        lower_zone_strength=1.5,
-        trigger_zone_strength=1.0,
+        higher_strength_ratio=2.0,
+        lower_strength_ratio=1.5,
+        trigger_strength_ratio=1.0,
         source_rule_count=3,
         higher_timeframe_minutes=60,
         decision_timeframe_minutes=15,
@@ -131,3 +131,7 @@ def test_prior_only_feature_book_and_exact_schema() -> None:
     assert features["flow_aligned_initiative"] == 1.0
     assert features["cross_available"] == 1.0
     assert features["tf1_history_fraction"] == 1.0
+    assert features["higher_strength"] == 2.0
+    assert features["lower_strength"] == 1.5
+    assert features["trigger_strength"] == 1.0
+    assert features["confluence_strength"] >= 4.5
