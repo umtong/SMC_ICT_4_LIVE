@@ -1,0 +1,64 @@
+name: ml1-mechanism-result-collector
+
+on:
+  workflow_run:
+    workflows:
+      - ml1-mechanism-policy-v3
+      - ml1-mechanism-policy-v4
+      - ml1-mechanism-policy-v5
+      - ml1-mechanism-policy-v7
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mechanism-v*-policy-result
+          path: collected
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Preserve result with branch-race recovery
+        env:
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          case "$WORKFLOW_NAME" in
+            ml1-mechanism-policy-v3) version=mechanism_v3 ;;
+            ml1-mechanism-policy-v4) version=mechanism_v4 ;;
+            ml1-mechanism-policy-v5) version=mechanism_v5 ;;
+            ml1-mechanism-policy-v7) version=mechanism_v7 ;;
+            *) echo "unknown workflow: $WORKFLOW_NAME"; exit 1 ;;
+          esac
+          summary=$(find collected -name summary.json -type f | head -n 1)
+          result=$(find collected -name RESULT.md -type f | head -n 1)
+          test -n "$summary" && test -n "$result"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4; do
+            git fetch origin research_ML1
+            git reset --hard origin/research_ML1
+            mkdir -p "research/candidate-easychart_ml1/results/$version"
+            cp "$summary" "research/candidate-easychart_ml1/results/$version/summary.json"
+            cp "$result" "research/candidate-easychart_ml1/results/$version/RESULT.md"
+            git add "research/candidate-easychart_ml1/results/$version"
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+            git commit -m "research(ml1): collect $version evidence"
+            if git push origin HEAD:research_ML1; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          exit 1
