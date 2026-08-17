@@ -1,8 +1,10 @@
-"""CatBoost probability model and compounding-aligned utility for EasyChart ML2.
+"""Calibrated target-before-stop probability and fixed-risk NAV utility.
 
-EasyChart fixes entry, stop and target before entry. The model estimates the
-probability that the target is touched before the stop. Selection uses expected
-log NAV growth at the project's immutable 3% risk, after configured costs.
+The EasyChart engine freezes direction, entry, structural stop and objective
+before any order is submitted.  ML2 estimates only the probability that the
+objective is touched before the stop.  Costs are converted to the same planned-R
+units and selection uses expected log NAV growth at the project's immutable 3%
+risk.  The model never changes position size or trade geometry.
 """
 from __future__ import annotations
 
@@ -13,10 +15,8 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ml1_model import TradeEconomics
 
-
-MODEL_SCHEMA = "easychart_ml2_catboost_binary_v1"
+MODEL_SCHEMA = "easychart_ml2_catboost_binary_v2"
 _EPS = 1e-9
 
 
@@ -54,6 +54,33 @@ def sha256_file(path: Path) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeEconomics:
+    """Frozen target and stop outcomes in units of planned structural risk."""
+
+    planned_risk: float
+    planned_reward: float
+    gross_rr: float
+    win_net_r: float
+    loss_net_r: float
+    arithmetic_break_even_probability: float
+    entry_fill: float
+    target_fill: float
+    stop_fill: float
+    estimated_win_cost_r: float
+    estimated_loss_cost_r: float
+
+    @property
+    def break_even_probability(self) -> float:
+        """Compatibility alias for arithmetic expected-R break-even."""
+
+        return self.arithmetic_break_even_probability
+
+    def expected_net_r(self, target_probability: float) -> float:
+        p = _clip(float(target_probability), 0.0, 1.0)
+        return p * self.win_net_r + (1.0 - p) * self.loss_net_r
+
+
+@dataclass(frozen=True, slots=True)
 class ML2Decision:
     raw_probability: float
     target_probability: float
@@ -63,12 +90,180 @@ class ML2Decision:
     win_log_growth: float
     loss_log_growth: float
     required_probability: float
+    arithmetic_break_even_probability: float
     accepted: bool
     reason: str
 
 
+def estimate_trade_economics(
+    *,
+    side: Any,
+    entry: float,
+    stop: float,
+    target: float,
+    tick_size: float,
+    entry_fee_rate: float,
+    target_fee_rate: float,
+    stop_fee_rate: float,
+    funding_rate: float = 0.0,
+    entry_slippage_ticks: int = 0,
+    target_slippage_ticks: int = 0,
+    stop_slippage_ticks: int = 0,
+) -> TradeEconomics:
+    """Estimate both immutable outcomes under explicit runner costs."""
+
+    entry = _finite(entry)
+    stop = _finite(stop)
+    target = _finite(target)
+    tick = abs(_finite(tick_size))
+    if tick <= 0.0:
+        raise ValueError("tick_size must be positive")
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    if entry <= 0.0 or risk <= 0.0 or reward <= 0.0:
+        raise ValueError("entry, stop and target must define positive geometry")
+
+    side_text = str(getattr(side, "name", side)).upper()
+    if side_text.endswith("LONG") or side_text == "BUY":
+        sign = 1.0
+        if not (stop < entry < target):
+            raise ValueError("long geometry must satisfy stop < entry < target")
+    elif side_text.endswith("SHORT") or side_text == "SELL":
+        sign = -1.0
+        if not (target < entry < stop):
+            raise ValueError("short geometry must satisfy target < entry < stop")
+    else:
+        raise ValueError(f"unknown side {side!r}")
+
+    slippage = (entry_slippage_ticks, target_slippage_ticks, stop_slippage_ticks)
+    if min(slippage) < 0:
+        raise ValueError("slippage ticks cannot be negative")
+    rates = tuple(
+        _finite(value)
+        for value in (entry_fee_rate, target_fee_rate, stop_fee_rate, funding_rate)
+    )
+    if any(value < 0.0 for value in rates):
+        raise ValueError("fee and funding rates cannot be negative")
+
+    entry_fill = entry + sign * int(entry_slippage_ticks) * tick
+    target_fill = target - sign * int(target_slippage_ticks) * tick
+    stop_fill = stop - sign * int(stop_slippage_ticks) * tick
+
+    win_gross_r = sign * (target_fill - entry_fill) / risk
+    loss_gross_r = sign * (stop_fill - entry_fill) / risk
+    entry_fee_r = abs(entry_fill) * rates[0] / risk
+    target_fee_r = abs(target_fill) * rates[1] / risk
+    stop_fee_r = abs(stop_fill) * rates[2] / risk
+    funding_r = abs(entry_fill) * rates[3] / risk
+    win_net_r = win_gross_r - entry_fee_r - target_fee_r - funding_r
+    loss_net_r = loss_gross_r - entry_fee_r - stop_fee_r - funding_r
+    denominator = win_net_r - loss_net_r
+    arithmetic_break_even = -loss_net_r / denominator if denominator > 0.0 else 1.0
+
+    return TradeEconomics(
+        planned_risk=risk,
+        planned_reward=reward,
+        gross_rr=reward / risk,
+        win_net_r=win_net_r,
+        loss_net_r=loss_net_r,
+        arithmetic_break_even_probability=_clip(arithmetic_break_even, 0.0, 1.0),
+        entry_fill=entry_fill,
+        target_fill=target_fill,
+        stop_fill=stop_fill,
+        estimated_win_cost_r=(reward / risk) - win_net_r,
+        estimated_loss_cost_r=abs(loss_net_r) - 1.0,
+    )
+
+
+def decision_from_probability(
+    probability: float,
+    economics: TradeEconomics,
+    *,
+    risk_fraction: float,
+    raw_probability: float | None = None,
+    reason_prefix: str = "MODEL",
+) -> ML2Decision:
+    """Combine a calibrated probability with immutable trade economics."""
+
+    p = _clip(_finite(probability, 0.5), _EPS, 1.0 - _EPS)
+    raw = p if raw_probability is None else _clip(_finite(raw_probability, p), _EPS, 1.0 - _EPS)
+    risk_fraction = _finite(risk_fraction)
+    if not 0.0 < risk_fraction < 1.0:
+        raise ValueError("risk_fraction must be within (0, 1)")
+
+    expected_net_r = economics.expected_net_r(p)
+    win_multiplier = 1.0 + risk_fraction * economics.win_net_r
+    loss_multiplier = 1.0 + risk_fraction * economics.loss_net_r
+
+    if economics.win_net_r <= 0.0:
+        accepted = False
+        reason = "NONPOSITIVE_POST_COST_WIN"
+        win_log = loss_log = expected_log = float("-inf")
+        required = 1.0
+    elif economics.loss_net_r >= 0.0:
+        accepted = False
+        reason = "INVALID_POST_COST_LOSS"
+        win_log = loss_log = expected_log = float("-inf")
+        required = 1.0
+    elif win_multiplier <= 0.0 or loss_multiplier <= 0.0:
+        accepted = False
+        reason = "INVALID_FIXED_RISK_NAV_MULTIPLIER"
+        win_log = loss_log = expected_log = float("-inf")
+        required = 1.0
+    else:
+        win_log = math.log(win_multiplier)
+        loss_log = math.log(loss_multiplier)
+        denominator = win_log - loss_log
+        required = _clip(-loss_log / denominator, 0.0, 1.0) if denominator > 0.0 else 1.0
+        expected_log = p * win_log + (1.0 - p) * loss_log
+        accepted = expected_log > _EPS and p > required + _EPS
+        reason = (
+            f"{reason_prefix}_POSITIVE_EXPECTED_LOG_GROWTH"
+            if accepted
+            else f"{reason_prefix}_NONPOSITIVE_EXPECTED_LOG_GROWTH"
+        )
+
+    return ML2Decision(
+        raw_probability=raw,
+        target_probability=p,
+        tree_probability_std=0.0,
+        expected_net_r=expected_net_r,
+        expected_log_growth=expected_log,
+        win_log_growth=win_log,
+        loss_log_growth=loss_log,
+        required_probability=required,
+        arithmetic_break_even_probability=economics.arithmetic_break_even_probability,
+        accepted=accepted,
+        reason=reason,
+    )
+
+
+def shadow_decision(economics: TradeEconomics, *, risk_fraction: float) -> ML2Decision:
+    """Non-selectable placeholder used only to record causal shadow candidates."""
+
+    neutral = decision_from_probability(
+        0.5,
+        economics,
+        risk_fraction=risk_fraction,
+        reason_prefix="SHADOW",
+    )
+    return ML2Decision(
+        raw_probability=float("nan"),
+        target_probability=float("nan"),
+        tree_probability_std=0.0,
+        expected_net_r=float("nan"),
+        expected_log_growth=float("nan"),
+        win_log_growth=neutral.win_log_growth,
+        loss_log_growth=neutral.loss_log_growth,
+        required_probability=neutral.required_probability,
+        arithmetic_break_even_probability=neutral.arithmetic_break_even_probability,
+        accepted=False,
+        reason="SHADOW_ONLY_NO_MODEL_SELECTION",
+    )
+
+
 class CatBoostProbabilityModel:
-    """Load a checksum-bound CatBoost model plus disjoint Platt calibration."""
+    """Checksum-bound CatBoost model plus disjoint Platt calibration."""
 
     def __init__(self, metadata_path: str | Path) -> None:
         self.metadata_path = Path(metadata_path)
@@ -161,42 +356,10 @@ class CatBoostProbabilityModel:
     def decide(self, features: Mapping[str, Any], economics: TradeEconomics) -> ML2Decision:
         raw = self.raw_probability(features)
         probability = self.calibrate(raw)
-        expected_net_r = economics.expected_net_r(probability)
-        win_multiplier = 1.0 + self.risk_fraction * economics.win_net_r
-        loss_multiplier = 1.0 + self.risk_fraction * economics.loss_net_r
-
-        if economics.win_net_r <= 0.0:
-            accepted = False
-            reason = "NONPOSITIVE_POST_COST_WIN"
-            win_log = loss_log = expected_log = float("-inf")
-        elif economics.loss_net_r >= 0.0:
-            accepted = False
-            reason = "INVALID_POST_COST_LOSS"
-            win_log = loss_log = expected_log = float("-inf")
-        elif win_multiplier <= 0.0 or loss_multiplier <= 0.0:
-            accepted = False
-            reason = "INVALID_FIXED_RISK_NAV_MULTIPLIER"
-            win_log = loss_log = expected_log = float("-inf")
-        else:
-            win_log = math.log(win_multiplier)
-            loss_log = math.log(loss_multiplier)
-            expected_log = probability * win_log + (1.0 - probability) * loss_log
-            accepted = expected_log > 0.0
-            reason = (
-                "POSITIVE_EXPECTED_LOG_GROWTH"
-                if accepted
-                else "NONPOSITIVE_EXPECTED_LOG_GROWTH"
-            )
-
-        return ML2Decision(
+        return decision_from_probability(
+            probability,
+            economics,
+            risk_fraction=self.risk_fraction,
             raw_probability=raw,
-            target_probability=probability,
-            tree_probability_std=0.0,
-            expected_net_r=expected_net_r,
-            expected_log_growth=expected_log,
-            win_log_growth=win_log,
-            loss_log_growth=loss_log,
-            required_probability=economics.break_even_probability,
-            accepted=accepted,
-            reason=reason,
+            reason_prefix="MODEL",
         )

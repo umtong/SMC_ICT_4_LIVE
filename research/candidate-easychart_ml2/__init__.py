@@ -1,1 +1,1 @@
-"""EasyChart ML2 nonlinear causal meta-policy research package."""
+"""EasyChart ML2: causal-family target-before-stop selection over RE1 plans."""
