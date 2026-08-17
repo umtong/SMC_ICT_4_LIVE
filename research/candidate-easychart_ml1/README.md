@@ -63,7 +63,7 @@ python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
   --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
   --cache /path/to/cache \
   --output /path/to/ml1_shadow \
-  --fee-profile binance_usdm_vip0 \
+  --fee-profile usd_m_vip0 \
   --entry-slippage-ticks 2 \
   --stop-slippage-ticks 2 \
   --ml-mode shadow
@@ -82,7 +82,7 @@ python research/candidate-easychart_ml1/harvest_ml1.py \
   --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
   --cache /path/to/cache \
   --output /path/to/ml1_shadow \
-  --fee-profile binance_usdm_vip0 \
+  --fee-profile usd_m_vip0 \
   --entry-slippage-ticks 2 \
   --stop-slippage-ticks 2
 ```
@@ -132,7 +132,7 @@ python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
   --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
   --cache /path/to/cache \
   --output /path/to/ml1_select \
-  --fee-profile binance_usdm_vip0 \
+  --fee-profile usd_m_vip0 \
   --entry-slippage-ticks 2 \
   --stop-slippage-ticks 2 \
   --ml-mode select \
