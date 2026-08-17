@@ -1,0 +1,50 @@
+name: fix-direct-auction-timestamp-units
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - ".github/workflows/fix-direct-auction-timestamp-units.yml"
+
+concurrency:
+  group: fix-direct-auction-timestamp-units
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML_thinking
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Normalize decision timestamps to nanoseconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-direct-auction-policy/direct_state_action_harvest.py")
+          text = path.read_text(encoding="utf-8")
+          old_states = '''        states.insert(0, "decision_time_ns", states.index.view("int64"))\n        states.insert(0, "symbol", symbol)\n        states.insert(0, "state_id", [f"{int(ts.value)}|{symbol}" for ts in states.index])\n'''
+          new_states = '''        decision_time_ns = states.index.as_unit("ns").asi8\n        states.insert(0, "decision_time_ns", decision_time_ns)\n        states.insert(0, "symbol", symbol)\n        states.insert(0, "state_id", [f"{int(ts_ns)}|{symbol}" for ts_ns in decision_time_ns])\n'''
+          old_time = '''        time_ns = frame.index.asi8\n'''
+          new_time = '''        # Binance Vision moved some archives from millisecond to microsecond\n        # epoch timestamps.  Pandas preserves that resolution, while\n        # ``Timestamp.value`` is always nanoseconds.  Normalize once so state\n        # identities and action timestamps cannot silently diverge by 1,000x.\n        time_ns = frame.index.as_unit("ns").asi8\n'''
+          if old_states not in text or old_time not in text:
+              raise RuntimeError("expected timestamp snippets not found")
+          text = text.replace(old_states, new_states).replace(old_time, new_time)
+          path.write_text(text, encoding="utf-8")
+          PY
+          python -m py_compile research/candidate-direct-auction-policy/direct_state_action_harvest.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-direct-auction-policy/direct_state_action_harvest.py
+          git rm -f .github/workflows/fix-direct-auction-timestamp-units.yml
+          git commit -m "Normalize direct policy timestamps across archive units"
+          git push origin HEAD:research_ML_thinking
