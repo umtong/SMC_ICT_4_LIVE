@@ -8,9 +8,10 @@ from pathlib import Path
 import sys
 
 from easychart_re1_complete_bot_policy import COMPLETE_OPPORTUNITY_ROUTER_RULE
-from easychart_re1_complete_bot_policy_v2 import (
-    UNIFIED_CONTINUATION_CONTEXT_RULE,
-    EasyChartRE1CompleteBotPolicyV2Bundle,
+from easychart_re1_complete_bot_policy_v2 import UNIFIED_CONTINUATION_CONTEXT_RULE
+from easychart_re1_ml3_base_policy import (
+    LOCAL_ENGINE_TIMEFRAME_POLICY,
+    EasyChartRE1ML3BasePolicyBundle,
 )
 from execution_re1_ml3 import (
     EasyChartRE1ML3Strategy,
@@ -22,7 +23,7 @@ from ml3_online_features import FEATURE_SCHEMA_VERSION
 import run_mtf_backtest_re1_flow as _flow_runner
 
 
-_flow_runner._runner.EasyChartRE1NaturalBundle = EasyChartRE1CompleteBotPolicyV2Bundle
+_flow_runner._runner.EasyChartRE1NaturalBundle = EasyChartRE1ML3BasePolicyBundle
 _flow_runner._runner.EasyChartRE1Strategy = EasyChartRE1ML3Strategy
 
 
@@ -53,6 +54,7 @@ def _rewrite_metadata(output: Path, model_path: Path, model: ML3MetaModel) -> No
         "ml3_feature_schema_version": FEATURE_SCHEMA_VERSION,
         "complete_policy_rule": COMPLETE_OPPORTUNITY_ROUTER_RULE,
         "unified_continuation_context_rule": UNIFIED_CONTINUATION_CONTEXT_RULE,
+        "local_engine_timeframe_policy": LOCAL_ENGINE_TIMEFRAME_POLICY,
         "ml3_geometry_contract": "MODEL_DOES_NOT_CHANGE_ENTRY_STOP_TARGET_RISK_SIZE_OR_POSITION_MANAGEMENT",
         "ml3_failure_contract": "MISSING_CORRUPT_INCOMPATIBLE_MODEL_ABORTS;MISSING_CAUSAL_FEATURE_REJECTS_PLAN",
     }
