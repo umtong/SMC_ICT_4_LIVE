@@ -33,6 +33,10 @@ OPPORTUNITY_UNIVERSE_POLICY = (
     "OWN_DISTINCT_CAUSAL_OPPORTUNITIES_AND_EMIT_COMPLETE_PREENTRY_PLANS_WITHOUT_"
     "POLICY_PRIORITY"
 )
+IDENTITY_NAMESPACE_POLICY = (
+    "IMPLEMENTATION_VALIDITY:PLAN_SETUP_CAUSAL_EVENT_AND_REFERENCED_ZONE_"
+    "IDENTITIES_ARE_NAMESPACED_BY_MECHANISM_OWNER_BEFORE_AUDIT_AND_LABEL_JOIN"
+)
 
 
 class EasyChartMLOpportunityUniverse:
@@ -77,12 +81,29 @@ class EasyChartMLOpportunityUniverse:
         self._plan_maps: dict[str, dict[str, str]] = {
             owner: {} for owner in self.OWNER_ORDER
         }
+        self._zone_maps: dict[str, tuple[str, str]] = {}
         self._seen_plan_ids: set[str] = set()
         self._plans: list[V5TradePlan] = []
         self._counts: dict[str, int] = {}
 
     def _inc(self, key: str) -> None:
         self._counts[key] = self._counts.get(key, 0) + 1
+
+    @staticmethod
+    def _namespace(owner: str, value: str) -> str:
+        prefix = f"{owner}|"
+        return value if value.startswith(prefix) else f"{prefix}{value}"
+
+    def _namespace_zone(self, owner: str, zone_id: str) -> str:
+        namespaced = self._namespace(owner, zone_id)
+        previous = self._zone_maps.get(namespaced)
+        identity = (owner, zone_id)
+        if previous is not None and previous != identity:
+            raise RuntimeError(
+                f"zone namespace collision {namespaced!r}: {previous!r} != {identity!r}",
+            )
+        self._zone_maps[namespaced] = identity
+        return namespaced
 
     def _namespace_plan(self, owner: str, plan: V5TradePlan) -> V5TradePlan:
         mapping = self._plan_maps[owner]
@@ -99,8 +120,13 @@ class EasyChartMLOpportunityUniverse:
         return replace(
             plan,
             plan_id=plan_id,
-            causal_event_id=f"{owner}|{plan.causal_event_id}",
-            family=f"{owner}|{plan.family}",
+            causal_event_id=self._namespace(owner, plan.causal_event_id),
+            family=self._namespace(owner, plan.family),
+            setup_id=self._namespace(owner, plan.setup_id),
+            higher_zone_id=self._namespace_zone(owner, plan.higher_zone_id),
+            lower_zone_id=self._namespace_zone(owner, plan.lower_zone_id),
+            trigger_zone_id=self._namespace_zone(owner, plan.trigger_zone_id),
+            target_zone_id=self._namespace_zone(owner, plan.target_zone_id),
         )
 
     def _rewrite_trace(self, owner: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -116,12 +142,19 @@ class EasyChartMLOpportunityUniverse:
                 value = row.get(key)
                 if isinstance(value, str) and value in mapping:
                     row[key] = mapping[value]
+            setup = row.get("setup_id")
+            if isinstance(setup, str):
+                row["setup_id"] = self._namespace(owner, setup)
             causal = row.get("causal_event_id")
-            if isinstance(causal, str) and not causal.startswith(f"{owner}|"):
-                row["causal_event_id"] = f"{owner}|{causal}"
+            if isinstance(causal, str):
+                row["causal_event_id"] = self._namespace(owner, causal)
             family = row.get("family")
-            if isinstance(family, str) and not family.startswith(f"{owner}|"):
-                row["family"] = f"{owner}|{family}"
+            if isinstance(family, str):
+                row["family"] = self._namespace(owner, family)
+            for key, value in list(row.items()):
+                if key.endswith("zone_id") and isinstance(value, str):
+                    row[key] = self._namespace_zone(owner, value)
+            row["identity_namespace_policy"] = IDENTITY_NAMESPACE_POLICY
         return rows
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
@@ -151,6 +184,10 @@ class EasyChartMLOpportunityUniverse:
         return output
 
     def find_zone(self, zone_id: str) -> Any | None:
+        mapped = self._zone_maps.get(zone_id)
+        if mapped is not None:
+            owner, raw_zone_id = mapped
+            return self.owners[owner].find_zone(raw_zone_id)
         for owner in self.OWNER_ORDER:
             found = self.owners[owner].find_zone(zone_id)
             if found is not None:
@@ -173,6 +210,7 @@ class EasyChartMLOpportunityUniverse:
         return {
             "ml_opportunity_universe": {
                 "policy": OPPORTUNITY_UNIVERSE_POLICY,
+                "identity_policy": IDENTITY_NAMESPACE_POLICY,
                 "counts": dict(sorted(self._counts.items())),
                 "owners": self.OWNER_ORDER,
                 "owner_priority": "NONE_ALL_COMPLETE_PLANS_ENTER_SHARED_ML_ARBITRATION",
