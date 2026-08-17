@@ -137,6 +137,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         instrument = self.instruments[instrument_id]
         entry_fee = float(self.config.estimated_entry_fee_rate)
         stop_fee = float(self.config.estimated_stop_fee_rate)
+        target_fee = float(getattr(instrument, "maker_fee", entry_fee))
         return estimate_trade_economics(
             side=plan.side,
             entry=plan.entry,
@@ -144,7 +145,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             target=plan.target,
             tick_size=float(instrument.price_increment),
             entry_fee_rate=entry_fee,
-            target_fee_rate=entry_fee,
+            target_fee_rate=target_fee,
             stop_fee_rate=stop_fee,
             funding_rate=float(getattr(self.config, "estimated_funding_rate", 0.0)),
             entry_slippage_ticks=int(self.config.estimated_entry_slippage_ticks),
