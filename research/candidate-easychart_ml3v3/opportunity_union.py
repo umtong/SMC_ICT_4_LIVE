@@ -14,7 +14,10 @@ from typing import Any, Iterable
 import contracts_v5 as _contracts
 from contracts_v5 import V5TradePlan
 from domain import Candle
-from candidate_bundle_ml1 import EasyChartML1CandidateBundle
+from candidate_bundle_ml1 import (
+    EasyChartML1CandidateBundle,
+    ML1MatureDiagonalResponseFamily,
+)
 from easychart_re1_confluence_flip_direct import EasyChartRE1DirectConfluenceBundle
 from easychart_re1_direct_sweep_ob import EasyChartRE1DirectSweepOBBundle
 from easychart_re1_flow_routed import EasyChartRE1FlowRoutedBundle
@@ -45,6 +48,27 @@ for _rule in (
         _contracts.RESEARCH_RULES += (_rule,)
 
 
+class EasyChartML3V3MacroOpportunityBundle(EasyChartRE1MacroTrendOpportunityBundle):
+    """Independent macro hypothesis with explicit 15m/5m/1m diagonal inputs."""
+
+    def __init__(
+        self,
+        symbol: str,
+        tick_size: float,
+        minimum_gross_rr: float = 1.0,
+    ) -> None:
+        super().__init__(symbol, tick_size, minimum_gross_rr)
+        # The aggregate receives 60m context bars, but the mature diagonal
+        # response engine is explicitly a 15m/5m/1m mechanism.  Replace only
+        # that child with the audited timeframe adapter rather than swallowing
+        # an unsupported-timeframe error or discarding the macro hypothesis.
+        self.mature_diagonal_acceptance = ML1MatureDiagonalResponseFamily(
+            symbol,
+            tick_size,
+            minimum_gross_rr,
+        )
+
+
 _GENERATORS: tuple[tuple[str, type[Any]], ...] = (
     ("complete", EasyChartML1CandidateBundle),
     ("human", EasyChartRE1HumanPolicyBundle),
@@ -52,7 +76,7 @@ _GENERATORS: tuple[tuple[str, type[Any]], ...] = (
     ("flow", EasyChartRE1FlowRoutedBundle),
     ("direct_sweep", EasyChartRE1DirectSweepOBBundle),
     ("confluence", EasyChartRE1DirectConfluenceBundle),
-    ("macro", EasyChartRE1MacroTrendOpportunityBundle),
+    ("macro", EasyChartML3V3MacroOpportunityBundle),
 )
 
 
