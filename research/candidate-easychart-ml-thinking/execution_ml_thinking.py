@@ -1,8 +1,8 @@
 """Nautilus execution strategy with causal ML plan arbitration.
 
-Scenario engines still create immutable EasyChart entry/stop/target plans.  The
+Scenario engines still create immutable EasyChart entry/stop/target plans. The
 router only decides which simultaneous plan has the highest positive post-cost
-expectancy.  No position sizing, split exit, dynamic stop or risk rule is added.
+expectancy. No position sizing, split exit, dynamic stop or risk rule is added.
 """
 from __future__ import annotations
 
@@ -58,10 +58,18 @@ class EasyChartMLThinkingStrategy(EasyChartRE1FlowStrategy):
                 output[str(plan_id)] = transition
         return output
 
+    @staticmethod
+    def _side_name(plan: V5TradePlan) -> str:
+        """Normalize the project's numeric Side enum to its logged label."""
+        name = getattr(plan.side, "name", None)
+        if name not in {"LONG", "SHORT"}:
+            raise ValueError(f"unsupported plan side {plan.side!r}")
+        return str(name)
+
     def _economics(self, instrument_id: InstrumentId, plan: V5TradePlan) -> dict[str, float]:
         instrument = self.instruments[instrument_id]
         return economic_geometry(
-            side=plan.side,
+            side=self._side_name(plan),
             entry=float(plan.entry),
             stop=float(plan.stop),
             target=float(plan.target),
@@ -112,6 +120,9 @@ class EasyChartMLThinkingStrategy(EasyChartRE1FlowStrategy):
         for instrument_id, plan, trace in plans:
             economics = self._economics(instrument_id, plan)
             record = live_feature_record(plan, trace=trace, economics=economics)
+            # V5 plan.side is an int Enum while the counterfactual event CSV
+            # logs LONG/SHORT. Keep exactly one semantic representation.
+            record["side"] = self._side_name(plan)
             decision = self.ml_router.decision(record)
             score_values = {
                 "ml_probability_target_first": decision.probability_target_first,
