@@ -31,6 +31,9 @@ def _pop_option(argv: list[str], name: str) -> str:
 model_path = Path(_pop_option(sys.argv, "--ml-model")).resolve()
 os.environ["EASYCHART_ML_SYSTEM_MODEL_PATH"] = str(model_path)
 
+# Patch the shared router namespace before execution_ml_system imports its public
+# objects. This guarantees identical trace semantics in training and execution.
+import robust_router_system  # noqa: E402,F401
 import run_mtf_backtest_re1 as _runner  # noqa: E402
 from execution_ml_system import EasyChartMLSystemStrategy  # noqa: E402
 from mtf_data_re1_flow import add_symbol_mtf_flow_data  # noqa: E402
@@ -38,7 +41,7 @@ from opportunity_universe import (  # noqa: E402
     EasyChartMLOpportunityUniverse,
     OPPORTUNITY_UNIVERSE_POLICY,
 )
-from robust_router import MODEL_VERSION  # noqa: E402
+from robust_router_system import MODEL_VERSION  # noqa: E402
 
 _runner.EasyChartRE1NaturalBundle = EasyChartMLOpportunityUniverse
 _runner.EasyChartRE1Strategy = EasyChartMLSystemStrategy
