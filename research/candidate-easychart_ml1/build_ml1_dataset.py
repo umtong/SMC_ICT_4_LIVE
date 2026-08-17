@@ -27,6 +27,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _timestamp_ns(value: Any) -> int | pd._libs.missing.NAType:
+    """Return UTC nanoseconds regardless of pandas' parsed datetime resolution."""
+
+    if value is None or pd.isna(value):
+        return pd.NA
+    return int(pd.Timestamp(value).value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-output", type=Path, required=True)
@@ -55,7 +63,6 @@ def build_dataset(
     feature_events = feature_events.sort_values(["plan_id", "ts_ns"], kind="mergesort")
     duplicate = feature_events[feature_events["plan_id"].duplicated(keep=False)]
     if not duplicate.empty:
-        # Repeated IDs indicate a real event-identity error, not extra samples.
         sample = duplicate[["plan_id", "ts_ns", "symbol", "family"]].head(30)
         raise RuntimeError("duplicate ml_plan identities:\n" + sample.to_string(index=False))
 
@@ -130,10 +137,21 @@ def build_dataset(
         utc=True,
         errors="coerce",
     )
-    merged["label_end_ns"] = resolution.astype("int64", errors="ignore")
-    # pandas uses int64 minimum for NaT; replace it explicitly.
-    nat_value = pd.NaT.value
-    merged.loc[merged["label_end_ns"] == nat_value, "label_end_ns"] = pd.NA
+    # ``astype('int64')`` follows the Series' internal unit.  Recent pandas can
+    # parse these strings as datetime64[us, UTC], silently yielding microseconds
+    # beside nanosecond event times.  Timestamp.value is always nanoseconds.
+    merged["label_end_ns"] = resolution.map(_timestamp_ns).astype("Int64")
+    resolved_mask = merged["label"].notna()
+    invalid_horizon = resolved_mask & (
+        merged["label_end_ns"].isna()
+        | (merged["label_end_ns"] < merged["event_time_ns"])
+    )
+    if invalid_horizon.any():
+        sample = merged.loc[
+            invalid_horizon,
+            ["plan_id", "event_time_ns", "counterfactual_resolution_time", "label_end_ns"],
+        ].head(20)
+        raise RuntimeError("invalid label horizon units or ordering:\n" + sample.to_string(index=False))
     merged["event_date"] = pd.to_datetime(
         merged["event_time_ns"],
         unit="ns",
@@ -159,6 +177,7 @@ def build_dataset(
         "feature_count": len(FEATURE_NAMES),
         "feature_names": list(FEATURE_NAMES),
         "label_policy": LABEL_POLICY,
+        "label_time_unit": "UTC_UNIX_NANOSECONDS",
         "events_path": str(events_path),
         "events_sha256": _sha256(events_path),
         "counterfactual_path": str(counterfactual_path),
