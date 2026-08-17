@@ -1,0 +1,135 @@
+name: ml1-mechanism-policy-v9
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - "research/candidate-easychart_ml1/mechanism_data_v2.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v2.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v3.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v4.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v5.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v6.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v7.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v9.py"
+      - "research/candidate-easychart_ml1/mechanism_fit_v3.py"
+      - "research/candidate-easychart_ml1/mechanism_fit_v9.py"
+      - "research/candidate-easychart_ml1/.mechanism_v9_dispatch"
+      - ".github/workflows/ml1-mechanism-policy-v9.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ml1-mechanism-policy-v9-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        include:
+          - {period: dev-2022-03, start: "2022-03-01", end: "2022-03-14"}
+          - {period: dev-2022-08, start: "2022-08-10", end: "2022-08-23"}
+          - {period: dev-2023-02, start: "2023-02-01", end: "2023-02-14"}
+          - {period: dev-2023-09, start: "2023-09-10", end: "2023-09-23"}
+          - {period: dev-2024-03, start: "2024-03-01", end: "2024-03-14"}
+          - {period: dev-2024-10, start: "2024-10-10", end: "2024-10-23"}
+          - {period: dev-2025-04, start: "2025-04-01", end: "2025-04-14"}
+          - {period: dev-2025-11, start: "2025-11-01", end: "2025-11-14"}
+          - {period: final-2026-05, start: "2026-05-01", end: "2026-05-31"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install numerical and learning runtime
+        run: python -m pip install --disable-pip-version-check numpy pandas scikit-learn
+      - uses: actions/cache@v4
+        with:
+          path: .cache/mechanism-v9
+          key: mechanism-v9-${{ matrix.period }}
+      - name: Compile causal research modules
+        run: |
+          python -m py_compile research/candidate-easychart_ml1/mechanism_data_v2.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v2.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v3.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v4.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v5.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v6.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v7.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v9.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_fit_v3.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_fit_v9.py
+      - name: Harvest integrated mechanisms including failed acceptance
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python research/candidate-easychart_ml1/mechanism_harvest_v9.py \
+            --period '${{ matrix.period }}' \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --cache '.cache/mechanism-v9/${{ matrix.period }}' \
+            --output 'artifacts/${{ matrix.period }}'
+      - name: Preserve environment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mechanism-v9-${{ matrix.period }}
+          path: artifacts/${{ matrix.period }}
+          if-no-files-found: error
+          retention-days: 30
+
+  fit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    needs: harvest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install numerical and learning runtime
+        run: python -m pip install --disable-pip-version-check numpy pandas scikit-learn
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mechanism-v9-*
+          path: gathered
+      - name: Fit period-held-out policy and route one continuous account
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python research/candidate-easychart_ml1/mechanism_fit_v9.py \
+            --root gathered \
+            --output mechanism-v9-result
+      - name: Preserve full policy evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: mechanism-v9-policy-result
+          path: mechanism-v9-result
+          if-no-files-found: error
+          retention-days: 45
+      - name: Commit compact result to research branch
+        run: |
+          mkdir -p research/candidate-easychart_ml1/results/mechanism_v9
+          cp mechanism-v9-result/RESULT.md research/candidate-easychart_ml1/results/mechanism_v9/RESULT.md
+          cp mechanism-v9-result/summary.json research/candidate-easychart_ml1/results/mechanism_v9/summary.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/candidate-easychart_ml1/results/mechanism_v9
+          if ! git diff --cached --quiet; then
+            git commit -m 'research(ml1): preserve mechanism v9 evidence'
+            git pull --rebase origin research_ML1
+            git push origin HEAD:research_ML1
+          fi
