@@ -1,0 +1,65 @@
+name: ml1-fix-artificial-max-quantity
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-fix-artificial-max-quantity.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Keep fixed 3 percent sizing from being truncated by frozen metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          instruments = Path("research/candidate-easychart-v3/instruments.py")
+          text = instruments.read_text(encoding="utf-8")
+          old = '''        max_quantity=Quantity.from_str(contract.max_quantity),\n'''
+          new = '''        # The frozen research metadata must not turn a structurally valid\n        # fixed-risk trade into a smaller-risk trade or a rejection.  Venue\n        # transport can enforce its live order contract independently.\n        max_quantity=None,\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one frozen max quantity assignment, found {text.count(old)}")
+          instruments.write_text(text.replace(old, new), encoding="utf-8")
+
+          orders = Path("research/candidate-easychart-v3/strategy_orders.py")
+          text = orders.read_text(encoding="utf-8")
+          old = '''        maximum = Decimal(str(instrument.max_quantity)) if instrument.max_quantity is not None else None\n        if floored <= 0 or floored < minimum:\n            return None\n        if maximum is not None and floored > maximum:\n            return None\n        return instrument.make_qty(floored)\n'''
+          new = '''        if floored <= 0 or floored < minimum:\n            return None\n        # Quantity is determined by the frozen structural stop and the 3% NAV\n        # risk budget.  Do not silently cap it or reject the trade through a\n        # static research-instrument maximum.\n        return instrument.make_qty(floored)\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one max-quantity gate, found {text.count(old)}")
+          orders.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart-v3/instruments.py \
+            research/candidate-easychart-v3/strategy_orders.py
+
+          PYTHONPATH=research/candidate-easychart-v3 python - <<'PY'
+          from instruments import make_instrument
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              assert make_instrument(symbol).max_quantity is None
+          PY
+
+      - name: Commit the correction
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add \
+            research/candidate-easychart-v3/instruments.py \
+            research/candidate-easychart-v3/strategy_orders.py
+          git diff --cached --check
+          git commit -m "fix(ml1): preserve full fixed-risk quantity"
+          git push origin HEAD:research_ML1
