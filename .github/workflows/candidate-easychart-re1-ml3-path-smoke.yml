@@ -1,0 +1,66 @@
+name: candidate-easychart-re1-ml3-path-smoke
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-ml3-path-smoke.yml"
+      - "research/candidate-easychart_re1/.ml3_path_smoke_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-ml3-path-smoke
+  cancel-in-progress: true
+
+permissions: {contents: read, packages: read}
+
+jobs:
+  executable-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml3/path-smoke
+      OUT: artifacts/candidate-easychart-re1-ml3/path-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile executable policy and regression tests
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_ml3_base_policy.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_ml3_base.py
+          python -m unittest \
+            research/candidate-easychart_re1/tests/test_re1_horizontal_flip_timeframes.py \
+            -v
+          python - <<'PY'
+          from easychart_re1_ml3_base_policy import EasyChartRE1ML3BasePolicyBundle
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartRE1ML3BasePolicyBundle(symbol, tick)
+              assert bundle.horizontal_flip_response.on_bar(60, object()) == []
+              assert bundle.mature_diagonal_acceptance.on_bar(60, object()) == []
+          PY
+      - name: Run corrected complete policy through Nautilus
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_ml3_base.py \
+            --start 2025-08-10 \
+            --end 2025-08-12 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Preserve runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-path-smoke-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/path-smoke/**
+          if-no-files-found: warn
+          retention-days: 30
