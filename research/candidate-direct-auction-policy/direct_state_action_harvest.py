@@ -500,15 +500,20 @@ def harvest(config: HarvestConfig) -> dict[str, object]:
             if c not in internal_cols and not c.endswith("_pivot_high") and not c.endswith("_pivot_low")
         ]
         states = frame.iloc[positions][feature_cols].copy()
-        states.insert(0, "decision_time_ns", states.index.view("int64"))
+        decision_time_ns = states.index.as_unit("ns").asi8
+        states.insert(0, "decision_time_ns", decision_time_ns)
         states.insert(0, "symbol", symbol)
-        states.insert(0, "state_id", [f"{int(ts.value)}|{symbol}" for ts in states.index])
+        states.insert(0, "state_id", [f"{int(ts_ns)}|{symbol}" for ts_ns in decision_time_ns])
         states.reset_index(drop=True, inplace=True)
         state_rows.append(states)
         high = frame["high"].to_numpy(dtype=float, copy=False)
         low = frame["low"].to_numpy(dtype=float, copy=False)
         close = frame["close"].to_numpy(dtype=float, copy=False)
-        time_ns = frame.index.asi8
+        # Binance Vision moved some archives from millisecond to microsecond
+        # epoch timestamps.  Pandas preserves that resolution, while
+        # ``Timestamp.value`` is always nanoseconds.  Normalize once so state
+        # identities and action timestamps cannot silently diverge by 1,000x.
+        time_ns = frame.index.as_unit("ns").asi8
         for pos in positions:
             state_id = f"{int(time_ns[pos])}|{symbol}"
             action_rows.extend(
