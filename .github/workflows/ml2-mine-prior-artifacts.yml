@@ -36,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python -m pip install --quiet pandas
           python - <<'PY'
           from __future__ import annotations
           import json
@@ -118,6 +119,7 @@ jobs:
                       'positive_rate': float((s > 0).mean()),
                   }
               result['numeric_stats'] = stats
+              # Direct completed-trade summary where an outcome or PnL-like field exists.
               outcome_col = next((lower[k] for k in ('counterfactual_outcome','outcome','exit_reason') if k in lower), None)
               if outcome_col:
                   text = df[outcome_col].fillna('').astype(str).str.upper()
