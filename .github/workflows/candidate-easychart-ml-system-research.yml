@@ -38,6 +38,7 @@ jobs:
             research/candidate-easychart-ml-system/causal_state.py \
             research/candidate-easychart-ml-system/opportunity_universe.py \
             research/candidate-easychart-ml-system/augment_causal_state.py \
+            research/candidate-easychart-ml-system/counterfactual_harvest_ml_system.py \
             research/candidate-easychart-ml-system/robust_router.py \
             research/candidate-easychart-ml-system/robust_router_system.py \
             research/candidate-easychart-ml-system/train_robust_router.py \
@@ -76,16 +77,16 @@ jobs:
       max-parallel: 8
       matrix:
         include:
-          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-21}
-          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-21}
-          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-21}
-          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-21}
-          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-21}
-          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-21}
-          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-21}
-          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-21}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -96,6 +97,7 @@ jobs:
       OUT: artifacts/candidate-easychart-ml-system/harvest/${{ matrix.period }}
       START: ${{ matrix.start }}
       END: ${{ matrix.end }}
+      WARMUP_DAYS: "7"
     steps:
       - uses: actions/checkout@v4
       - name: Generate complete causal opportunity plans
@@ -105,12 +107,12 @@ jobs:
           python research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
             --start "$START" \
             --end "$END" \
-            --warmup-days 14 \
+            --warmup-days "$WARMUP_DAYS" \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
             --output "$OUT" \
             --fee-profile usd_m_vip0
-      - name: Build identity-safe target-before-stop labels
+      - name: Build causal episode traces and target-before-stop labels
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -118,16 +120,19 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from counterfactual_plan_harvest import HarvestConfig
-          from counterfactual_plan_harvest_fixed import harvest_counterfactual_plans
+          from counterfactual_harvest_ml_system import (
+              HarvestConfig,
+              harvest_counterfactual_plans,
+          )
 
           start = date.fromisoformat(os.environ["START"])
           end = date.fromisoformat(os.environ["END"])
+          warmup = int(os.environ["WARMUP_DAYS"])
           summary = harvest_counterfactual_plans(
               HarvestConfig(
                   start=start,
                   end=end,
-                  load_start=start - timedelta(days=14),
+                  load_start=start - timedelta(days=warmup),
                   symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
                   cache=Path(os.environ["CACHE"]),
                   output=Path(os.environ["OUT"]),
@@ -144,7 +149,7 @@ jobs:
           python research/candidate-easychart-ml-system/augment_causal_state.py \
             --start "$START" \
             --end "$END" \
-            --warmup-days 14 \
+            --warmup-days "$WARMUP_DAYS" \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
             --output "$OUT"
@@ -160,7 +165,7 @@ jobs:
   train:
     needs: harvest
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 90
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -212,11 +217,11 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - {period: eval-2026-winter, start: 2026-01-01, end: 2026-02-15}
-          - {period: eval-2026-spring, start: 2026-04-01, end: 2026-05-15}
-          - {period: eval-2026-summer, start: 2026-06-15, end: 2026-07-31}
+          - {period: eval-2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: eval-2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: eval-2026-summer, start: 2026-07-01, end: 2026-07-10}
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -225,6 +230,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       CACHE: .cache/candidate-easychart-ml-system/evaluation/${{ matrix.period }}
       OUT: artifacts/candidate-easychart-ml-system/evaluation/${{ matrix.period }}
+      WARMUP_DAYS: "7"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -239,7 +245,7 @@ jobs:
             --ml-model artifacts/candidate-easychart-ml-system/model/ml_system_model.json \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
-            --warmup-days 14 \
+            --warmup-days "$WARMUP_DAYS" \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
             --output "$OUT" \
