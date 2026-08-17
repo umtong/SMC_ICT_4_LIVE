@@ -1,0 +1,142 @@
+name: candidate-easychart-ml2-diagnostic
+
+on:
+  push:
+    branches: ["research_ML2"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml2-diagnostic.yml"
+      - "research/candidate-easychart_ml2/**"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml2-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-shadow-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml2:research/candidate-easychart_ml1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml2/quick-2025
+      OUT: artifacts/candidate-easychart-ml2/quick-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the reused official ML runtime
+        run: |
+          python -m pip install --disable-pip-version-check -r research/candidate-easychart_ml2/requirements-ml.txt
+
+      - name: Compile and test causal contracts
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_ml2/*.py \
+            research/candidate-easychart_ml2/tests/*.py
+          python -m unittest discover -s research/candidate-easychart_ml2/tests -v
+          python - <<'PY'
+          from candidate_bundle_ml2 import EasyChartML2CandidateBundle
+          from ml1_features import FEATURE_NAMES
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartML2CandidateBundle(symbol, tick)
+              assert bundle.mature_diagonal_acceptance.SUPPORTED_TIMEFRAMES == frozenset((15, 5, 1))
+          assert len(FEATURE_NAMES) == 118
+          assert not any("symbol" in name.lower() for name in FEATURE_NAMES)
+          PY
+
+      - name: Run one four-symbol continuous shadow account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
+          python research/candidate-easychart_ml2/run_mtf_backtest_ml2.py \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --ml-mode shadow \
+            2>&1 | tee "$OUT/backtest.log"
+
+      - name: Label frozen plans after strategy execution
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/harvest_ml1.py \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+
+      - name: Build the reused causal dataset
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/build_ml1_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+
+      - name: Inspect candidate and failure geometry
+        run: |
+          python - <<'PY' 2>&1 | tee "$OUT/diagnostic_summary.log"
+          import csv
+          import json
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          out = Path("artifacts/candidate-easychart-ml2/quick-2025")
+          rows = list(csv.DictReader((out / "ml1_dataset.csv").open(encoding="utf-8")))
+          resolved = [row for row in rows if row.get("label", "") not in ("", "nan", "None")]
+          by_family = defaultdict(lambda: {"rows": 0, "wins": 0, "net_r": 0.0})
+          for row in resolved:
+              item = by_family[row.get("family", "")]
+              item["rows"] += 1
+              item["wins"] += int(float(row["label"]) > 0.5)
+              item["net_r"] += float(row["counterfactual_net_r_conservative"])
+          for item in by_family.values():
+              item["target_first_rate"] = item["wins"] / item["rows"]
+              item["mean_conservative_net_r"] = item["net_r"] / item["rows"]
+          summary = {
+              "dataset_rows": len(rows),
+              "resolved_rows": len(resolved),
+              "target_first_rows": sum(int(float(row["label"]) > 0.5) for row in resolved),
+              "families": dict(Counter(row.get("family", "") for row in resolved)),
+              "symbols": dict(Counter(row.get("symbol", "") for row in resolved)),
+              "outcomes": dict(Counter(row.get("counterfactual_outcome", "") for row in resolved)),
+              "baseline_eligible": dict(Counter(row.get("ml_baseline_eligible", "") for row in resolved)),
+              "family_diagnostics": dict(sorted(by_family.items())),
+          }
+          (out / "ml2_quick_diagnostic_summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          if not rows:
+              raise SystemExit("ML2 emitted no candidate rows; inspect candidate/execution integration")
+          PY
+
+      - name: Preserve plans, labels and continuous account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml2-quick-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml2/quick-2025/
+          if-no-files-found: warn
+          retention-days: 30
