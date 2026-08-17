@@ -39,7 +39,21 @@ jobs:
           python -m py_compile \
             research/candidate-easychart_ml3v3/*.py \
             research/candidate-easychart_ml3v3/tests/*.py
-          pytest -q research/candidate-easychart_ml3v3/tests
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+
+          total = 0
+          for path in sorted(Path("research/candidate-easychart_ml3v3/tests").glob("test_*.py")):
+              namespace = runpy.run_path(str(path))
+              for name, value in sorted(namespace.items()):
+                  if name.startswith("test_") and callable(value):
+                      value()
+                      total += 1
+          print(f"executed {total} ML3v3 contract tests")
+          if total < 5:
+              raise SystemExit("too few ML3v3 tests were discovered")
+          PY
       - name: Exercise union, feature harvest and post-run labels
         run: |
           set -euo pipefail
