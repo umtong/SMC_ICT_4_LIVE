@@ -1,0 +1,55 @@
+name: bootstrap-auction-event-v2
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - ".github/workflows/bootstrap-auction-event-v2.yml"
+      - ".bootstrap/auction_event_v2_sources.b64.part*"
+
+concurrency:
+  group: bootstrap-auction-event-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML_thinking
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Materialize auction event policy v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/auction_event_v2_sources.b64.part* | base64 --decode > /tmp/auction_event_v2_sources.tgz
+          echo "90d9852c7527b171cd1897f98423238f3a5c0f80d0e3d036428cea29a5b16656  /tmp/auction_event_v2_sources.tgz" | sha256sum --check --strict
+          target="research/candidate-auction-event-v2"
+          rm -rf "$target"
+          mkdir -p "$target"
+          tar -xzf /tmp/auction_event_v2_sources.tgz -C "$target"
+          rm -rf "$target/__pycache__"
+          python -m py_compile \
+            "$target/event_episode_harvest.py" \
+            "$target/metrics_state.py" \
+            "$target/run_event_episode_harvest.py" \
+            "$target/self_check_event_v2.py"
+          PYTHONPATH="$target:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3" \
+            python "$target/self_check_event_v2.py"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$target"
+          git rm -f .bootstrap/auction_event_v2_sources.b64.part* .github/workflows/bootstrap-auction-event-v2.yml
+          git commit -m "Build auction event policy v2"
+          git push origin HEAD:research_ML_thinking
