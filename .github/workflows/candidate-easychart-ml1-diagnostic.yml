@@ -32,10 +32,13 @@ jobs:
 
       - name: Compile and exercise the causal ML runtime
         run: |
-          python -m py_compile \
-            research/candidate-easychart_ml1/*.py \
-            research/candidate-easychart_ml1/tests/*.py
-          python - <<'PY'
+          mkdir -p "$OUT"
+          set -o pipefail
+          {
+            python -m py_compile \
+              research/candidate-easychart_ml1/*.py \
+              research/candidate-easychart_ml1/tests/*.py
+            python - <<'PY'
           from candidate_bundle_ml1 import EasyChartML1CandidateBundle
           from ml1_features import FEATURE_NAMES
           from ml1_model import PortableBinaryModel, estimate_trade_economics
@@ -77,10 +80,12 @@ jobs:
           for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
               EasyChartML1CandidateBundle(symbol, tick)
           PY
+          } 2>&1 | tee "$OUT/compile_runtime.log"
 
       - name: Run one four-symbol continuous shadow account
         run: |
           mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
           python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
             --start 2025-08-10 \
             --end 2025-08-20 \
@@ -91,10 +96,12 @@ jobs:
             --fee-profile usd_m_vip0 \
             --entry-slippage-ticks 2 \
             --stop-slippage-ticks 2 \
-            --ml-mode shadow
+            --ml-mode shadow \
+            2>&1 | tee "$OUT/backtest.log"
 
       - name: Label frozen plans only after strategy execution
         run: |
+          set -o pipefail
           python research/candidate-easychart_ml1/harvest_ml1.py \
             --start 2025-08-10 \
             --end 2025-08-20 \
@@ -104,16 +111,19 @@ jobs:
             --output "$OUT" \
             --fee-profile usd_m_vip0 \
             --entry-slippage-ticks 2 \
-            --stop-slippage-ticks 2
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
 
       - name: Build the causal candidate dataset
         run: |
+          set -o pipefail
           python research/candidate-easychart_ml1/build_ml1_dataset.py \
-            --run-output "$OUT"
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
 
       - name: Summarize the failure geometry rather than a pass gate
         run: |
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee "$OUT/diagnostic_summary.log"
           import csv
           import json
           from collections import Counter, defaultdict
