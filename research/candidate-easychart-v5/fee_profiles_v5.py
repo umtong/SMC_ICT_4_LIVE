@@ -57,7 +57,10 @@ def make_instrument_with_fee_profile(symbol: str, profile: FeeProfile) -> Crypto
         price_increment=Price.from_str(contract.price_increment),
         size_precision=_precision(contract.size_increment),
         size_increment=Quantity.from_str(contract.size_increment),
-        max_quantity=Quantity.from_str(contract.max_quantity),
+        # Fee-profile instruments are still research instruments. A frozen
+        # metadata maximum must not shrink or reject the quantity required by
+        # the structural stop and fixed 3% NAV risk budget.
+        max_quantity=None,
         min_quantity=Quantity.from_str(contract.min_quantity),
         max_notional=None,
         min_notional=Money(Decimal(contract.min_notional), usdt),
