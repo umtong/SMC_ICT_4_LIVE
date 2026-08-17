@@ -1,0 +1,149 @@
+name: ml1-patch-auction-response
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-patch-auction-response.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - name: Repair event clock and first distinct retest lifecycle
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-easychart_ml1/auction_response_study.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              '    bars = aggregate(frame, timeframe)\n    candidates = [p for p in pivots if p.timeframe == timeframe]\n',
+              '    bars = aggregate(frame, timeframe)\n'
+              '    # All mature levels interact on the completed five-minute decision clock.\n'
+              '    interaction_bars = aggregate(frame, 5)\n'
+              '    candidates = [p for p in pivots if p.timeframe == timeframe]\n',
+          )
+          text = text.replace(
+              '        interaction = _first_interaction(\n            bars,\n',
+              '        interaction = _first_interaction(\n            interaction_bars,\n',
+          )
+          text = text.replace(
+              '    log_returns = np.log(minute.close.astype(float).clip(lower=1e-12)).diff().fillna(\n'
+              '        math.log(max(end_price, 1e-12) / max(start_price, 1e-12))\n'
+              '    )\n',
+              '    log_returns = np.log(minute.close.astype(float).clip(lower=1e-12)).diff().fillna(0.0)\n',
+          )
+          old = '''def _find_retest(
+              frame: pd.DataFrame,
+              level: DefenseLevel,
+              state: str,
+              side: int,
+              decision_ts: pd.Timestamp,
+              event_low: float,
+              event_high: float,
+          ) -> int | None:
+              idx = frame.index
+              start = idx.searchsorted(decision_ts + pd.Timedelta(minutes=1), side="left")
+              end = min(start + (121 if state == "ACCEPTED_BREAK" else 61), len(frame) - 1)
+              for i in range(start, end):
+                  bar = frame.iloc[i]
+                  if state == "ACCEPTED_BREAK":
+                      if side > 0:
+                          invalid = float(bar.close) < level.lower
+                          touched = float(bar.low) <= level.upper and float(bar.close) > level.upper
+                      else:
+                          invalid = float(bar.close) > level.upper
+                          touched = float(bar.high) >= level.lower and float(bar.close) < level.lower
+                  else:
+                      if side > 0:
+                          invalid = float(bar.low) <= event_low - TICKS[str(bar.symbol)] if "symbol" in bar else float(bar.low) <= event_low
+                          touched = float(bar.low) <= level.upper and float(bar.close) > level.upper
+                      else:
+                          invalid = float(bar.high) >= event_high + TICKS[str(bar.symbol)] if "symbol" in bar else float(bar.high) >= event_high
+                          touched = float(bar.high) >= level.lower and float(bar.close) < level.lower
+                  if invalid:
+                      return None
+                  if touched:
+                      return i
+              return None
+          '''
+          new = '''def _find_retest(
+              frame: pd.DataFrame,
+              level: DefenseLevel,
+              state: str,
+              side: int,
+              decision_ts: pd.Timestamp,
+              event_low: float,
+              event_high: float,
+              tick: float,
+          ) -> int | None:
+              """Return the first distinct retest after completed detachment."""
+              idx = frame.index
+              start = idx.searchsorted(decision_ts + pd.Timedelta(minutes=1), side="left")
+              end = min(start + (121 if state == "ACCEPTED_BREAK" else 61), len(frame) - 1)
+              detached = False
+              for i in range(start, end):
+                  bar = frame.iloc[i]
+                  if state == "ACCEPTED_BREAK":
+                      invalid = float(bar.close) < level.lower if side > 0 else float(bar.close) > level.upper
+                  else:
+                      invalid = float(bar.low) <= event_low - tick if side > 0 else float(bar.high) >= event_high + tick
+                  if invalid:
+                      return None
+                  if not detached:
+                      detached = float(bar.low) > level.upper if side > 0 else float(bar.high) < level.lower
+                      continue
+                  touched = (
+                      float(bar.low) <= level.upper and float(bar.close) > level.upper
+                      if side > 0
+                      else float(bar.high) >= level.lower and float(bar.close) < level.lower
+                  )
+                  if touched:
+                      return i
+              return None
+          '''
+          if old not in text:
+              raise RuntimeError("expected original _find_retest block not found")
+          text = text.replace(old, new)
+          text = text.replace(
+              '    retest_i = _find_retest(frame, level, state, side, decision_base_ts, event_low, event_high)\n',
+              '    tick = TICKS[symbol]\n'
+              '    retest_i = _find_retest(\n'
+              '        frame, level, state, side, decision_base_ts, event_low, event_high, tick\n'
+              '    )\n',
+          )
+          text = text.replace(
+              '    entry = float(frame.iloc[entry_i].open)\n    tick = TICKS[symbol]\n',
+              '    entry = float(frame.iloc[entry_i].open)\n',
+          )
+          text = text.replace(
+              '    row.update(snapshot_features(frame, decision_ts, side))\n'
+              '    row.update(_pre_features(frame, bars5, interaction_ts))\n',
+              '    row.update(snapshot_features(frame, decision_ts, side))\n'
+              '    decision_bar = frame.loc[decision_ts]\n'
+              '    row["decision_close_location_aligned"] = (\n'
+              '        float(decision_bar.close_location) if side > 0\n'
+              '        else 1.0 - float(decision_bar.close_location)\n'
+              '    )\n'
+              '    row.update(_pre_features(frame, bars5, interaction_ts))\n',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
+          printf '%s\n' 'install-v2' > research/candidate-easychart_ml1/.auction_response_dispatch
+          python -m py_compile research/candidate-easychart_ml1/auction_response_study.py
+      - name: Commit repaired study
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add research/candidate-easychart_ml1/auction_response_study.py \
+                  research/candidate-easychart_ml1/.auction_response_dispatch
+          git diff --cached --check
+          git commit -m "research(ml1): repair auction response event lifecycle"
+          git push origin HEAD:research_ML1
