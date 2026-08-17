@@ -69,9 +69,24 @@ class TradeEconomics:
     estimated_win_cost_r: float
     estimated_loss_cost_r: float
 
+    @property
+    def fixed_risk_win_r(self) -> float:
+        """Winning return per one stopped-trade account risk unit."""
+
+        stopped_loss = abs(self.loss_net_r)
+        return self.win_net_r / stopped_loss if stopped_loss > _EPS else -math.inf
+
     def expected_net_r(self, target_probability: float) -> float:
+        """Expected return in fixed account-risk units.
+
+        Position size is chosen so the configured stop outcome loses one risk
+        budget (3% NAV in this project).  Raw price-distance R can be distorted
+        by fees and slippage when stops are tight, so candidate arbitration must
+        use the same normalization as the actual account.
+        """
+
         p = _clip(float(target_probability), 0.0, 1.0)
-        return p * self.win_net_r + (1.0 - p) * self.loss_net_r
+        return p * self.fixed_risk_win_r - (1.0 - p)
 
 
 @dataclass(frozen=True, slots=True)

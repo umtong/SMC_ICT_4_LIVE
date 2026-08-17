@@ -96,22 +96,22 @@ def _selection_metrics(frame: pd.DataFrame, probabilities: np.ndarray) -> dict[s
 
     win_r = pd.to_numeric(frame["ml_win_net_r"], errors="coerce").to_numpy(float)
     loss_r = pd.to_numeric(frame["ml_loss_net_r"], errors="coerce").to_numpy(float)
-    realized = pd.to_numeric(
-        frame["counterfactual_net_r_conservative"],
-        errors="coerce",
-    ).to_numpy(float)
-    expected = probabilities * win_r + (1.0 - probabilities) * loss_r
+    labels_all = frame["label"].to_numpy(float)
+    stopped_loss = np.maximum(np.abs(loss_r), 1e-12)
+    fixed_risk_win = win_r / stopped_loss
+    expected = probabilities * fixed_risk_win - (1.0 - probabilities)
+    realized_fixed_r = np.where(labels_all > 0.5, fixed_risk_win, -1.0)
     selected = (probabilities > 0.5) & (expected > 0.0)
-    chosen = realized[selected]
-    labels = frame["label"].to_numpy(float)[selected]
+    chosen = realized_fixed_r[selected]
+    labels = labels_all[selected]
     calendar_days = max(1, frame["event_date"].nunique())
     return {
         "policy": "target_probability_above_half_and_post_cost_expected_r_positive",
         "selected": int(selected.sum()),
         "coverage": float(selected.mean()),
         "target_first_rate": None if not selected.any() else float(labels.mean()),
-        "sum_observed_counterfactual_net_r": float(chosen.sum()) if len(chosen) else 0.0,
-        "mean_observed_counterfactual_net_r": None if not len(chosen) else float(chosen.mean()),
+        "sum_observed_fixed_risk_r": float(chosen.sum()) if len(chosen) else 0.0,
+        "mean_observed_fixed_risk_r": None if not len(chosen) else float(chosen.mean()),
         "selected_per_calendar_day": float(selected.sum() / calendar_days),
         "mean_model_target_probability": None
         if not selected.any()
