@@ -1,0 +1,39 @@
+name: patch-ml1-runtime
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/patch-ml1-runtime.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - name: Apply the compatibility fix and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-easychart_ml1/execution_ml1.py")
+          source = path.read_text(encoding="utf-8")
+          old = 'funding_rate=float(self.config.estimated_funding_rate),'
+          new = 'funding_rate=float(getattr(self.config, "estimated_funding_rate", 0.0)),'
+          if old not in source and new not in source:
+              raise SystemExit("expected ML1 funding expression not found")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
+          rm -f .github/workflows/patch-ml1-runtime.yml
+          git config user.name 'OpenAI Research Automation'
+          git config user.email 'research-automation@users.noreply.github.com'
+          git add -A
+          git commit -m 'research: default absent funding estimate to zero'
+          git push origin HEAD:research_ML1
