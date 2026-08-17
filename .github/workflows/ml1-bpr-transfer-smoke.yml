@@ -1,0 +1,66 @@
+name: ml1-bpr-transfer-smoke
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - "research/candidate-easychart_ml1/bpr_transfer_study.py"
+      - "research/candidate-easychart_ml1/liquidity_event_graph.py"
+      - "research/candidate-easychart_ml1/data_funding.py"
+      - "research/candidate-easychart_ml1/data_spot_flow.py"
+      - "research/candidate-easychart_ml1/spot_perp_context.py"
+      - ".github/workflows/ml1-bpr-transfer-smoke.yml"
+      - "research/candidate-easychart_ml1/.bpr_transfer_smoke_dispatch"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ml1-bpr-transfer-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-v3:research/candidate-easychart_re1:research/candidate-easychart_ml1
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/ml1-bpr-transfer-smoke
+      OUT: artifacts/ml1-bpr-transfer-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal BPR modules
+        run: |
+          python -m py_compile research/candidate-easychart_ml1/data_funding.py
+          python -m py_compile research/candidate-easychart_ml1/data_spot_flow.py
+          python -m py_compile research/candidate-easychart_ml1/spot_perp_context.py
+          python -m py_compile research/candidate-easychart_ml1/liquidity_event_graph.py
+          python -m py_compile research/candidate-easychart_ml1/bpr_transfer_study.py
+      - name: Run complete narrative smoke
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml1/bpr_transfer_study.py \
+            --period smoke-jun-2025 \
+            --start 2025-06-01 \
+            --end 2025-06-03 \
+            --warmup-days 14 \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Print narrative summary
+        if: always()
+        run: |
+          if [ -f "$OUT/summary.json" ]; then cat "$OUT/summary.json"; fi
+      - name: Preserve smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml1-bpr-transfer-smoke-${{ github.sha }}
+          path: artifacts/ml1-bpr-transfer-smoke/**
+          if-no-files-found: warn
+          retention-days: 14
