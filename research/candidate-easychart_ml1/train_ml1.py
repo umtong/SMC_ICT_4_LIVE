@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Train, calibrate and export the causal EasyChart ML1 meta-selector.
+"""Train, calibrate and export the causal EasyChart ML1 probability model.
 
-The model learns P(frozen target before frozen stop).  Chronological training,
-calibration and test segments are disjoint; training/calibration rows whose
-future label interval crosses the next segment are purged.  The runtime artifact
-contains no sklearn dependency and no raw symbol feature.
+The model learns P(frozen target before frozen stop).  Training, probability
+calibration and test periods are chronological and disjoint; rows whose future
+label interval crosses the next split are purged.  Runtime selection uses the
+candidate's own post-cost break-even expectancy only.  Training does not search
+for an extra confidence floor, probability edge, target win rate or coverage
+quota.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -27,7 +28,8 @@ from ml1_model import MODEL_SCHEMA, PortableBinaryModel
 
 TRAINING_POLICY = (
     "CHRONOLOGICAL_TRAIN_CALIBRATION_TEST; PURGE_LABEL_INTERVALS_CROSSING_NEXT_SPLIT; "
-    "PLATT_CALIBRATION_ON_DISJOINT_CALIBRATION_DATA; SYMBOL_ID_NOT_A_FEATURE"
+    "PLATT_CALIBRATION_ON_DISJOINT_CALIBRATION_DATA; SYMBOL_ID_NOT_A_FEATURE; "
+    "NO_TUNED_CONFIDENCE_OR_COVERAGE_GATE"
 )
 
 
@@ -86,76 +88,35 @@ def _prediction_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _selection_metrics(
-    frame: pd.DataFrame,
-    probabilities: np.ndarray,
-    *,
-    min_probability: float,
-    probability_edge: float,
-    min_expected_net_r: float,
-) -> dict[str, Any]:
+def _selection_metrics(frame: pd.DataFrame, probabilities: np.ndarray) -> dict[str, Any]:
     win_r = pd.to_numeric(frame["ml_win_net_r"], errors="coerce").to_numpy(float)
     loss_r = pd.to_numeric(frame["ml_loss_net_r"], errors="coerce").to_numpy(float)
-    break_even = pd.to_numeric(frame["ml_break_even_probability"], errors="coerce").to_numpy(float)
-    realized = pd.to_numeric(frame["counterfactual_net_r_conservative"], errors="coerce").to_numpy(float)
-    required = np.maximum(min_probability, break_even + probability_edge)
+    break_even = pd.to_numeric(
+        frame["ml_break_even_probability"],
+        errors="coerce",
+    ).to_numpy(float)
+    realized = pd.to_numeric(
+        frame["counterfactual_net_r_conservative"],
+        errors="coerce",
+    ).to_numpy(float)
     expected = probabilities * win_r + (1.0 - probabilities) * loss_r
-    selected = (probabilities >= required) & (expected >= min_expected_net_r)
+    selected = expected > 0.0
     chosen = realized[selected]
     labels = frame["label"].to_numpy(float)[selected]
     calendar_days = max(1, frame["event_date"].nunique())
     return {
+        "policy": "positive_post_cost_expected_r",
         "selected": int(selected.sum()),
         "coverage": float(selected.mean()),
         "target_first_rate": None if not selected.any() else float(labels.mean()),
-        "sum_conservative_net_r": float(chosen.sum()) if len(chosen) else 0.0,
-        "mean_conservative_net_r": None if not len(chosen) else float(chosen.mean()),
+        "sum_observed_counterfactual_net_r": float(chosen.sum()) if len(chosen) else 0.0,
+        "mean_observed_counterfactual_net_r": None if not len(chosen) else float(chosen.mean()),
         "selected_per_calendar_day": float(selected.sum() / calendar_days),
         "mean_model_expected_net_r": None if not selected.any() else float(expected[selected].mean()),
-        "min_probability": min_probability,
-        "probability_edge": probability_edge,
-        "min_expected_net_r": min_expected_net_r,
+        "mean_probability_minus_break_even": None
+        if not selected.any()
+        else float((probabilities[selected] - break_even[selected]).mean()),
     }
-
-
-def _choose_decision_policy(
-    calibration: pd.DataFrame,
-    probabilities: np.ndarray,
-) -> tuple[dict[str, float], list[dict[str, Any]]]:
-    minimum_selected = max(20, int(math.ceil(len(calibration) * 0.05)))
-    frontier: list[dict[str, Any]] = []
-    for floor in (0.50, 0.55, 0.60, 0.65, 0.70, 0.75):
-        for edge in (0.00, 0.025, 0.05, 0.075, 0.10, 0.15, 0.20):
-            metrics = _selection_metrics(
-                calibration,
-                probabilities,
-                min_probability=floor,
-                probability_edge=edge,
-                min_expected_net_r=0.0,
-            )
-            metrics["eligible_for_choice"] = metrics["selected"] >= minimum_selected
-            frontier.append(metrics)
-    eligible = [item for item in frontier if item["eligible_for_choice"]]
-    if not eligible:
-        # A model with no meaningful selectable calibration sample should not be
-        # smuggled into select mode as a convincing artifact.
-        raise RuntimeError(
-            f"no calibration decision policy selected at least {minimum_selected} plans",
-        )
-    chosen = max(
-        eligible,
-        key=lambda item: (
-            item["sum_conservative_net_r"],
-            -abs((item["target_first_rate"] or 0.0) - 0.75),
-            item["selected"],
-        ),
-    )
-    policy = {
-        "min_probability": float(chosen["min_probability"]),
-        "probability_edge": float(chosen["probability_edge"]),
-        "min_expected_net_r": 0.0,
-    }
-    return policy, frontier
 
 
 def _export_tree(estimator: Any, positive_index: int) -> dict[str, Any]:
@@ -197,7 +158,10 @@ def _split_and_purge(
     calibration_fraction: float,
     embargo_minutes: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    ordered = frame.sort_values(["event_time_ns", "symbol", "plan_id"], kind="mergesort").copy()
+    ordered = frame.sort_values(
+        ["event_time_ns", "symbol", "plan_id"],
+        kind="mergesort",
+    ).copy()
     unique_times = np.sort(ordered["event_time_ns"].unique())
     if len(unique_times) < 10:
         raise RuntimeError("dataset has too few distinct event times")
@@ -325,6 +289,7 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
                 .fillna(frame_default)
                 .clip(lower=lower, upper=upper)
             )
+
     x_train = train_frame[feature_columns].to_numpy(float)
     y_train = train_frame["label"].to_numpy(int)
     bucket_count = train_frame.groupby("event_time_ns")["plan_id"].transform("count").to_numpy(float)
@@ -347,26 +312,24 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         calibration_frame[feature_columns].to_numpy(float),
     )[:, positive_index]
     calibrator = LogisticRegression(C=1.0, solver="lbfgs", random_state=args.random_state)
-    calibrator.fit(_logit(raw_calibration).reshape(-1, 1), calibration_frame["label"].to_numpy(int))
+    calibrator.fit(
+        _logit(raw_calibration).reshape(-1, 1),
+        calibration_frame["label"].to_numpy(int),
+    )
     coefficient = float(calibrator.coef_[0, 0])
     intercept = float(calibrator.intercept_[0])
     calibrated_calibration = _calibrate(raw_calibration, coefficient, intercept)
-    decision_policy, frontier = _choose_decision_policy(
-        calibration_frame,
-        calibrated_calibration,
-    )
 
     raw_train = classifier.predict_proba(x_train)[:, positive_index]
-    raw_test = classifier.predict_proba(test_frame[feature_columns].to_numpy(float))[:, positive_index]
+    raw_test = classifier.predict_proba(
+        test_frame[feature_columns].to_numpy(float),
+    )[:, positive_index]
     calibrated_train = _calibrate(raw_train, coefficient, intercept)
     calibrated_test = _calibrate(raw_test, coefficient, intercept)
 
     importance = sorted(
         (
-            {
-                "feature": name,
-                "importance": float(value),
-            }
+            {"feature": name, "importance": float(value)}
             for name, value in zip(FEATURE_NAMES, classifier.feature_importances_, strict=True)
         ),
         key=lambda item: item["importance"],
@@ -392,7 +355,7 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
             "coefficient": coefficient,
             "intercept": intercept,
         },
-        "decision": decision_policy,
+        "decision": {"kind": "positive_post_cost_expectancy"},
         "training": {
             "policy": TRAINING_POLICY,
             "dataset": str(args.dataset),
@@ -453,25 +416,16 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
             ),
             "test": _prediction_metrics(test_frame["label"].to_numpy(int), calibrated_test),
         },
-        "decision_policy_selected_on_calibration": decision_policy,
         "selection": {
-            "calibration": _selection_metrics(
-                calibration_frame,
-                calibrated_calibration,
-                **decision_policy,
-            ),
-            "test": _selection_metrics(
-                test_frame,
-                calibrated_test,
-                **decision_policy,
-            ),
+            "calibration": _selection_metrics(calibration_frame, calibrated_calibration),
+            "test": _selection_metrics(test_frame, calibrated_test),
         },
-        "decision_frontier_calibration": frontier,
         "top_feature_importance": importance[:30],
         "portable_probability_max_abs_error": max_parity_error,
         "notes": (
-            "Counterfactual plan selection metrics are diagnostic, not the final continuous-account result. "
-            "Run select mode through NautilusTrader for actual one-slot NAV arbitration."
+            "Selection diagnostics use positive model post-cost expectancy without a tuned "
+            "confidence margin. Final performance still comes from the four-symbol, one-slot "
+            "continuous NautilusTrader account."
         ),
     }
     return model, report

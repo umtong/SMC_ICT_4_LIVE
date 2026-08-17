@@ -1,10 +1,10 @@
-"""Portable ML selector and post-cost trade economics for EasyChart ML1.
+"""Portable ML probability model and trade economics for EasyChart ML1.
 
-The live/backtest strategy must not depend on scikit-learn.  Training exports a
-small JSON forest and this module evaluates it using only the Python standard
-library.  The deterministic EasyChart engines still own the causal setup,
-entry, stop and target.  ML1 estimates only the conditional probability that
-the frozen target is reached before the frozen stop and may abstain.
+Training exports a small JSON forest, and live/backtest inference uses only the
+Python standard library.  EasyChart remains responsible for the causal setup and
+for the frozen entry, stop and target.  ML estimates P(target before stop).
+The only runtime quality boundary is the candidate's own post-cost break-even
+expectancy; there is no extra confidence margin, coverage target or risk layer.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _logit(probability: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class TradeEconomics:
-    """Target/stop outcomes in R after conservative fees and slippage."""
+    """Frozen target/stop outcomes in R under configured execution costs."""
 
     planned_risk: float
     planned_reward: float
@@ -92,11 +92,10 @@ def estimate_trade_economics(
     target_slippage_ticks: int = 0,
     stop_slippage_ticks: int = 0,
 ) -> TradeEconomics:
-    """Estimate both frozen exits in planned-risk units.
+    """Estimate the two frozen outcomes in planned-risk units.
 
-    Slippage is adverse on every leg.  Funding is charged conservatively once on
-    entry notional for both outcomes; the model is therefore not rewarded for a
-    trade whose apparent edge is only smaller execution assumptions.
+    Costs are the explicit assumptions supplied by the runner.  This function
+    does not add a confidence buffer, risk multiplier or position-size haircut.
     """
 
     entry = _finite(entry)
@@ -110,8 +109,7 @@ def estimate_trade_economics(
     if entry <= 0.0 or risk <= 0.0 or reward <= 0.0:
         raise ValueError("entry, stop and target must define positive geometry")
 
-    side_text = getattr(side, "name", side)
-    side_text = str(side_text).upper()
+    side_text = str(getattr(side, "name", side)).upper()
     if side_text.endswith("LONG") or side_text == "BUY":
         sign = 1.0
         if not (stop < entry < target):
@@ -129,8 +127,6 @@ def estimate_trade_economics(
     if any(_finite(item) < 0.0 for item in rates):
         raise ValueError("fee and funding rates cannot be negative")
 
-    # Market entry: buy fills higher, sell fills lower.  Exit slippage has the
-    # opposite price sign because it is an order in the opposite direction.
     entry_fill = entry + sign * int(entry_slippage_ticks) * tick
     target_fill = target - sign * int(target_slippage_ticks) * tick
     stop_fill = stop - sign * int(stop_slippage_ticks) * tick
@@ -192,8 +188,7 @@ class PortableBinaryModel:
     @classmethod
     def load(cls, path: str | Path) -> "PortableBinaryModel":
         model_path = Path(path)
-        document = json.loads(model_path.read_text(encoding="utf-8"))
-        return cls(document)
+        return cls(json.loads(model_path.read_text(encoding="utf-8")))
 
     @staticmethod
     def stable_id(document: Mapping[str, Any]) -> str:
@@ -234,19 +229,17 @@ class PortableBinaryModel:
                 if left < 0 or right < 0 or left >= len(nodes) or right >= len(nodes):
                     raise ValueError(f"invalid child index in tree {tree_index} node {node_index}")
 
-    def assert_selectable(self, *, allow_shadow_model: bool = False) -> None:
-        if self.status == "trained":
-            return
-        if allow_shadow_model:
-            return
-        raise RuntimeError(
-            f"model {self.model_id!r} has status {self.status!r}; select mode requires a trained model",
-        )
+    def assert_selectable(self) -> None:
+        if self.status != "trained":
+            raise RuntimeError(
+                f"model {self.model_id!r} has status {self.status!r}; select mode requires a trained model",
+            )
 
     def vector(self, features: Mapping[str, Any]) -> tuple[float, ...]:
         values: list[float] = []
         for name in self.feature_names:
-            value = _finite(features.get(name, self.defaults.get(name, 0.0)), self.defaults.get(name, 0.0))
+            default = self.defaults.get(name, 0.0)
+            value = _finite(features.get(name, default), default)
             lower, upper = self.clip_ranges.get(name, (-1e6, 1e6))
             values.append(_clip(value, lower, upper))
         return tuple(values)
@@ -255,8 +248,6 @@ class PortableBinaryModel:
     def _tree_probability(tree: Mapping[str, Any], vector: Sequence[float]) -> float:
         nodes = tree["nodes"]
         index = 0
-        # A malformed cycle should never be exported, but the bound converts it
-        # into a loud failure rather than an infinite live loop.
         for _ in range(len(nodes) + 1):
             node = nodes[index]
             probability = node.get("probability")
@@ -295,28 +286,19 @@ class PortableBinaryModel:
         self,
         features: Mapping[str, Any],
         economics: TradeEconomics,
-        *,
-        min_probability: float | None = None,
-        min_expected_net_r: float | None = None,
-        probability_edge: float | None = None,
     ) -> ModelDecision:
+        """Use only the candidate's own post-cost break-even boundary.
+
+        No fixed probability floor, probability edge, confidence sizing or
+        calibration-coverage gate is applied.  Fixed 3% NAV risk stays entirely
+        in the inherited execution layer.
+        """
+
         tree_probabilities = self.raw_tree_probabilities(features)
         raw = sum(tree_probabilities) / len(tree_probabilities)
         probability = self.calibrate(raw)
-        mean = raw
-        variance = sum((item - mean) ** 2 for item in tree_probabilities) / len(tree_probabilities)
+        variance = sum((item - raw) ** 2 for item in tree_probabilities) / len(tree_probabilities)
         tree_std = math.sqrt(max(0.0, variance))
-
-        policy_min_probability = _finite(self.decision_policy.get("min_probability"), 0.0)
-        policy_min_ev = _finite(self.decision_policy.get("min_expected_net_r"), 0.0)
-        policy_edge = _finite(self.decision_policy.get("probability_edge"), 0.0)
-        p_floor = policy_min_probability if min_probability is None else float(min_probability)
-        ev_floor = policy_min_ev if min_expected_net_r is None else float(min_expected_net_r)
-        edge = policy_edge if probability_edge is None else float(probability_edge)
-        required_probability = max(
-            _clip(p_floor, 0.0, 1.0),
-            _clip(economics.break_even_probability + max(0.0, edge), 0.0, 1.0),
-        )
         expected = economics.expected_net_r(probability)
 
         if economics.win_net_r <= 0.0:
@@ -325,12 +307,9 @@ class PortableBinaryModel:
         elif economics.loss_net_r >= 0.0:
             accepted = False
             reason = "INVALID_POST_COST_LOSS"
-        elif probability < required_probability:
+        elif expected <= 0.0:
             accepted = False
-            reason = "PROBABILITY_BELOW_REQUIRED"
-        elif expected < ev_floor:
-            accepted = False
-            reason = "EXPECTED_NET_R_BELOW_REQUIRED"
+            reason = "NONPOSITIVE_MODEL_EXPECTANCY"
         else:
             accepted = True
             reason = "MODEL_EXPECTANCY_ACCEPTED"
@@ -340,7 +319,7 @@ class PortableBinaryModel:
             target_probability=probability,
             tree_probability_std=tree_std,
             expected_net_r=expected,
-            required_probability=required_probability,
+            required_probability=economics.break_even_probability,
             accepted=accepted,
             reason=reason,
         )
@@ -363,11 +342,7 @@ def make_shadow_document(
         "feature_clip_ranges": {},
         "constant_probability": _clip(float(probability), 0.0, 1.0),
         "calibration": {"kind": "identity"},
-        "decision": {
-            "min_probability": 0.0,
-            "probability_edge": 0.0,
-            "min_expected_net_r": 0.0,
-        },
+        "decision": {"kind": "positive_post_cost_expectancy"},
         "training": {
             "note": "Wiring-only model. Harvest causal plan features and train before select mode.",
         },

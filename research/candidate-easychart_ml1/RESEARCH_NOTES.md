@@ -1,104 +1,88 @@
 # ML1 research notes
 
-## 시장과 이 시스템에서 ML이 맡아야 할 일
+## ML의 역할
 
-가격은 확정적인 도형의 결과가 아니라, 서로 다른 시간척도의 재고 조정·공격 주문·
-수동 유동성·손절 주문이 만나는 연속 경매의 결과다. OB, FVG, 추세선, 채널,
-fakeout/trap은 서로 독립된 마법 패턴이라기보다 다음 공통 질문의 다른 관찰 창이다.
+가격은 서로 다른 시간척도의 재고 조정, 공격 주문, 수동 유동성, 손절 주문이 만나는
+연속 경매의 결과다. OB, FVG, 추세선, 채널, fakeout/trap은 독립된 마법 패턴이 아니라
+다음 질문을 관찰하는 서로 다른 창이다.
 
-1. 거래가 몰릴 만한 사전 구조와 유동성은 어디인가?
-2. 그 경계를 가격이 거절했는가, 받아들였는가?
-3. 현재 움직임은 국지적 inventory transfer인가, 네 종목 공통 정보 충격인가?
-4. 진입 뒤 무효화점까지의 거리에 비해 먼저 도달할 현실적 opposing liquidity는
-   충분히 먼가?
-5. 현재 공격자 흐름이 가격 진행으로 변환되는가, 아니면 흡수되는가?
+1. 거래가 몰릴 사전 구조와 유동성은 어디인가?
+2. 경계를 거절했는가, 받아들였는가?
+3. 국지적 inventory transfer인가, 네 종목 공통 정보 충격인가?
+4. 구조 무효화점에 비해 현실적인 반대편 목표까지 충분한 공간이 있는가?
+5. 공격자 흐름이 가격 진행으로 변환되는가, 흡수되는가?
 
-기존 RE1은 이 질문을 각각 boolean gate로 번역하면서 좋은 후보도 맥락 하나 때문에
-사라지고, threshold를 느슨하게 하면 나쁜 후보가 함께 늘어나는 한계가 있었다.
-ML은 구조를 새로 발명하는 역할이 아니라, 위 질문들의 **비선형 결합**을 같은
-conditional probability로 압축하는 데 사용한다.
+RE1의 boolean gate는 이 질문을 각각 잘라 판단했다. ML1은 구조를 새로 발명하지 않고
+이 변수들의 비선형 결합으로 `P(target before stop)`을 추정한다.
 
-## Source-derived logic retained
+## 고정된 실행 계약과 ML의 경계
 
-EasyChart 자료에서 보존한 핵심은 다음과 같다.
+구조 엔진이 entry, stop, target과 gross RR을 결정한다. gross RR은 최소 1.0R이다.
+주문이 선택되면 기존 실행층이 stop에서 현재 NAV의 약 3%가 손실되도록 수량을 정한다.
 
-- naked chart에서 institutional footprint와 market structure를 함께 본다.
-- OB/FVG 자체보다 유동성 흡수, 의미 있는 구조, 뚜렷한 displacement, 여러 근거의
-  중첩이 중요하다.
-- 목표한 구간이 오지 않으면 진입하지 않는다.
-- 추세선·채널은 방향/속도/경계이며, wick 기준과 break/re-entry/retest가 중요하다.
-- fakeout/trap은 사전 구조 밖의 liquidity sweep과 구조 안 복귀를 하나의 causal
-  episode로 본다.
-- 손절은 구조 무효화, 목표는 반대편 유동성/사전 구조에서 정한다.
-- 상위 시간척도는 context, 하위 시간척도는 entry response에 더 적합하다.
+ML은 다음을 하지 않는다.
 
-자료의 “스마트 머니 의도” 서술을 사실 검증된 hidden agent label로 사용하지 않는다.
-코드에서는 관찰 가능한 sweep, displacement, response, flow, objective geometry로
-번역한다.
+- risk fraction 변경
+- confidence에 따른 수량 축소 또는 확대
+- 별도 exposure cap
+- 하루 손실 제한
+- 연속 손실 cooldown
+- 거래 횟수 quota
+- 계좌 규모를 이유로 한 임의의 유동성 haircut
+- entry, stop, target 가격 생성
 
-## External methods reused
+따라서 3% fixed risk 위에 또 다른 “안전” 계층을 쌓지 않는다. 모델의 일은 나쁜 거래를
+피해 안정적으로 보이는 시스템을 만드는 것이 아니라, 실제 target-first 확률과 RR을
+함께 사용해 더 높은 비용 후 알파를 선택하는 것이다.
 
-- NautilusTrader: 기존 RE1의 동일 전략 코드 경로, 주문 상태, fill/fee/portfolio
-  accounting, reduce-only 보호주문을 그대로 사용한다.
-- Order-flow imbalance: 단순 거래량보다 signed aggressor flow와 price progress의
-  결합을 사용한다. 1분 quote volume, trade count, taker-buy quote volume은 현재 봉을
-  제외한 prior baseline에 비교한다.
-- Probability calibration: forest 점수를 곧바로 확률이라 부르지 않고, 별도의 시간순
-  calibration 구간에서 sigmoid/Platt mapping을 학습한다.
-- Selective classification: 모든 후보에 답을 강요하지 않고 post-cost expectancy가
-  부족하면 abstain한다.
-- Purged time split: target/stop label이 다음 시간 구간까지 걸친 plan은 이전 split에서
-  제거한다.
+## 의사결정
 
-## What is intentionally not learned in ML1
-
-- raw next-bar direction
-- entry, stop, target 가격
-- 주문 수량, leverage, risk fraction
-- 하루 손실 제한이나 거래 횟수 quota
-- 종목 이름을 이용한 전용 규칙
-- 미래 MFE/MAE를 feature로 사용하는 행위
-- backtest 결과를 보고 runtime에서 threshold를 즉석 변경하는 행위
-
-## Label and decision
-
-각 frozen plan의 binary event는 `target before stop`이다. 동일 1분봉에서 둘 다 닿으면
-bar data로 순서를 알 수 없으므로 stop으로 처리한다. 모델 확률 `p`와 실행 가정으로
+각 frozen plan에 대해 다음을 계산한다.
 
 ```text
 EV_net_R = p * win_net_R + (1 - p) * loss_net_R
 ```
 
-를 계산한다. 필요한 최소 확률은 각 plan의 비용 후 break-even probability와
-calibration에서 선택한 probability edge 중 더 높은 값이다. 이 때문에 1.0R plan과
-3.0R plan을 같은 고정 confidence threshold로 취급하지 않는다.
+`p`는 calibration된 target-first 확률이다. Runtime 경계는 후보 자신의 비용 후
+break-even, 즉 `EV_net_R > 0`뿐이다. 별도의 minimum probability, probability edge,
+목표 승률 75%, minimum coverage, uncertainty penalty를 추가하지 않는다.
 
-## Why a shallow ExtraTrees ensemble first
+이 경계는 추가 위험관리 규칙이 아니라 모델이 양의 알파라고 주장하기 위한 최소한의
+논리다. 동시에 여러 양의 기대 후보가 있으면 expected R로 순위를 정한다. 모델의 tree
+분산은 진단 기록일 뿐 거래를 보수적으로 낮추는 tie-breaker로 쓰지 않는다.
 
-현재 병목은 시계열 전체를 생성하는 문제가 아니라 이미 의미가 있는 사건의 선별이다.
-따라서 첫 구현은 다음 성질을 우선한다.
+## 보존한 시장 논리
 
-- 수치·범주형 confluence의 비선형 상호작용
-- 스케일링에 덜 민감
-- 작은/중간 표본에서 빠른 반복
-- portable tree로 정확히 export 가능
-- feature importance와 leaf behavior를 추적 가능
+- naked chart의 institutional footprint와 market structure를 함께 본다.
+- OB/FVG 존재 자체보다 유동성 흡수, 의미 있는 구조, displacement와 반응이 중요하다.
+- 목표한 위치가 오지 않으면 진입하지 않는다.
+- 추세선·채널은 방향, 속도, 경계이며 break/re-entry/retest를 하나의 사건으로 본다.
+- fakeout/trap은 사전 구조 밖 sweep과 구조 안 복귀를 연결한 causal episode다.
+- 손절은 구조 무효화, 목표는 반대편 유동성 또는 사전 구조에서 정한다.
+- 상위 시간척도는 context, 하위 시간척도는 entry response에 더 적합하다.
 
-sequence model이나 end-to-end deep network는 후보 label과 regime coverage가 충분히
-쌓이고, shallow selector가 놓치는 반복 가능한 failure mode가 확인된 뒤 고려한다.
+“스마트 머니 의도”를 관측 불가능한 정답 label로 사용하지 않는다. sweep, displacement,
+response, aggressor flow와 objective geometry로 번역한다.
 
-## Most informative next experiment
+## 재사용한 방법
 
-첫 shadow run에서 중요한 것은 전체 점수 하나가 아니라 다음을 확인하는 것이다.
+- NautilusTrader의 주문, fill, fee, portfolio accounting과 reduce-only 보호 주문
+- prior-only aggressor-flow baseline과 price progress/absorption
+- 시간순으로 분리된 probability calibration
+- label horizon이 split을 넘는 row의 purge
+- raw symbol identity를 제외한 pooled four-market model
 
-- 기존 V2 gate가 거절했지만 target-first였던 후보가 실제로 얼마나 존재하는가?
-- OB/FVG/수평 flip/diagonal/pullback 중 어느 mechanism에서 flow와 macro context의
-  상호작용이 달라지는가?
-- 모델이 비용 후 승리 확률을 높이면서 하루당 독립 기회를 지나치게 줄이는가?
-- simultaneous candidates에서 earliest-causal 선택보다 expected-R arbitration이
-  실제 continuous NAV를 개선하는가?
-- 손실이 구조 자체의 오류인지, 늦은 entry/너무 먼 stop/가까운 objective인지,
-  common shock를 국지 reversal로 오인한 것인지?
+이 방법들은 미래정보와 계산 오류를 막고 확률을 해석 가능하게 하기 위한 연구 유효성
+조건이다. 별도의 안정성 점수표나 통과 시스템을 만들기 위한 것이 아니다.
 
-이 질문에 답하는 최소 길이의 구간으로 먼저 실행하고, 결과에 따라 feature/후보
-mechanism을 수정한다. 모델 종류를 늘리는 것 자체는 진전이 아니다.
+## 다음 실험의 핵심
+
+- 기존 gate가 거절했지만 target-first였던 후보의 공통 맥락은 무엇인가?
+- 기존 gate가 허용했지만 stop-first였던 후보는 무엇을 놓쳤는가?
+- scenario family별로 flow, macro context와 geometry의 상호작용이 어떻게 다른가?
+- ML이 좋은 거래를 늘리는가, 아니면 단순히 거래를 줄여 숫자를 좋게 보이게 하는가?
+- expected-R arbitration이 earliest-causal 선택보다 continuous NAV를 개선하는가?
+- 손실 원인이 구조 이해, entry timing, stop geometry, objective 선택 중 어디에 있는가?
+
+진전은 보수적 필터 수가 늘어나는 것이 아니라, 비용 후 알파가 더 잘 구분되고 실제
+fixed-risk continuous NAV가 더 강해지는 것이다.

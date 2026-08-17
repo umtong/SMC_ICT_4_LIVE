@@ -47,20 +47,10 @@ def _runtime_args(argv: list[str]) -> tuple[ML1RuntimeConfig, list[str]]:
         type=Path,
         default=HERE / "models" / "bootstrap_shadow.json",
     )
-    parser.add_argument("--ml-min-probability", type=float)
-    parser.add_argument("--ml-probability-edge", type=float)
-    parser.add_argument("--ml-min-expected-net-r", type=float)
-    parser.add_argument("--ml-target-slippage-ticks", type=int, default=1)
-    parser.add_argument("--ml-allow-shadow-model", action="store_true")
     known, remaining = parser.parse_known_args(argv[1:])
     runtime = ML1RuntimeConfig(
         mode=known.ml_mode,
         model_path=known.ml_model,
-        min_probability=known.ml_min_probability,
-        probability_edge=known.ml_probability_edge,
-        min_expected_net_r=known.ml_min_expected_net_r,
-        target_slippage_ticks=known.ml_target_slippage_ticks,
-        allow_shadow_model=known.ml_allow_shadow_model,
     )
     return runtime, [argv[0], *remaining]
 
@@ -74,17 +64,16 @@ def _rewrite_metadata(output: Path, runtime: ML1RuntimeConfig) -> None:
         "ml_model_id": model.model_id,
         "ml_model_status": model.status,
         "ml_feature_count": len(FEATURE_NAMES),
-        "ml_min_probability_override": runtime.min_probability,
-        "ml_probability_edge_override": runtime.probability_edge,
-        "ml_min_expected_net_r_override": runtime.min_expected_net_r,
-        "ml_target_slippage_ticks": runtime.target_slippage_ticks,
         "ml_policy": (
-            "RE1_CAUSAL_MECHANISM_GENERATES_IMMUTABLE_PLAN; CALIBRATED_TARGET_BEFORE_STOP_"
-            "PROBABILITY_AND_POST_COST_EXPECTED_R_SELECT_OR_ABSTAIN; ONE_GLOBAL_POSITION"
+            "RE1_CAUSAL_MECHANISM_GENERATES_IMMUTABLE_RR_GE_1_PLAN; "
+            "CALIBRATED_TARGET_BEFORE_STOP_PROBABILITY_SELECTS_POSITIVE_POST_COST_EXPECTANCY; "
+            "SIMULTANEOUS_CANDIDATES_RANK_BY_EXPECTED_R; "
+            "NO_CONFIDENCE_SIZING_OR_ADDITIONAL_RISK_LIMIT"
         ),
         "ml_candidate_policy": ML1_CANDIDATE_SELECTION_SEPARATION_RULE,
         "ml_no_symbol_identity": True,
         "ml_runtime_dependency": "PURE_PYTHON_JSON_MODEL; SCIKIT_LEARN_TRAINING_ONLY",
+        "risk_policy": "INHERITED_FIXED_APPROX_3_PERCENT_NAV_LOSS_AT_FROZEN_STOP",
     }
     for name in ("metrics.json", "run.json"):
         path = output / name

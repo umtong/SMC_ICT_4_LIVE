@@ -16,6 +16,43 @@ class Side(Enum):
     SHORT = -1
 
 
+def _constant_model(probability: float, *, status: str = "trained") -> PortableBinaryModel:
+    return PortableBinaryModel(
+        {
+            "schema": MODEL_SCHEMA,
+            "model_type": "constant_probability",
+            "status": status,
+            "model_id": f"p-{probability}",
+            "feature_names": [],
+            "feature_defaults": {},
+            "feature_clip_ranges": {},
+            "constant_probability": probability,
+            "calibration": {"kind": "identity"},
+            # Old artifacts may still contain these fields. Runtime must not
+            # turn them into an extra conservative gate.
+            "decision": {
+                "min_probability": 0.99,
+                "probability_edge": 0.40,
+                "min_expected_net_r": 10.0,
+            },
+        }
+    )
+
+
+def _two_r_economics():
+    return estimate_trade_economics(
+        side=Side.LONG,
+        entry=100.0,
+        stop=99.0,
+        target=102.0,
+        tick_size=0.1,
+        entry_fee_rate=0.0,
+        target_fee_rate=0.0,
+        stop_fee_rate=0.0,
+        funding_rate=0.0,
+    )
+
+
 def test_long_and_short_cost_geometry_is_symmetric() -> None:
     long = estimate_trade_economics(
         side=Side.LONG,
@@ -71,27 +108,31 @@ def test_portable_tree_and_platt_calibration() -> None:
             }
         ],
         "calibration": {"kind": "platt_logit", "coefficient": 1.0, "intercept": 0.0},
-        "decision": {"min_probability": 0.5, "probability_edge": 0.0, "min_expected_net_r": 0.0},
+        "decision": {"kind": "positive_post_cost_expectancy"},
     }
     model = PortableBinaryModel(document)
     assert model.probability({"x": 0.0}) == pytest.approx(0.2)
     assert model.probability({"x": 1.0}) == pytest.approx(0.8)
 
 
-def test_shadow_model_is_not_selectable_by_default() -> None:
-    document = {
-        "schema": MODEL_SCHEMA,
-        "model_type": "constant_probability",
-        "status": "shadow_only",
-        "model_id": "shadow",
-        "feature_names": [],
-        "feature_defaults": {},
-        "feature_clip_ranges": {},
-        "constant_probability": 0.5,
-        "calibration": {"kind": "identity"},
-        "decision": {},
-    }
-    model = PortableBinaryModel(document)
+def test_old_probability_floors_do_not_create_an_extra_runtime_gate() -> None:
+    economics = _two_r_economics()
+    decision = _constant_model(0.40).decide({}, economics)
+    assert economics.break_even_probability == pytest.approx(1.0 / 3.0)
+    assert decision.target_probability < 0.50
+    assert decision.expected_net_r > 0.0
+    assert decision.accepted
+    assert decision.required_probability == pytest.approx(economics.break_even_probability)
+
+
+def test_nonpositive_expectancy_is_not_misrepresented_as_alpha() -> None:
+    decision = _constant_model(0.30).decide({}, _two_r_economics())
+    assert decision.expected_net_r < 0.0
+    assert not decision.accepted
+    assert decision.reason == "NONPOSITIVE_MODEL_EXPECTANCY"
+
+
+def test_shadow_model_is_not_selectable() -> None:
+    model = _constant_model(0.5, status="shadow_only")
     with pytest.raises(RuntimeError):
         model.assert_selectable()
-    model.assert_selectable(allow_shadow_model=True)

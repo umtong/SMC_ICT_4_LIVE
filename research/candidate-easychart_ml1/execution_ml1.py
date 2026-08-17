@@ -1,8 +1,10 @@
 """NautilusTrader execution binding for the EasyChart ML1 selector.
 
-The inherited RE1 layer remains responsible for market entry, fixed 3% NAV risk
-sizing, reduce-only stop/target protection, fees, fills and one global account
-slot.  ML1 changes only candidate selection and arbitration.
+RE1 remains responsible for one-account execution, fixed 3% NAV risk sizing,
+entry/stop/target orders, fees, fills and the single global position slot.  ML1
+changes only candidate quality selection and simultaneous-candidate ordering.
+It never reduces risk by model confidence and adds no daily loss, exposure or
+trade-count limit.
 """
 from __future__ import annotations
 
@@ -28,23 +30,10 @@ from ml1_model import (
 class ML1RuntimeConfig:
     mode: str = "shadow"
     model_path: Path = Path(__file__).resolve().parent / "models" / "bootstrap_shadow.json"
-    min_probability: float | None = None
-    probability_edge: float | None = None
-    min_expected_net_r: float | None = None
-    target_slippage_ticks: int = 1
-    allow_shadow_model: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"shadow", "select"}:
             raise ValueError("ML1 mode must be 'shadow' or 'select'")
-        if self.target_slippage_ticks < 0:
-            raise ValueError("target_slippage_ticks cannot be negative")
-        for name, value in (
-            ("min_probability", self.min_probability),
-            ("probability_edge", self.probability_edge),
-        ):
-            if value is not None and not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be within [0, 1]")
 
 
 _RUNTIME = ML1RuntimeConfig()
@@ -66,7 +55,7 @@ class _ScoredPlan:
 
 
 class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
-    """Causal candidate meta-selector over the complete RE1 opportunity set."""
+    """Causal candidate selector over the complete RE1 opportunity set."""
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
@@ -77,9 +66,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
                 "ML1 model feature schema does not match runtime code; retrain the model with this branch",
             )
         if self.ml_runtime.mode == "select":
-            self.ml_model.assert_selectable(
-                allow_shadow_model=self.ml_runtime.allow_shadow_model,
-            )
+            self.ml_model.assert_selectable()
         self.ml_feature_book = CausalFeatureBook()
         self.ml_counts: dict[str, int] = {}
 
@@ -87,10 +74,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         self.ml_counts[key] = self.ml_counts.get(key, 0) + 1
 
     def _observe_common_factor(self) -> None:
-        # Deliberately call the market-factor grandparent.  The factor remains a
-        # causal feature, but is not propagated into the candidate engines as a
-        # hard veto.  That separation is the reason ML1 can learn the formerly
-        # suppressed counterfactual cases.
+        # The common factor is a causal feature, not a second risk gate.
         EasyChartRE1MarketFactorStrategy._observe_common_factor(self)
 
     def _observe_feature_bucket(self) -> None:
@@ -98,8 +82,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         for instrument_id, timeframe, bar in self.bar_bucket:
             symbol = self.factor_symbols.get(instrument_id)
             if symbol is None:
-                instrument = self.instruments[instrument_id]
-                symbol = instrument.raw_symbol.value
+                symbol = self.instruments[instrument_id].raw_symbol.value
             items.append((symbol, timeframe, self._candle(bar)))
         self.ml_feature_book.observe_bucket(items)
 
@@ -132,7 +115,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         )
 
     def _baseline_context_allows(self, instrument_id: InstrumentId, plan: V5TradePlan) -> bool:
-        """Approximate the RE1-v2 deterministic router for shadow trading."""
+        """Reproduce the inherited deterministic router only in shadow mode."""
 
         factor = self.factor_state
         if factor is not None and factor.event_time_ns <= plan.observed_time_ns:
@@ -149,7 +132,6 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         instrument = self.instruments[instrument_id]
         entry_fee = float(self.config.estimated_entry_fee_rate)
         stop_fee = float(self.config.estimated_stop_fee_rate)
-        target_fee = entry_fee
         return estimate_trade_economics(
             side=plan.side,
             entry=plan.entry,
@@ -157,11 +139,13 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             target=plan.target,
             tick_size=float(instrument.price_increment),
             entry_fee_rate=entry_fee,
-            target_fee_rate=target_fee,
+            target_fee_rate=entry_fee,
             stop_fee_rate=stop_fee,
             funding_rate=float(getattr(self.config, "estimated_funding_rate", 0.0)),
             entry_slippage_ticks=int(self.config.estimated_entry_slippage_ticks),
-            target_slippage_ticks=self.ml_runtime.target_slippage_ticks,
+            # The target is a resting limit.  Do not add a separate arbitrary
+            # target-slippage haircut on top of the configured execution model.
+            target_slippage_ticks=0,
             stop_slippage_ticks=int(self.config.estimated_stop_slippage_ticks),
         )
 
@@ -174,13 +158,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             flow_observation=self._flow_observation(instrument_id),
         )
         economics = self._economics(instrument_id, plan)
-        decision = self.ml_model.decide(
-            features,
-            economics,
-            min_probability=self.ml_runtime.min_probability,
-            probability_edge=self.ml_runtime.probability_edge,
-            min_expected_net_r=self.ml_runtime.min_expected_net_r,
-        )
+        decision = self.ml_model.decide(features, economics)
         baseline_eligible = self._baseline_context_allows(instrument_id, plan)
         event_values: dict[str, Any] = {
             "plan_id": plan.plan_id,
@@ -195,14 +173,13 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             "ml_raw_probability": decision.raw_probability,
             "ml_target_probability": decision.target_probability,
             "ml_tree_probability_std": decision.tree_probability_std,
-            "ml_required_probability": decision.required_probability,
+            "ml_break_even_probability": decision.required_probability,
             "ml_expected_net_r": decision.expected_net_r,
-            "ml_model_accepted": decision.accepted,
+            "ml_positive_expectancy": decision.accepted,
             "ml_decision_reason": decision.reason,
             "ml_baseline_eligible": baseline_eligible,
             "ml_win_net_r": economics.win_net_r,
             "ml_loss_net_r": economics.loss_net_r,
-            "ml_break_even_probability": economics.break_even_probability,
             "ml_estimated_win_cost_r": economics.estimated_win_cost_r,
             "ml_estimated_loss_cost_r": economics.estimated_loss_cost_r,
         }
@@ -236,7 +213,6 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
         return (
             -item.decision.expected_net_r,
             -item.decision.target_probability,
-            item.decision.tree_probability_std,
             plan.interaction_time_ns,
             -plan.higher_timeframe_minutes,
             plan.symbol,
@@ -285,30 +261,24 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             for plan in emitted:
                 self.plan_log[plan.plan_id] = plan
                 self._record("plan", **self._plan_event_values(plan))
-                if plan.gross_rr < max(1.0, float(self.config.min_gross_rr)):
+                minimum_rr = max(1.0, float(self.config.min_gross_rr))
+                if plan.gross_rr < minimum_rr:
                     self._record(
                         "ml_plan_geometry_rejected",
                         plan_id=plan.plan_id,
                         instrument_id=str(instrument_id),
                         gross_rr=plan.gross_rr,
-                        minimum=max(1.0, float(self.config.min_gross_rr)),
+                        minimum=minimum_rr,
                     )
                     self._minc("plans_below_minimum_gross_rr")
                     continue
-                try:
-                    scored.append(self._score_plan(instrument_id, plan))
-                except (ValueError, ArithmeticError) as exc:
-                    self._record(
-                        "ml_plan_scoring_error",
-                        plan_id=plan.plan_id,
-                        instrument_id=str(instrument_id),
-                        reason=repr(exc),
-                    )
-                    self._minc("plan_scoring_error")
+                # A scoring failure is an implementation error.  Do not hide it
+                # behind a conservative skip/fallback path.
+                scored.append(self._score_plan(instrument_id, plan))
 
         ranked = self._selection_pool(scored)
         if scored and not ranked:
-            self._minc("bucket_all_candidates_abstained")
+            self._minc("bucket_no_positive_model_expectancy")
         if ranked:
             if self.active_plan is not None or not self._portfolio_flat():
                 for rank, item in enumerate(ranked, start=1):
@@ -367,10 +337,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
                 "model_path": str(self.ml_runtime.model_path),
                 "model_id": self.ml_model.model_id,
                 "model_status": self.ml_model.status,
-                "min_probability": self.ml_runtime.min_probability,
-                "probability_edge": self.ml_runtime.probability_edge,
-                "min_expected_net_r": self.ml_runtime.min_expected_net_r,
-                "target_slippage_ticks": self.ml_runtime.target_slippage_ticks,
+                "decision": "positive_post_cost_expectancy_only",
             },
             "counts": dict(sorted(self.ml_counts.items())),
             "feature_count": len(FEATURE_NAMES),
