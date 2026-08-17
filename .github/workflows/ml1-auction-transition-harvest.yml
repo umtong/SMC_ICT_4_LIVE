@@ -1,0 +1,67 @@
+name: ml1-auction-transition-harvest
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - "research/candidate-easychart_ml1/auction_transition_study.py"
+      - ".github/workflows/ml1-auction-transition-harvest.yml"
+      - "research/candidate-easychart_ml1/.auction_transition_dispatch"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ml1-auction-transition-harvest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - {name: mar-2024, start: 2024-03-01, end: 2024-03-14}
+          - {name: may-2024, start: 2024-05-01, end: 2024-05-14}
+          - {name: aug-2024, start: 2024-08-01, end: 2024-08-14}
+          - {name: dec-2024, start: 2024-12-01, end: 2024-12-14}
+          - {name: feb-2025, start: 2025-02-01, end: 2025-02-14}
+          - {name: jun-2025, start: 2025-06-01, end: 2025-06-14}
+          - {name: aug-2025, start: 2025-08-10, end: 2025-08-23}
+          - {name: nov-2025, start: 2025-11-01, end: 2025-11-14}
+          - {name: feb-2026-holdout, start: 2026-02-01, end: 2026-02-14}
+          - {name: may-2026-holdout, start: 2026-05-01, end: 2026-05-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-v3:research/candidate-easychart_re1:research/candidate-easychart_ml1
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/ml1-auction-transition/${{ matrix.name }}
+      OUT: artifacts/ml1-auction-transition/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal auction-transition harvest
+        run: python -m py_compile research/candidate-easychart_ml1/auction_transition_study.py
+      - name: Harvest frozen plans and future labels
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml1/auction_transition_study.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 10 \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Preserve candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml1-auction-transition-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/ml1-auction-transition/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 30
