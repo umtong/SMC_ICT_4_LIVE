@@ -159,7 +159,7 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             entry_fee_rate=entry_fee,
             target_fee_rate=target_fee,
             stop_fee_rate=stop_fee,
-            funding_rate=float(self.config.estimated_funding_rate),
+            funding_rate=float(getattr(self.config, "estimated_funding_rate", 0.0)),
             entry_slippage_ticks=int(self.config.estimated_entry_slippage_ticks),
             target_slippage_ticks=self.ml_runtime.target_slippage_ticks,
             stop_slippage_ticks=int(self.config.estimated_stop_slippage_ticks),
