@@ -35,7 +35,7 @@ jobs:
             research/candidate-easychart_re1/counterfactual_plan_harvest_fixed.py \
             research/candidate-easychart_re1/ml3_online_features.py \
             research/candidate-easychart_re1/ml3_meta_model.py \
-            research/candidate-easychart_re1/train_ml3_meta_model.py \
+            research/candidate-easychart_re1/train_ml3_meta_model_purged.py \
             research/candidate-easychart_re1/execution_re1_ml3.py \
             research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py
       - name: Generate frozen complete-policy plans on development period
@@ -77,15 +77,16 @@ jobs:
           )
           print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
           PY
-      - name: Fit chronological expanding causal meta-model
+      - name: Fit purged chronological expanding causal meta-model
         run: |
-          python research/candidate-easychart_re1/train_ml3_meta_model.py \
+          python research/candidate-easychart_re1/train_ml3_meta_model_purged.py \
             --input "$OUT/counterfactual_plans.csv" \
             --model-output "$MODEL/ml3_model.json" \
             --report-output "$MODEL/training_report.json" \
             --oof-output "$MODEL/oof_predictions.csv" \
             --folds 4 \
             --minimum-oof-train 100 \
+            --embargo-minutes 0 \
             --l2 0.03 \
             --feature-clip 8
       - name: Preserve plan answer sheet and fitted model
