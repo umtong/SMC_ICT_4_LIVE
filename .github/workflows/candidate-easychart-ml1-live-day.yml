@@ -5,6 +5,8 @@ on:
     branches: ["research_ML1"]
     paths:
       - ".github/workflows/candidate-easychart-ml1-live-day.yml"
+      - "research/candidate-easychart_ml1/**"
+      - "research/candidate-easychart_re1/**"
   workflow_dispatch:
 
 concurrency:
@@ -28,8 +30,8 @@ jobs:
     env:
       PYTHONPATH: research/candidate-easychart_ml1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-easychart-ml1/live-day-2025-08-19
-      OUT: artifacts/candidate-easychart-ml1/live-day-2025-08-19
+      CACHE: .cache/candidate-easychart-ml1/live-day-2025-08-18
+      OUT: artifacts/candidate-easychart-ml1/live-day-2025-08-18
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +39,13 @@ jobs:
         run: |
           python -m py_compile research/candidate-easychart_ml1/*.py
 
-      - name: Run the four-symbol continuous account on the supplied live-trade day
+      - name: Run the four-symbol continuous account on the preceding UTC day
         run: |
           mkdir -p "$CACHE" "$OUT"
           set -o pipefail
           python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
-            --start 2025-08-19 \
-            --end 2025-08-19 \
+            --start 2025-08-18 \
+            --end 2025-08-18 \
             --warmup-days 14 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
@@ -58,8 +60,8 @@ jobs:
         run: |
           set -o pipefail
           python research/candidate-easychart_ml1/harvest_ml1.py \
-            --start 2025-08-19 \
-            --end 2025-08-19 \
+            --start 2025-08-18 \
+            --end 2025-08-18 \
             --warmup-days 14 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
@@ -80,7 +82,7 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          out = Path("artifacts/candidate-easychart-ml1/live-day-2025-08-19")
+          out = Path("artifacts/candidate-easychart-ml1/live-day-2025-08-18")
           plans = pd.read_csv(out / "counterfactual_plans.csv", low_memory=False)
           events = pd.read_csv(out / "decision_events.csv", low_memory=False)
           ml = events[events["kind"] == "ml_plan"].copy()
@@ -100,14 +102,14 @@ jobs:
           executed = events[events["kind"].isin(["submitted", "position_closed", "order_filled"])].copy()
           executed.to_csv(out / "live_day_execution_events.csv", index=False)
           summary = {
-              "date": "2025-08-19",
+              "date": "2025-08-18",
               "plans": int(len(plans)),
               "ml_plan_events": int(len(ml)),
               "outcomes": plans.get("counterfactual_outcome", pd.Series(dtype=str)).value_counts(dropna=False).to_dict(),
               "by_symbol": plans.groupby("symbol", dropna=False).size().to_dict() if not plans.empty else {},
               "by_family": plans.groupby("family", dropna=False).size().to_dict() if not plans.empty else {},
               "executed_submissions": int((events["kind"] == "submitted").sum()),
-              "note": "All plans are shown; the supplied human examples are diagnostic references, not labels or filters.",
+              "note": "All plans are shown; supplied human examples are diagnostic references, never labels or filters.",
           }
           (out / "live_day_summary.json").write_text(
               json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -122,6 +124,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: candidate-easychart-ml1-live-day-${{ github.sha }}
-          path: artifacts/candidate-easychart-ml1/live-day-2025-08-19/
+          path: artifacts/candidate-easychart-ml1/live-day-2025-08-18/
           if-no-files-found: warn
           retention-days: 30
