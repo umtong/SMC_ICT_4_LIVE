@@ -1,0 +1,46 @@
+name: ml1-passive-tape-v14-result-collector
+
+on:
+  workflow_run:
+    workflows: [ml1-passive-tape-policy-v14]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: passive-tape-v14-policy-result
+          path: collected
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Preserve result with branch-race recovery
+        run: |
+          summary=$(find collected -name summary.json -type f | head -n 1)
+          result=$(find collected -name RESULT.md -type f | head -n 1)
+          test -n "$summary" && test -n "$result"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4; do
+            git fetch origin research_ML1
+            git reset --hard origin/research_ML1
+            mkdir -p research/candidate-easychart_ml1/results/passive_tape_v14
+            cp "$summary" research/candidate-easychart_ml1/results/passive_tape_v14/summary.json
+            cp "$result" research/candidate-easychart_ml1/results/passive_tape_v14/RESULT.md
+            git add research/candidate-easychart_ml1/results/passive_tape_v14
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'research(ml1): collect passive exact-tape v14 evidence'
+            if git push origin HEAD:research_ML1; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
