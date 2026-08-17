@@ -1,0 +1,62 @@
+name: candidate-auction-event-v2-cases
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-auction-event-v2/.case-dispatch"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-auction-event-v2-cases
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-auction-event-v2-cases/${{ matrix.period }}
+      OUT: artifacts/candidate-auction-event-v2-cases/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export deterministic one-by-one winners and failures
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-auction-event-v2/export_event_cases.py \
+            --start "$START" --end "$END" --warmup-days 20 \
+            --cache "$CACHE" --output "$OUT"
+      - name: Preserve case charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auction-event-v2-cases-${{ matrix.period }}
+          path: artifacts/candidate-auction-event-v2-cases/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
