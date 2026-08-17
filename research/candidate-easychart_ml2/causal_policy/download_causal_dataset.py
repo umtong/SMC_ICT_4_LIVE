@@ -7,7 +7,6 @@ small period/symbol gzip CSV files for causal-policy research.
 from __future__ import annotations
 
 import argparse
-from datetime import date
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -27,13 +26,19 @@ KEEP = [
     "open_time_dt", "open", "high", "low", "close", "volume", "quote_volume",
     "count", "taker_buy_volume", "taker_buy_quote_volume",
 ]
+# Each window contains about one month of causal history before a compact,
+# seasonally spaced research interval.  The periods are observations, not gates.
 DEFAULT_PERIODS = {
-    "may2024": ("2024-04-01", "2024-05-10"),
-    "summer2024": ("2024-07-01", "2024-08-10"),
-    "feb2025": ("2025-01-01", "2025-02-10"),
-    "aug2025": ("2025-07-10", "2025-08-20"),
-    "nov2025": ("2025-10-01", "2025-11-10"),
-    "feb2026": ("2026-01-01", "2026-02-10"),
+    "may2024": ("2024-04-01", "2024-05-14"),
+    "aug2024": ("2024-07-01", "2024-08-14"),
+    "nov2024": ("2024-10-01", "2024-11-14"),
+    "feb2025": ("2025-01-01", "2025-02-14"),
+    "may2025": ("2025-04-01", "2025-05-14"),
+    "aug2025": ("2025-07-01", "2025-08-20"),
+    "nov2025": ("2025-10-01", "2025-11-14"),
+    "feb2026": ("2026-01-01", "2026-02-14"),
+    "may2026": ("2026-04-01", "2026-05-14"),
+    "jul2026": ("2026-06-01", "2026-07-14"),
 }
 
 
