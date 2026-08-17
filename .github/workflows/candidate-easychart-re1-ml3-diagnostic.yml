@@ -1,0 +1,271 @@
+name: candidate-easychart-re1-ml3-diagnostic
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-ml3-diagnostic.yml"
+      - "research/candidate-easychart_re1/.ml3_diagnostic_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-ml3-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml3/dev
+      ROOT: artifacts/candidate-easychart-re1-ml3/dev
+      DEV_OUT: artifacts/candidate-easychart-re1-ml3/dev/complete-policy
+      MODEL_DIR: artifacts/candidate-easychart-re1-ml3/dev/model
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile research and execution path
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/counterfactual_plan_harvest_fixed.py \
+            research/candidate-easychart_re1/counterfactual_sequential_features.py \
+            research/candidate-easychart_re1/ml3_online_features.py \
+            research/candidate-easychart_re1/ml3_meta_model.py \
+            research/candidate-easychart_re1/train_ml3_meta_model.py \
+            research/candidate-easychart_re1/execution_re1_ml3.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_complete_bot_policy_v2.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py
+
+      - name: Generate complete-policy plans on chronological development data
+        run: |
+          mkdir -p "$CACHE" "$DEV_OUT" "$MODEL_DIR"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_complete_bot_policy_v2.py \
+            --start 2025-01-01 \
+            --end 2025-02-28 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$DEV_OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+
+      - name: Build research-only target-before-stop answer sheet
+        run: |
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          from counterfactual_plan_harvest_fixed import HarvestConfig, harvest_counterfactual_plans
+
+          start = date(2025, 1, 1)
+          end = date(2025, 2, 28)
+          config = HarvestConfig(
+              start=start,
+              end=end,
+              load_start=start - timedelta(days=30),
+              symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+              cache=Path(os.environ["CACHE"]),
+              output=Path(os.environ["DEV_OUT"]),
+              fee_profile="usd_m_vip0",
+              entry_slippage_ticks=2,
+              stop_slippage_ticks=2,
+          )
+          summary = harvest_counterfactual_plans(config)
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: Train chronological expanding target-first meta-model
+        run: |
+          python research/candidate-easychart_re1/train_ml3_meta_model.py \
+            --input "$DEV_OUT/counterfactual_plans.csv" \
+            --model-output "$MODEL_DIR/ml3_model.json" \
+            --report-output "$MODEL_DIR/training_report.json" \
+            --oof-output "$MODEL_DIR/oof_predictions.csv" \
+            --folds 4 \
+            --minimum-oof-train 100 \
+            --l2 0.03 \
+            --feature-clip 8
+
+      - name: Preserve development answer sheet and fitted model
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-dev-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/dev/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  holdout:
+    needs: develop
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [base, ml3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml3/holdout-${{ matrix.candidate }}
+      OUT: artifacts/candidate-easychart-re1-ml3/holdout-${{ matrix.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download development model
+        if: matrix.candidate == 'ml3'
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-dev-${{ github.sha }}
+          path: downloaded-development
+
+      - name: Run disjoint chronological holdout account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          common=(
+            --start 2025-03-01
+            --end 2025-03-14
+            --warmup-days 30
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT
+            --cache "$CACHE"
+            --output "$OUT"
+            --fee-profile usd_m_vip0
+            --entry-slippage-ticks 2
+            --stop-slippage-ticks 2
+          )
+          if [[ "${{ matrix.candidate }}" == "base" ]]; then
+            python research/candidate-easychart_re1/run_mtf_backtest_re1_complete_bot_policy_v2.py "${common[@]}"
+          else
+            model="$(find downloaded-development -name ml3_model.json -print -quit)"
+            [[ -n "$model" ]] || { echo "ML3 model artifact missing" >&2; exit 1; }
+            python research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py \
+              --ml3-model "$model" \
+              "${common[@]}"
+          fi
+
+      - name: Preserve held-out continuous account
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-holdout-${{ matrix.candidate }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/holdout-${{ matrix.candidate }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  summarize:
+    needs: [develop, holdout]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all ML3 diagnostic evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-easychart-re1-ml3-*-${{ github.sha }}
+          path: downloaded
+
+      - name: Summarize model evidence and held-out accounts
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("downloaded")
+          output = Path("artifacts/candidate-easychart-re1-ml3/summary")
+          output.mkdir(parents=True, exist_ok=True)
+
+          def first(name):
+              paths = sorted(root.rglob(name))
+              return paths[0] if paths else None
+
+          training_path = first("training_report.json")
+          model_path = first("ml3_model.json")
+          training = json.loads(training_path.read_text()) if training_path else None
+          model = json.loads(model_path.read_text()) if model_path else None
+
+          accounts = {}
+          for candidate in ("base", "ml3"):
+              artifact_dirs = [path for path in root.iterdir() if f"holdout-{candidate}" in path.name]
+              metric_paths = [path for directory in artifact_dirs for path in directory.rglob("metrics.json")]
+              event_paths = [path for directory in artifact_dirs for path in directory.rglob("decision_events.csv")]
+              audit_paths = [path for directory in artifact_dirs for path in directory.rglob("trade_audit.csv")]
+              metrics = json.loads(metric_paths[0].read_text()) if metric_paths else None
+              event_summary = None
+              score_summary = None
+              if event_paths:
+                  events = pd.read_csv(event_paths[0], low_memory=False)
+                  event_summary = dict(Counter(events["kind"].dropna().astype(str)))
+                  scored = events[events["kind"] == "ml3_plan_scored"].copy()
+                  if not scored.empty:
+                      for column in ("target_first_probability", "expected_account_r"):
+                          scored[column] = pd.to_numeric(scored[column], errors="coerce")
+                      score_summary = {
+                          "plans": int(len(scored)),
+                          "mean_probability": float(scored["target_first_probability"].mean()),
+                          "mean_expected_account_r": float(scored["expected_account_r"].mean()),
+                          "positive_expected": int((scored["expected_account_r"] > 0).sum()),
+                          "probability_quantiles": {
+                              str(key): float(value)
+                              for key, value in scored["target_first_probability"].quantile([0.1, 0.5, 0.9]).items()
+                          },
+                          "expected_r_quantiles": {
+                              str(key): float(value)
+                              for key, value in scored["expected_account_r"].quantile([0.1, 0.5, 0.9]).items()
+                          },
+                      }
+              trade_summary = None
+              if audit_paths:
+                  audit = pd.read_csv(audit_paths[0], low_memory=False)
+                  trade_summary = {
+                      "closed_trades": int(len(audit)),
+                      "sum_actual_net_r": float(pd.to_numeric(audit.get("actual_net_r"), errors="coerce").sum()),
+                      "mean_actual_net_r": float(pd.to_numeric(audit.get("actual_net_r"), errors="coerce").mean()),
+                      "wins": int((pd.to_numeric(audit.get("actual_net_r"), errors="coerce") > 0).sum()),
+                      "losses": int((pd.to_numeric(audit.get("actual_net_r"), errors="coerce") < 0).sum()),
+                  }
+              accounts[candidate] = {
+                  "metrics": metrics,
+                  "event_counts": event_summary,
+                  "score_summary": score_summary,
+                  "trade_summary": trade_summary,
+              }
+
+          summary = {
+              "development_period": ["2025-01-01", "2025-02-28"],
+              "holdout_period": ["2025-03-01", "2025-03-14"],
+              "training": training,
+              "model_training": None if model is None else model.get("training"),
+              "accounts": accounts,
+          }
+          (output / "diagnostic_summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve compact diagnostic comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-summary-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/summary/**
+          if-no-files-found: error
+          retention-days: 30
