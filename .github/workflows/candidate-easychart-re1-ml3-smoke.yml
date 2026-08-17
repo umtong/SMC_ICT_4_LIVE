@@ -1,0 +1,53 @@
+name: candidate-easychart-re1-ml3-smoke
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - "research/candidate-easychart_re1/ml3_*.py"
+      - "research/candidate-easychart_re1/execution_re1_ml3.py"
+      - "research/candidate-easychart_re1/easychart_re1_ml3.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py"
+      - "research/candidate-easychart_re1/train_ml3_meta_model.py"
+      - "research/candidate-easychart_re1/tests/test_ml3_*.py"
+      - "research/candidate-easychart_re1/.ml3_smoke_dispatch_marker"
+      - ".github/workflows/candidate-easychart-re1-ml3-smoke.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-easychart-re1-ml3-smoke
+  cancel-in-progress: true
+permissions: {contents: read, packages: read}
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile ML3 implementation
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/ml3_online_features.py \
+            research/candidate-easychart_re1/ml3_meta_model.py \
+            research/candidate-easychart_re1/ml3_router.py \
+            research/candidate-easychart_re1/train_ml3_meta_model.py \
+            research/candidate-easychart_re1/execution_re1_ml3.py \
+            research/candidate-easychart_re1/easychart_re1_ml3.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py
+      - name: Run ML3 causal parity and model tests
+        run: |
+          python -m unittest discover \
+            -s research/candidate-easychart_re1/tests \
+            -p 'test_ml3_*.py' \
+            -v
+      - name: Import Nautilus integration
+        run: |
+          python - <<'PY'
+          import execution_re1_ml3
+          import easychart_re1_ml3
+          import run_mtf_backtest_re1_ml3
+          print(execution_re1_ml3.ML3_ROUTING_POLICY)
+          PY
