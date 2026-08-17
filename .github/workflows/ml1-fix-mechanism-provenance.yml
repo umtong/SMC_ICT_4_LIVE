@@ -1,0 +1,80 @@
+name: ml1-fix-mechanism-provenance
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-fix-mechanism-provenance.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Keep mechanism features local to the actual plan
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/ml1_features.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    provenance = getattr(plan, "rule_provenance", ()) or ()\n    parts.extend(_token(item) for item in provenance)\n    text = "|".join(parts)\n'''
+          new = '''    # ``rule_provenance`` contains the repository-wide audit catalogue in\n    # several V5 plans.  Parsing it as plan-local evidence marks unrelated\n    # mechanisms as present.  Mechanism identity must come only from the frozen\n    # plan's family, scenario, zones, trigger and scale.\n    text = "|".join(parts)\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one provenance parsing block, found {text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+
+          test_path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          test = test_path.read_text(encoding="utf-8")
+          anchor = '    assert features["confluence_strength"] >= 4.5\n'
+          addition = (
+              anchor
+              + '    assert features["mechanism_order_block"] == 1.0\n'
+              + '    assert features["mechanism_fvg"] == 1.0\n'
+              + '    assert features["mechanism_continuation"] == 1.0\n'
+              + '    assert features["mechanism_flow"] == 0.0\n'
+              + '    assert features["mechanism_channel"] == 0.0\n'
+              + '    assert features["mechanism_wedge"] == 0.0\n'
+              + '    assert features["mechanism_liquidity_sweep"] == 0.0\n'
+          )
+          if test.count(anchor) != 1:
+              raise SystemExit("test anchor not found exactly once")
+          test_path.write_text(test.replace(anchor, addition), encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+
+          PYTHONPATH=research/candidate-easychart_ml1 python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          spec = importlib.util.spec_from_file_location("test_ml1_features", path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module.test_feature_schema_has_no_symbol_identity()
+          module.test_prior_only_feature_book_and_exact_schema()
+          PY
+
+      - name: Commit the correction
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+          git diff --cached --check
+          git commit -m "fix(ml1): isolate plan-local mechanism features"
+          git push origin HEAD:research_ML1
