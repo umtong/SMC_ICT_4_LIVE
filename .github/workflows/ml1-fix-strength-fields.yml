@@ -1,0 +1,90 @@
+name: ml1-fix-strength-fields
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-fix-strength-fields.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Repair actual V5TradePlan strength fields and verify features
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          features_path = Path("research/candidate-easychart_ml1/ml1_features.py")
+          text = features_path.read_text(encoding="utf-8")
+          replacements = {
+              'getattr(plan, "higher_zone_strength", 0.0)': 'getattr(plan, "higher_strength_ratio", 0.0)',
+              'getattr(plan, "lower_zone_strength", 0.0)': 'getattr(plan, "lower_strength_ratio", 0.0)',
+              'getattr(plan, "trigger_zone_strength", 0.0)': 'getattr(plan, "trigger_strength_ratio", 0.0)',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected exactly one occurrence of {old!r}, found {text.count(old)}")
+              text = text.replace(old, new)
+          features_path.write_text(text, encoding="utf-8")
+
+          test_path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          test = test_path.read_text(encoding="utf-8")
+          test_replacements = {
+              "higher_zone_strength=2.0": "higher_strength_ratio=2.0",
+              "lower_zone_strength=1.5": "lower_strength_ratio=1.5",
+              "trigger_zone_strength=1.0": "trigger_strength_ratio=1.0",
+          }
+          for old, new in test_replacements.items():
+              if test.count(old) != 1:
+                  raise SystemExit(f"expected exactly one occurrence of {old!r}, found {test.count(old)}")
+              test = test.replace(old, new)
+          anchor = '    assert features["tf1_history_fraction"] == 1.0\n'
+          addition = (
+              anchor
+              + '    assert features["higher_strength"] == 2.0\n'
+              + '    assert features["lower_strength"] == 1.5\n'
+              + '    assert features["trigger_strength"] == 1.0\n'
+              + '    assert features["confluence_strength"] >= 4.5\n'
+          )
+          if test.count(anchor) != 1:
+              raise SystemExit("feature assertion anchor not found exactly once")
+          test = test.replace(anchor, addition)
+          test_path.write_text(test, encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+
+          PYTHONPATH=research/candidate-easychart_ml1 python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          spec = importlib.util.spec_from_file_location("test_ml1_features", path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+          module.test_feature_schema_has_no_symbol_identity()
+          module.test_prior_only_feature_book_and_exact_schema()
+          PY
+
+      - name: Commit the repair
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+          git diff --cached --check
+          git commit -m "fix(ml1): use actual structural strength fields"
+          git push origin HEAD:research_ML1
