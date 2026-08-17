@@ -26,11 +26,11 @@ jobs:
         run: |
           set -euo pipefail
           cat .ml2-bootstrap/payload.part* | base64 -d > /tmp/ml2_payload.tar.gz
-          echo "9d6105702633dcdf81164cc72b26c66e4729813da7c8e19b8a511a261e75c5a6  /tmp/ml2_payload.tar.gz" | sha256sum -c -
+          echo "6bdc3a489cd7e5b22f4c19e756251f61d332cfb908b1429b6ff5e0f4523b1a52  /tmp/ml2_payload.tar.gz" | sha256sum -c -
           tar -xzf /tmp/ml2_payload.tar.gz -C .
 
           # The repository token can update ordinary source but not workflow
-          # files.  Keep workflow changes for a later user-authenticated commit.
+          # files. Keep workflow changes for a user-authenticated API commit.
           git checkout -- .github/workflows
           git clean -fd .github/workflows
           rm -rf .ml2-bootstrap
@@ -42,5 +42,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "research: install causal EasyChart ML2 source"
+          git commit -m "research: install period-robust EasyChart ML2 source"
           git push
