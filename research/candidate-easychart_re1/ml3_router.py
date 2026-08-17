@@ -1,4 +1,4 @@
-"""Pure arbitration helpers for the EasyChart RE1 ML3 strategy."""
+"""Pure quality-first arbitration helpers for EasyChart RE1 ML3."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ class ScoredPlan:
 
 
 def deterministic_tie_break(plan: Any) -> tuple[Any, ...]:
-    """The pre-ML structure-first order, retained after expected value."""
+    """The pre-ML structure-first order retained after quality and utility."""
     return (
         int(plan.interaction_time_ns),
         -int(plan.higher_timeframe_minutes),
@@ -40,10 +40,16 @@ def deterministic_tie_break(plan: Any) -> tuple[Any, ...]:
 
 
 def rank_scored_plans(candidates: Iterable[ScoredPlan]) -> list[ScoredPlan]:
-    """Highest positive expected net R first, then the original causal order."""
+    """Target-first probability first; post-cost utility breaks quality ties.
+
+    A larger reward is not allowed to buy priority over a plan which is more
+    likely to win.  Expected account-risk R remains useful once win likelihood
+    is equal or nearly equal, followed by the original deterministic order.
+    """
     return sorted(
         candidates,
         key=lambda item: (
+            -item.target_first_probability,
             -item.expected_net_r,
             *deterministic_tie_break(item.plan),
         ),
