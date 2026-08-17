@@ -233,94 +233,145 @@ def add_plan(plans: list[dict[str, Any]], *, symbol: str, family: str, side: int
 
 
 def harvest_sweep_reclaim(symbol: str, frame: pd.DataFrame, pivots: list[Pivot], start_ts: pd.Timestamp, plans: list[dict[str, Any]]) -> None:
+    """Harvest only the first later interaction, using vectorized first-hit lookup."""
     tick = TICKS[symbol]
     idx = frame.index
-    consumed: set[str] = set()
+    lows = frame["low"].to_numpy(float)
+    highs = frame["high"].to_numpy(float)
+    closes = frame["close"].to_numpy(float)
+    opens = frame["open"].to_numpy(float)
     for pivot in pivots:
-        if pivot.pivot_id in consumed: continue
         start_i = idx.searchsorted(max(pivot.observed_ts + pd.Timedelta(minutes=1), start_ts), side="left")
-        if start_i >= len(frame)-2: continue
-        for i in range(start_i, len(frame)-2):
-            bar = frame.iloc[i]; prev = frame.iloc[i-1]
-            if pivot.side == "LOW":
-                touched = float(bar.low) <= pivot.price
-                reclaimed = touched and float(prev.close) >= pivot.price and float(bar.close) > pivot.price
-                side = 1
+        if start_i >= len(frame) - 2:
+            continue
+        touched = lows[start_i:-2] <= pivot.price if pivot.side == "LOW" else highs[start_i:-2] >= pivot.price
+        hits = np.flatnonzero(touched)
+        if not len(hits):
+            continue
+        i = start_i + int(hits[0])
+        if pivot.side == "LOW":
+            reclaimed = closes[i - 1] >= pivot.price and closes[i] > pivot.price
+            side = 1
+        else:
+            reclaimed = closes[i - 1] <= pivot.price and closes[i] < pivot.price
+            side = -1
+        if not reclaimed:
+            continue
+        bar = frame.iloc[i]
+        sweep_ts = idx[i]
+        target_info = nearest_opposing_target(pivots, side, closes[i], sweep_ts)
+        if target_info is None:
+            continue
+        target_pivot, target = target_info
+        confirmed_i = None
+        for j in range(i + 1, min(i + 7, len(frame) - 1)):
+            if side > 0:
+                invalid = lows[j] <= lows[i] - tick
+                confirm = closes[j] > max(pivot.price, closes[i]) and closes[j] > opens[j]
             else:
-                touched = float(bar.high) >= pivot.price
-                reclaimed = touched and float(prev.close) <= pivot.price and float(bar.close) < pivot.price
-                side = -1
-            if not touched: continue
-            consumed.add(pivot.pivot_id)
-            if not reclaimed: break
-            sweep_ts = idx[i]
-            target_info = nearest_opposing_target(pivots, side, float(bar.close), sweep_ts)
-            if target_info is None: break
-            target_pivot, target = target_info
-            # Strictly later response; the first credible extension owns the episode.
-            confirmed_i = None
-            for j in range(i+1, min(i+7, len(frame)-1)):
-                r = frame.iloc[j]
-                if side > 0:
-                    invalid = float(r.low) <= float(bar.low) - tick
-                    confirm = float(r.close) > max(pivot.price, float(bar.close)) and float(r.close) > float(r.open)
-                else:
-                    invalid = float(r.high) >= float(bar.high) + tick
-                    confirm = float(r.close) < min(pivot.price, float(bar.close)) and float(r.close) < float(r.open)
-                if invalid: break
-                if confirm: confirmed_i = j; break
-            if confirmed_i is None: break
-            decision_ts = idx[confirmed_i]; entry_ts = idx[confirmed_i+1]
-            entry = float(frame.iloc[confirmed_i+1].open)
-            stop = float(bar.low) - tick if side>0 else float(bar.high) + tick
-            sigma = max(float(frame.iloc[i].prior_sigma), 1e-12)
-            specifics = {"level_timeframe": pivot.timeframe, "level_span": pivot.span, "level_strength": pivot.strength, "level_age_minutes": (sweep_ts-pivot.observed_ts)/pd.Timedelta(minutes=1), "sweep_depth_sigma": ((pivot.price-float(bar.low))/float(bar.close)/sigma if side>0 else (float(bar.high)-pivot.price)/float(bar.close)/sigma), "response_delay_minutes": confirmed_i-i, "target_timeframe": target_pivot.timeframe, "target_span": target_pivot.span, "target_strength": target_pivot.strength}
-            add_plan(plans, symbol=symbol, family="FIRST_TOUCH_SWEEP_RECLAIM", side=side, decision_ts=decision_ts, entry_ts=entry_ts, entry=entry, stop=stop, target=target, causal_id=f"{pivot.pivot_id}:{int(sweep_ts.value)}", frame=frame, specifics=specifics)
-            break
+                invalid = highs[j] >= highs[i] + tick
+                confirm = closes[j] < min(pivot.price, closes[i]) and closes[j] < opens[j]
+            if invalid:
+                break
+            if confirm:
+                confirmed_i = j
+                break
+        if confirmed_i is None:
+            continue
+        decision_ts = idx[confirmed_i]
+        entry_ts = idx[confirmed_i + 1]
+        entry = opens[confirmed_i + 1]
+        stop = lows[i] - tick if side > 0 else highs[i] + tick
+        sigma = max(float(frame.iloc[i].prior_sigma), 1e-12)
+        specifics = {
+            "level_timeframe": pivot.timeframe,
+            "level_span": pivot.span,
+            "level_strength": pivot.strength,
+            "level_age_minutes": (sweep_ts - pivot.observed_ts) / pd.Timedelta(minutes=1),
+            "sweep_depth_sigma": ((pivot.price - lows[i]) / closes[i] / sigma if side > 0 else (highs[i] - pivot.price) / closes[i] / sigma),
+            "response_delay_minutes": confirmed_i - i,
+            "target_timeframe": target_pivot.timeframe,
+            "target_span": target_pivot.span,
+            "target_strength": target_pivot.strength,
+        }
+        add_plan(plans, symbol=symbol, family="FIRST_TOUCH_SWEEP_RECLAIM", side=side, decision_ts=decision_ts, entry_ts=entry_ts, entry=entry, stop=stop, target=target, causal_id=f"{pivot.pivot_id}:{int(sweep_ts.value)}", frame=frame, specifics=specifics)
 
 
 def harvest_break_pullback(symbol: str, frame: pd.DataFrame, pivots: list[Pivot], start_ts: pd.Timestamp, plans: list[dict[str, Any]]) -> None:
-    tick=TICKS[symbol]; idx=frame.index; bars5=aggregate(frame,5); used:set[str]=set()
+    """Find the first accepted break without scanning every future bar per pivot."""
+    tick = TICKS[symbol]
+    idx = frame.index
+    bars5 = aggregate(frame, 5)
+    bopen = bars5["open"].to_numpy(float)
+    bclose = bars5["close"].to_numpy(float)
+    lows = frame["low"].to_numpy(float)
+    highs = frame["high"].to_numpy(float)
+    closes = frame["close"].to_numpy(float)
+    opens = frame["open"].to_numpy(float)
     for pivot in pivots:
-        if pivot.timeframe not in {5,15} or pivot.pivot_id in used: continue
-        bstart=bars5.index.searchsorted(max(pivot.observed_ts+pd.Timedelta(minutes=5),start_ts),side="left")
-        for k in range(max(1,bstart),len(bars5)-2):
-            b=bars5.iloc[k]; prev=bars5.iloc[k-1]
-            if pivot.side=="HIGH":
-                broken=float(prev.close)<=pivot.price and float(b.close)>pivot.price and float(b.close)>float(b.open); side=1
-            else:
-                broken=float(prev.close)>=pivot.price and float(b.close)<pivot.price and float(b.close)<float(b.open); side=-1
-            if not broken: continue
-            used.add(pivot.pivot_id); break_ts=bars5.index[k]
-            hold=bars5.iloc[k+1]
-            held=(float(hold.open)>pivot.price and float(hold.close)>pivot.price) if side>0 else (float(hold.open)<pivot.price and float(hold.close)<pivot.price)
-            if not held: break
-            target_info=nearest_opposing_target(pivots,side,float(hold.close),break_ts)
-            if target_info is None: break
-            target_pivot,target=target_info
-            mstart=idx.searchsorted(bars5.index[k+1]+pd.Timedelta(minutes=1),side="left")
-            retest_i=None
-            for i in range(mstart,min(mstart+121,len(frame)-2)):
-                r=frame.iloc[i]
-                if (side>0 and float(r.low)<=pivot.price and float(r.close)>pivot.price) or (side<0 and float(r.high)>=pivot.price and float(r.close)<pivot.price):
-                    retest_i=i; break
-                if (side>0 and float(r.close)<pivot.price) or (side<0 and float(r.close)>pivot.price): break
-            if retest_i is None: break
-            confirm_i=None
-            for j in range(retest_i+1,min(retest_i+7,len(frame)-1)):
-                r=frame.iloc[j]; rt=frame.iloc[retest_i]
-                confirm=(float(r.close)>float(rt.high) and float(r.close)>float(r.open)) if side>0 else (float(r.close)<float(rt.low) and float(r.close)<float(r.open))
-                fail=(float(r.close)<pivot.price) if side>0 else (float(r.close)>pivot.price)
-                if fail: break
-                if confirm: confirm_i=j; break
-            if confirm_i is None: break
-            decision_ts=idx[confirm_i]; entry_ts=idx[confirm_i+1]; entry=float(frame.iloc[confirm_i+1].open)
-            rt=frame.iloc[retest_i]; cr=frame.iloc[confirm_i]
-            stop=min(float(rt.low),float(cr.low),pivot.price-tick)-tick if side>0 else max(float(rt.high),float(cr.high),pivot.price+tick)+tick
-            sigma=max(float(frame.iloc[confirm_i].prior_sigma),1e-12)
-            specifics={"level_timeframe":pivot.timeframe,"level_span":pivot.span,"level_strength":pivot.strength,"level_age_minutes":(break_ts-pivot.observed_ts)/pd.Timedelta(minutes=1),"hold_distance_sigma":abs(float(hold.close)-pivot.price)/float(hold.close)/sigma,"pullback_delay_minutes":retest_i-mstart,"response_delay_minutes":confirm_i-retest_i,"target_timeframe":target_pivot.timeframe,"target_span":target_pivot.span,"target_strength":target_pivot.strength}
-            add_plan(plans,symbol=symbol,family="ACCEPTED_BREAK_FIRST_PULLBACK",side=side,decision_ts=decision_ts,entry_ts=entry_ts,entry=entry,stop=stop,target=target,causal_id=f"{pivot.pivot_id}:{int(break_ts.value)}",frame=frame,specifics=specifics)
-            break
+        if pivot.timeframe not in {5, 15}:
+            continue
+        bstart = max(1, bars5.index.searchsorted(max(pivot.observed_ts + pd.Timedelta(minutes=5), start_ts), side="left"))
+        if bstart >= len(bars5) - 2:
+            continue
+        if pivot.side == "HIGH":
+            condition = (bclose[bstart - 1:-3] <= pivot.price) & (bclose[bstart:-2] > pivot.price) & (bclose[bstart:-2] > bopen[bstart:-2])
+            side = 1
+        else:
+            condition = (bclose[bstart - 1:-3] >= pivot.price) & (bclose[bstart:-2] < pivot.price) & (bclose[bstart:-2] < bopen[bstart:-2])
+            side = -1
+        hits = np.flatnonzero(condition)
+        if not len(hits):
+            continue
+        k = bstart + int(hits[0])
+        break_ts = bars5.index[k]
+        hold = bars5.iloc[k + 1]
+        held = (float(hold.open) > pivot.price and float(hold.close) > pivot.price) if side > 0 else (float(hold.open) < pivot.price and float(hold.close) < pivot.price)
+        if not held:
+            continue
+        target_info = nearest_opposing_target(pivots, side, float(hold.close), break_ts)
+        if target_info is None:
+            continue
+        target_pivot, target = target_info
+        mstart = idx.searchsorted(bars5.index[k + 1] + pd.Timedelta(minutes=1), side="left")
+        retest_i = None
+        for i in range(mstart, min(mstart + 121, len(frame) - 2)):
+            if (side > 0 and lows[i] <= pivot.price and closes[i] > pivot.price) or (side < 0 and highs[i] >= pivot.price and closes[i] < pivot.price):
+                retest_i = i
+                break
+            if (side > 0 and closes[i] < pivot.price) or (side < 0 and closes[i] > pivot.price):
+                break
+        if retest_i is None:
+            continue
+        confirm_i = None
+        for j in range(retest_i + 1, min(retest_i + 7, len(frame) - 1)):
+            confirm = (closes[j] > highs[retest_i] and closes[j] > opens[j]) if side > 0 else (closes[j] < lows[retest_i] and closes[j] < opens[j])
+            fail = closes[j] < pivot.price if side > 0 else closes[j] > pivot.price
+            if fail:
+                break
+            if confirm:
+                confirm_i = j
+                break
+        if confirm_i is None:
+            continue
+        decision_ts = idx[confirm_i]
+        entry_ts = idx[confirm_i + 1]
+        entry = opens[confirm_i + 1]
+        stop = min(lows[retest_i], lows[confirm_i], pivot.price - tick) - tick if side > 0 else max(highs[retest_i], highs[confirm_i], pivot.price + tick) + tick
+        sigma = max(float(frame.iloc[confirm_i].prior_sigma), 1e-12)
+        specifics = {
+            "level_timeframe": pivot.timeframe,
+            "level_span": pivot.span,
+            "level_strength": pivot.strength,
+            "level_age_minutes": (break_ts - pivot.observed_ts) / pd.Timedelta(minutes=1),
+            "hold_distance_sigma": abs(float(hold.close) - pivot.price) / float(hold.close) / sigma,
+            "pullback_delay_minutes": retest_i - mstart,
+            "response_delay_minutes": confirm_i - retest_i,
+            "target_timeframe": target_pivot.timeframe,
+            "target_span": target_pivot.span,
+            "target_strength": target_pivot.strength,
+        }
+        add_plan(plans, symbol=symbol, family="ACCEPTED_BREAK_FIRST_PULLBACK", side=side, decision_ts=decision_ts, entry_ts=entry_ts, entry=entry, stop=stop, target=target, causal_id=f"{pivot.pivot_id}:{int(break_ts.value)}", frame=frame, specifics=specifics)
 
 
 def harvest_residual(symbol: str, frame: pd.DataFrame, start_ts: pd.Timestamp, plans: list[dict[str, Any]]) -> None:
