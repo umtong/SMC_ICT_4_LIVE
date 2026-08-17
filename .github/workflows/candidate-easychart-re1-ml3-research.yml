@@ -1,0 +1,156 @@
+name: candidate-easychart-re1-ml3-research
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - "research/candidate-easychart_re1/.ml3_research_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-ml3-research
+  cancel-in-progress: true
+
+permissions: {contents: read, packages: read}
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml3/research-dev
+      OUT: artifacts/candidate-easychart-re1-ml3/research-dev/base
+      MODEL: artifacts/candidate-easychart-re1-ml3/research-dev/model
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal research and execution path
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_ml3_base.py \
+            research/candidate-easychart_re1/counterfactual_plan_harvest_fixed.py \
+            research/candidate-easychart_re1/ml3_online_features.py \
+            research/candidate-easychart_re1/ml3_meta_model.py \
+            research/candidate-easychart_re1/train_ml3_meta_model.py \
+            research/candidate-easychart_re1/execution_re1_ml3.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py
+      - name: Generate frozen complete-policy plans on development period
+        run: |
+          mkdir -p "$CACHE" "$OUT" "$MODEL"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_ml3_base.py \
+            --start 2025-01-01 \
+            --end 2025-02-28 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Label target before stop after strategy execution
+        run: |
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          from counterfactual_plan_harvest_fixed import HarvestConfig, harvest_counterfactual_plans
+
+          start = date(2025, 1, 1)
+          end = date(2025, 2, 28)
+          summary = harvest_counterfactual_plans(
+              HarvestConfig(
+                  start=start,
+                  end=end,
+                  load_start=start - timedelta(days=30),
+                  symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+                  cache=Path(os.environ["CACHE"]),
+                  output=Path(os.environ["OUT"]),
+                  fee_profile="usd_m_vip0",
+                  entry_slippage_ticks=2,
+                  stop_slippage_ticks=2,
+              )
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+      - name: Fit chronological expanding causal meta-model
+        run: |
+          python research/candidate-easychart_re1/train_ml3_meta_model.py \
+            --input "$OUT/counterfactual_plans.csv" \
+            --model-output "$MODEL/ml3_model.json" \
+            --report-output "$MODEL/training_report.json" \
+            --oof-output "$MODEL/oof_predictions.csv" \
+            --folds 4 \
+            --minimum-oof-train 100 \
+            --l2 0.03 \
+            --feature-clip 8
+      - name: Preserve plan answer sheet and fitted model
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-research-dev-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/research-dev/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  holdout:
+    needs: develop
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [base, ml3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-ml3/research-holdout-${{ matrix.candidate }}
+      OUT: artifacts/candidate-easychart-re1-ml3/research-holdout-${{ matrix.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download fitted development model
+        if: matrix.candidate == 'ml3'
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-research-dev-${{ github.sha }}
+          path: development
+      - name: Run one disjoint chronological continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          common=(
+            --start 2025-03-01
+            --end 2025-03-14
+            --warmup-days 30
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT
+            --cache "$CACHE"
+            --output "$OUT"
+            --fee-profile usd_m_vip0
+            --entry-slippage-ticks 2
+            --stop-slippage-ticks 2
+          )
+          if [[ "${{ matrix.candidate }}" == "base" ]]; then
+            python research/candidate-easychart_re1/run_mtf_backtest_re1_ml3_base.py "${common[@]}"
+          else
+            model="$(find development -name ml3_model.json -print -quit)"
+            [[ -n "$model" ]] || { echo "fitted ML3 model is missing" >&2; exit 1; }
+            python research/candidate-easychart_re1/run_mtf_backtest_re1_ml3.py \
+              --ml3-model "$model" \
+              "${common[@]}"
+          fi
+      - name: Preserve held-out account and decisions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-ml3-research-holdout-${{ matrix.candidate }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-ml3/research-holdout-${{ matrix.candidate }}/**
+          if-no-files-found: warn
+          retention-days: 30
