@@ -1,0 +1,88 @@
+name: ml1-align-noise-baseline
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-align-noise-baseline.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Use the same prior one-day noise scale online and in training
+        env:
+          PYTHONPATH: research/candidate-easychart_ml1
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/ml1_features.py")
+          text = path.read_text(encoding="utf-8")
+
+          anchor = '''    range_ratio: float\n    volume_ratio: float\n    return_scale: float\n'''
+          replacement = '''    range_ratio: float\n    volume_ratio: float\n    return_scale: float\n    prior_noise_return_scale: float\n    prior_noise_range_fraction: float\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"BarObservation anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+
+          old = '''    def __init__(self, symbol: str, timeframe_minutes: int, *, maxlen: int = 512) -> None:\n'''
+          new = '''    def __init__(self, symbol: str, timeframe_minutes: int, *, maxlen: int = 1440) -> None:\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"history maxlen anchor count={text.count(old)}")
+          text = text.replace(old, new)
+
+          anchor = '''        return_scale = median(abs(item) for item in prior_returns) if prior_returns else max(abs(close_return), 1e-8)\n        median_range = median(prior_ranges) if prior_ranges else max(range_fraction, 1e-8)\n\n        raw_volume = _finite(getattr(candle, "quote_volume", 0.0))\n'''
+          replacement = '''        return_scale = median(abs(item) for item in prior_returns) if prior_returns else max(abs(close_return), 1e-8)\n        median_range = median(prior_ranges) if prior_ranges else max(range_fraction, 1e-8)\n        long_prior = prior[-1440:]\n        long_return_scale = (\n            median(abs(item.close_return) for item in long_prior)\n            if long_prior\n            else max(abs(close_return), 1e-8)\n        )\n        long_range_fraction = (\n            median(item.range_fraction for item in long_prior)\n            if long_prior\n            else max(range_fraction, 1e-8)\n        )\n\n        raw_volume = _finite(getattr(candle, "quote_volume", 0.0))\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"noise-baseline anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+
+          anchor = '''            volume_ratio=raw_volume / max(median_volume, 1e-12),\n            return_scale=max(return_scale, 1e-8),\n            realized_volatility=max(realized, 1e-12),\n'''
+          replacement = '''            volume_ratio=raw_volume / max(median_volume, 1e-12),\n            return_scale=max(return_scale, 1e-8),\n            prior_noise_return_scale=max(long_return_scale, 1e-8),\n            prior_noise_range_fraction=max(long_range_fraction, 1e-12),\n            realized_volatility=max(realized, 1e-12),\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"observation constructor anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+
+          old = '''        prior_range_fraction = one_minute.range_fraction / max(one_minute.range_ratio, 1e-12)\n        risk_to_prior_sigma = risk_fraction / max(one_minute.return_scale, 1e-12)\n        target_to_prior_sigma = target_fraction / max(one_minute.return_scale, 1e-12)\n        risk_to_prior_range = risk_fraction / max(prior_range_fraction, 1e-12)\n        target_to_prior_range = target_fraction / max(prior_range_fraction, 1e-12)\n'''
+          new = '''        risk_to_prior_sigma = risk_fraction / max(one_minute.prior_noise_return_scale, 1e-12)\n        target_to_prior_sigma = target_fraction / max(one_minute.prior_noise_return_scale, 1e-12)\n        risk_to_prior_range = risk_fraction / max(one_minute.prior_noise_range_fraction, 1e-12)\n        target_to_prior_range = target_fraction / max(one_minute.prior_noise_range_fraction, 1e-12)\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"plan geometry noise block count={text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+
+          python - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          spec = importlib.util.spec_from_file_location("test_ml1_features", path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module.test_feature_schema_has_no_symbol_identity()
+          module.test_prior_only_feature_book_and_exact_schema()
+          PY
+
+      - name: Commit the baseline alignment
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add research/candidate-easychart_ml1/ml1_features.py
+          git diff --cached --check
+          git commit -m "fix(ml1): align online and training noise baselines"
+          git push origin HEAD:research_ML1
