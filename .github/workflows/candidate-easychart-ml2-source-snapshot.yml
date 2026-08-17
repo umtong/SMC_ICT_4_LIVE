@@ -1,0 +1,32 @@
+name: candidate-easychart-ml2-source-snapshot
+
+on:
+  push:
+    branches:
+      - research_ML2
+    paths:
+      - research/candidate-easychart_ml2/.source_snapshot_dispatch
+      - .github/workflows/candidate-easychart-ml2-source-snapshot.yml
+
+permissions:
+  contents: read
+
+env:
+  ARTIFACT_RETENTION_DAYS: 7
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive current branch source
+        run: |
+          tar --exclude=.git --exclude='*.zip' -czf /tmp/candidate-easychart-ml2-source.tar.gz .
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml2-source-${{ github.sha }}
+          path: /tmp/candidate-easychart-ml2-source.tar.gz
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: error
