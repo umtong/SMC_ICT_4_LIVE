@@ -1,0 +1,105 @@
+name: ml1-add-structural-noise-geometry
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-add-structural-noise-geometry.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+
+      - name: Add prior-noise-normalized stop and target geometry
+        env:
+          PYTHONPATH: research/candidate-easychart_ml1
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml1/ml1_features.py")
+          text = path.read_text(encoding="utf-8")
+          anchor = '''    "target_bps_log",\n    "higher_strength",\n'''
+          replacement = '''    "target_bps_log",\n    "risk_to_prior_sigma_log",\n    "target_to_prior_sigma_log",\n    "risk_to_prior_range_log",\n    "target_to_prior_range_log",\n    "higher_strength",\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"feature-name anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+
+          anchor = '''    gross_rr = _finite(getattr(plan, "gross_rr", reward / risk), reward / risk)\n    higher_tf = max(1.0, _finite(getattr(plan, "higher_timeframe_minutes", 60), 60.0))\n'''
+          replacement = '''    gross_rr = _finite(getattr(plan, "gross_rr", reward / risk), reward / risk)\n    symbol = str(getattr(plan, "symbol"))\n    one_minute = feature_book.latest(symbol, 1)\n    if one_minute is None:\n        risk_to_prior_sigma = 0.0\n        target_to_prior_sigma = 0.0\n        risk_to_prior_range = 0.0\n        target_to_prior_range = 0.0\n    else:\n        risk_fraction = risk / entry\n        target_fraction = reward / entry\n        prior_range_fraction = one_minute.range_fraction / max(one_minute.range_ratio, 1e-12)\n        risk_to_prior_sigma = risk_fraction / max(one_minute.return_scale, 1e-12)\n        target_to_prior_sigma = target_fraction / max(one_minute.return_scale, 1e-12)\n        risk_to_prior_range = risk_fraction / max(prior_range_fraction, 1e-12)\n        target_to_prior_range = target_fraction / max(prior_range_fraction, 1e-12)\n    higher_tf = max(1.0, _finite(getattr(plan, "higher_timeframe_minutes", 60), 60.0))\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"geometry-computation anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+
+          anchor = '''            "target_bps_log": _safe_log1p(10_000.0 * reward / entry),\n            "higher_strength": _clip(_finite(getattr(plan, "higher_strength_ratio", 0.0)), -12.0, 12.0),\n'''
+          replacement = '''            "target_bps_log": _safe_log1p(10_000.0 * reward / entry),\n            "risk_to_prior_sigma_log": _safe_log1p(risk_to_prior_sigma),\n            "target_to_prior_sigma_log": _safe_log1p(target_to_prior_sigma),\n            "risk_to_prior_range_log": _safe_log1p(risk_to_prior_range),\n            "target_to_prior_range_log": _safe_log1p(target_to_prior_range),\n            "higher_strength": _clip(_finite(getattr(plan, "higher_strength_ratio", 0.0)), -12.0, 12.0),\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"geometry-feature anchor count={text.count(anchor)}")
+          text = text.replace(anchor, replacement)
+          path.write_text(text, encoding="utf-8")
+
+          test_path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          test = test_path.read_text(encoding="utf-8")
+          anchor = '    assert features["source_rule_count_log"] > 0.0\n' if '    assert features["source_rule_count_log"] > 0.0\n' in test else '    assert abs(features["source_rule_count_log"] - 1.3862943611198906) < 1e-12\n'
+          if test.count(anchor) != 1:
+              raise SystemExit(f"test anchor count={test.count(anchor)}")
+          addition = (
+              anchor
+              + '    assert features["risk_to_prior_sigma_log"] > 0.0\n'
+              + '    assert features["target_to_prior_sigma_log"] > features["risk_to_prior_sigma_log"]\n'
+              + '    assert features["risk_to_prior_range_log"] > 0.0\n'
+              + '    assert features["target_to_prior_range_log"] > features["risk_to_prior_range_log"]\n'
+          )
+          test_path.write_text(test.replace(anchor, addition), encoding="utf-8")
+          PY
+
+          python -m py_compile \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/ml1_model.py \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+
+          from ml1_features import FEATURE_NAMES
+          from ml1_model import make_shadow_document
+
+          model_path = Path("research/candidate-easychart_ml1/models/bootstrap_shadow.json")
+          model_path.write_text(
+              json.dumps(make_shadow_document(FEATURE_NAMES), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          test_path = Path("research/candidate-easychart_ml1/tests/test_ml1_features.py")
+          spec = importlib.util.spec_from_file_location("test_ml1_features", test_path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module.test_feature_schema_has_no_symbol_identity()
+          module.test_prior_only_feature_book_and_exact_schema()
+          assert len(FEATURE_NAMES) == 122
+          PY
+
+      - name: Commit the causal geometry feature
+        run: |
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add \
+            research/candidate-easychart_ml1/ml1_features.py \
+            research/candidate-easychart_ml1/models/bootstrap_shadow.json \
+            research/candidate-easychart_ml1/tests/test_ml1_features.py
+          git diff --cached --check
+          git commit -m "feat(ml1): normalize stop and target by prior noise"
+          git push origin HEAD:research_ML1
