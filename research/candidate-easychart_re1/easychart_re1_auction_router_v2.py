@@ -54,11 +54,20 @@ class DirectHorizontalFlipResponseFamily(HorizontalFlipResponseFamily):
             minimum_gross_rr=minimum_gross_rr,
         )
 
+    def on_bar(self, timeframe_minutes: int, bar: Any):  # type: ignore[no-untyped-def]
+        # The direct source is intentionally a 15m/5m/1m local auction.  The
+        # parent bundle also receives 60m bars for macro context; forwarding
+        # those into this source violates its declared scale contract.
+        if timeframe_minutes not in {15, 5, 1}:
+            return []
+        return super().on_bar(timeframe_minutes, bar)
+
     @property
     def diagnostics(self) -> dict[str, Any]:
         output = dict(super().diagnostics)
         output["raw_source_before_context_router"] = True
         output["direct_source_rule"] = DIRECT_HORIZONTAL_FLIP_ENGINE_RULE
+        output["accepted_timeframes"] = (15, 5, 1)
         return output
 
 

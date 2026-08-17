@@ -1,0 +1,173 @@
+# Rerun after local horizontal timeframe-contract repair.
+name: candidate-easychart-ml1-diagnostic
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml1-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml1-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  live-examples-shadow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml1/live-examples-2025
+      OUT: artifacts/candidate-easychart-ml1/live-examples-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and exercise the causal ML runtime
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_ml1/*.py \
+            research/candidate-easychart_ml1/tests/*.py
+          python - <<'PY'
+          from candidate_bundle_ml1 import EasyChartML1CandidateBundle
+          from ml1_features import FEATURE_NAMES
+          from ml1_model import PortableBinaryModel, estimate_trade_economics
+          from pathlib import Path
+          from enum import Enum
+
+          class Side(Enum):
+              LONG = 1
+              SHORT = -1
+
+          assert len(FEATURE_NAMES) == 118
+          assert not any("symbol" in name.lower() for name in FEATURE_NAMES)
+          model = PortableBinaryModel.load(
+              Path("research/candidate-easychart_ml1/models/bootstrap_shadow.json")
+          )
+          assert model.status == "shadow_only"
+          try:
+              model.assert_selectable()
+          except RuntimeError:
+              pass
+          else:
+              raise AssertionError("shadow model must not be selectable by default")
+          economics = estimate_trade_economics(
+              side=Side.LONG,
+              entry=100.0,
+              stop=99.0,
+              target=102.0,
+              tick_size=0.1,
+              entry_fee_rate=0.0005,
+              target_fee_rate=0.0005,
+              stop_fee_rate=0.0005,
+              funding_rate=0.0,
+              entry_slippage_ticks=2,
+              target_slippage_ticks=1,
+              stop_slippage_ticks=2,
+          )
+          assert economics.gross_rr == 2.0
+          assert 0.0 < economics.break_even_probability < 1.0
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              EasyChartML1CandidateBundle(symbol, tick)
+          PY
+
+      - name: Run one four-symbol continuous shadow account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
+          python research/candidate-easychart_ml1/run_mtf_backtest_ml1.py \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --ml-mode shadow \
+            2>&1 | tee "$OUT/backtest.log"
+
+      - name: Label frozen plans only after strategy execution
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/harvest_ml1.py \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+
+      - name: Build the causal candidate dataset
+        run: |
+          set -o pipefail
+          python research/candidate-easychart_ml1/build_ml1_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+
+      - name: Summarize the failure geometry rather than a pass gate
+        run: |
+          python - <<'PY' 2>&1 | tee "$OUT/diagnostic_summary.log"
+          import csv
+          import json
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          out = Path("artifacts/candidate-easychart-ml1/live-examples-2025")
+          rows = list(csv.DictReader((out / "ml1_dataset.csv").open(encoding="utf-8")))
+          resolved = [row for row in rows if row.get("label", "") not in ("", "nan", "None")]
+          families = Counter(row.get("family", "") for row in resolved)
+          symbols = Counter(row.get("symbol", "") for row in resolved)
+          outcomes = Counter(row.get("counterfactual_outcome", "") for row in resolved)
+          by_family = defaultdict(lambda: {"rows": 0, "wins": 0, "net_r": 0.0})
+          for row in resolved:
+              item = by_family[row.get("family", "")]
+              item["rows"] += 1
+              item["wins"] += int(float(row["label"]) > 0.5)
+              item["net_r"] += float(row["counterfactual_net_r_conservative"])
+          for item in by_family.values():
+              item["target_first_rate"] = item["wins"] / item["rows"] if item["rows"] else None
+              item["mean_conservative_net_r"] = item["net_r"] / item["rows"] if item["rows"] else None
+          summary = {
+              "period": {"start": "2025-08-10", "end": "2025-08-20"},
+              "dataset_rows": len(rows),
+              "resolved_rows": len(resolved),
+              "target_first_rows": sum(int(float(row["label"]) > 0.5) for row in resolved),
+              "families": dict(families),
+              "symbols": dict(symbols),
+              "outcomes": dict(outcomes),
+              "family_diagnostics": dict(sorted(by_family.items())),
+          }
+          (out / "ml1_diagnostic_summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          if not rows:
+              raise SystemExit("ML1 emitted no candidate rows; inspect candidate/execution integration")
+          PY
+
+      - name: Preserve causal events, labels and continuous account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml1-live-examples-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml1/live-examples-2025/
+          if-no-files-found: warn
+          retention-days: 30
