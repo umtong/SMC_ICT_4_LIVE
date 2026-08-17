@@ -219,41 +219,52 @@ def detect_gaps(
     tick: float,
     reference_ts: pd.Timestamp,
 ) -> list[Gap]:
-    """Detect completed one-minute FVGs in a bounded causal interval."""
+    """Detect completed one-minute FVGs using each gap's own causal anchor.
+
+    ``reference_ts`` bounds the narrative but must not become the price anchor
+    for an older gap. Comparing a pre-sweep manipulation FVG with the later
+    sweep price reverses its displacement sign and silently destroys genuine
+    BPR geometry. Every gap is therefore measured from the last completed
+    close immediately before its three-candle sequence, using volatility that
+    was already available at the first candle.
+    """
     index = frame.index
     start_i = max(2, int(index.searchsorted(start_ts, side="left")))
     end_i = min(len(frame) - 1, int(index.searchsorted(end_ts, side="right")))
-    before = frame.loc[frame.index <= reference_ts]
-    if before.empty:
+    if reference_ts < start_ts or start_i > end_i:
         return []
-    reference_close = float(before.close.iloc[-1])
-    sigma = max(float(before.prior_sigma.iloc[-1]), 1e-12)
     output: list[Gap] = []
     for i in range(start_i, end_i + 1):
         first = frame.iloc[i - 2]
         middle = frame.iloc[i - 1]
         third = frame.iloc[i]
+        anchor = (
+            float(frame.iloc[i - 3].close)
+            if i >= 3
+            else float(first.open)
+        )
+        sigma = max(float(first.prior_sigma), 1e-12)
         middle_range = max(float(middle.high - middle.low), tick)
         range_ratio = _finite(middle.range_ratio)
-        if range_ratio is None:
+        if range_ratio is None or not math.isfinite(anchor) or anchor <= 0.0:
             continue
         body_aligned = side * float(middle.close - middle.open) / middle_range
         if side > 0:
             lower = float(first.high)
             upper = float(third.low)
-            progressed = float(third.close) > reference_close
         else:
             lower = float(third.high)
             upper = float(first.low)
-            progressed = float(third.close) < reference_close
         width = upper - lower
-        if width < tick or not progressed:
+        if width < tick:
             continue
         progress_sigma = (
             side
-            * math.log(max(float(third.close), 1e-12) / max(reference_close, 1e-12))
+            * math.log(max(float(third.close), 1e-12) / anchor)
             / sigma
         )
+        if progress_sigma <= 0.0:
+            continue
         output.append(
             Gap(
                 gap_id=f"FVG:{side}:{int(index[i].value)}:{lower:.12g}:{upper:.12g}",
@@ -336,6 +347,13 @@ def build_reversal_entry_zones(
         tick,
         episode.interaction_ts,
     )
+    adverse = [
+        gap
+        for gap in adverse
+        if gap.middle_range_ratio >= 1.00
+        and gap.middle_body_aligned >= 0.35
+        and gap.progress_sigma >= 0.50
+    ]
     aligned = [
         gap
         for gap in aligned
@@ -555,18 +573,32 @@ def find_first_zone_retest(
     tick: float,
     max_minutes: int = 120,
 ) -> int | None:
-    """Require detachment, then the first mitigation that holds the zone midpoint."""
+    """Return the true first mitigation after completed causal detachment.
+
+    BPR/IFVG formation often *is* the detachment bar. Starting the scan with
+    ``detached=False`` skips the next-bar first retest and turns a first-touch
+    strategy into a materially worse second-touch strategy. Detachment is
+    therefore initialized from the completed formation bar; no intrabar order
+    is inferred when a later bar both detaches and touches.
+    """
     index = frame.index
-    start = int(
-        index.searchsorted(
-            zone.formed_ts + pd.Timedelta(minutes=1),
-            side="left",
-        )
-    )
-    end = min(start + max_minutes, len(frame) - 1)
+    formed_i = int(index.searchsorted(zone.formed_ts, side="right")) - 1
+    if formed_i < 0 or formed_i >= len(frame) - 1:
+        return None
     width = max(zone.upper - zone.lower, tick)
     midpoint = 0.5 * (zone.lower + zone.upper)
-    detached = False
+    formation = frame.iloc[formed_i]
+    if side > 0 and float(formation.low) <= hard_invalidation:
+        return None
+    if side < 0 and float(formation.high) >= hard_invalidation:
+        return None
+    detached = (
+        float(formation.close) >= zone.upper + 0.25 * width
+        if side > 0
+        else float(formation.close) <= zone.lower - 0.25 * width
+    )
+    start = formed_i + 1
+    end = min(start + max_minutes, len(frame) - 1)
     for i in range(start, end):
         bar = frame.iloc[i]
         if side > 0 and float(bar.low) <= hard_invalidation:
@@ -697,7 +729,9 @@ def comparable_opposing_target(
     return float(pivot.price), pivot.pivot_id, pivot.timeframe, "PIVOT"
 
 
-def internal_pivots(frame: pd.DataFrame) -> tuple[list[Pivot], list[Pivot]]:
+def internal_pivots(
+    frame: pd.DataFrame,
+) -> tuple[list[Pivot], list[Pivot]]:
     return (
         confirmed_pivots(frame, 1, (2, 3)),
         confirmed_pivots(frame, 5, (2, 3)),
