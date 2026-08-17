@@ -203,6 +203,8 @@ class BarObservation:
     range_ratio: float
     volume_ratio: float
     return_scale: float
+    prior_noise_return_scale: float
+    prior_noise_range_fraction: float
     realized_volatility: float
     prior_realized_volatility: float
     trend_5: float
@@ -223,7 +225,7 @@ class CrossMarketObservation:
 
 
 class _BarState:
-    def __init__(self, symbol: str, timeframe_minutes: int, *, maxlen: int = 512) -> None:
+    def __init__(self, symbol: str, timeframe_minutes: int, *, maxlen: int = 1440) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
         self.history: deque[BarObservation] = deque(maxlen=maxlen)
@@ -255,6 +257,17 @@ class _BarState:
         close_return = math.log(close / max(previous_close, 1e-12))
         return_scale = median(abs(item) for item in prior_returns) if prior_returns else max(abs(close_return), 1e-8)
         median_range = median(prior_ranges) if prior_ranges else max(range_fraction, 1e-8)
+        long_prior = prior[-1440:]
+        long_return_scale = (
+            median(abs(item.close_return) for item in long_prior)
+            if long_prior
+            else max(abs(close_return), 1e-8)
+        )
+        long_range_fraction = (
+            median(item.range_fraction for item in long_prior)
+            if long_prior
+            else max(range_fraction, 1e-8)
+        )
 
         raw_volume = _finite(getattr(candle, "quote_volume", 0.0))
         if raw_volume <= 0.0:
@@ -285,6 +298,8 @@ class _BarState:
             range_ratio=range_fraction / max(median_range, 1e-12),
             volume_ratio=raw_volume / max(median_volume, 1e-12),
             return_scale=max(return_scale, 1e-8),
+            prior_noise_return_scale=max(long_return_scale, 1e-8),
+            prior_noise_range_fraction=max(long_range_fraction, 1e-12),
             realized_volatility=max(realized, 1e-12),
             prior_realized_volatility=max(prior_realized, 1e-12),
             trend_5=trend_5,
@@ -533,11 +548,10 @@ def build_plan_features(
     else:
         risk_fraction = risk / entry
         target_fraction = reward / entry
-        prior_range_fraction = one_minute.range_fraction / max(one_minute.range_ratio, 1e-12)
-        risk_to_prior_sigma = risk_fraction / max(one_minute.return_scale, 1e-12)
-        target_to_prior_sigma = target_fraction / max(one_minute.return_scale, 1e-12)
-        risk_to_prior_range = risk_fraction / max(prior_range_fraction, 1e-12)
-        target_to_prior_range = target_fraction / max(prior_range_fraction, 1e-12)
+        risk_to_prior_sigma = risk_fraction / max(one_minute.prior_noise_return_scale, 1e-12)
+        target_to_prior_sigma = target_fraction / max(one_minute.prior_noise_return_scale, 1e-12)
+        risk_to_prior_range = risk_fraction / max(one_minute.prior_noise_range_fraction, 1e-12)
+        target_to_prior_range = target_fraction / max(one_minute.prior_noise_range_fraction, 1e-12)
     higher_tf = max(1.0, _finite(getattr(plan, "higher_timeframe_minutes", 60), 60.0))
     decision_tf = max(1.0, _finite(getattr(plan, "decision_timeframe_minutes", 15), 15.0))
     trigger_tf = max(1.0, _finite(getattr(plan, "trigger_timeframe_minutes", 1), 1.0))
