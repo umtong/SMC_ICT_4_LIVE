@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 from ml1_model import MODEL_SCHEMA, PortableBinaryModel, TradeEconomics
@@ -75,7 +76,7 @@ def test_probability_below_half_can_trade_when_log_growth_is_positive() -> None:
     model = ensemble([0.30, 0.60, 0.70])
     plan = SimpleNamespace(family="F", scenario_path="ACCEPTANCE", scale_name="S")
     score = model.score({}, economics(), plan, risk_fraction=0.03)
-    assert score.robust_target_probability == 0.45
+    assert math.isclose(score.robust_target_probability, 0.45, rel_tol=0.0, abs_tol=1e-12)
     assert score.robust_target_probability < 0.5
     assert score.accepted
     assert score.expected_log_growth > 0.0
@@ -86,7 +87,7 @@ def test_period_disagreement_can_reject_a_positive_center() -> None:
     model = ensemble([0.10, 0.55, 0.70])
     plan = SimpleNamespace(family="F", scenario_path="ACCEPTANCE", scale_name="S")
     score = model.score({}, economics(), plan, risk_fraction=0.03)
-    assert score.probability_median == 0.55
+    assert math.isclose(score.probability_median, 0.55, rel_tol=0.0, abs_tol=1e-12)
     assert score.robust_target_probability < score.probability_median
     assert not score.accepted
     assert score.reason == "NONPOSITIVE_ROBUST_LOG_GROWTH"
