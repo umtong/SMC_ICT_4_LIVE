@@ -528,6 +528,16 @@ def build_plan_features(
     scenario = _token(getattr(plan, "scenario_path", ""))
     higher_kind = _token(getattr(plan, "higher_zone_kind", ""))
     lower_kind = _token(getattr(plan, "lower_zone_kind", ""))
+    local_structure_ids = {
+        str(value)
+        for value in (
+            getattr(plan, "higher_zone_id", ""),
+            getattr(plan, "lower_zone_id", ""),
+            getattr(plan, "trigger_zone_id", ""),
+            getattr(plan, "target_zone_id", ""),
+        )
+        if value not in (None, "")
+    }
 
     features.update(
         {
@@ -538,7 +548,10 @@ def build_plan_features(
             "higher_strength": _clip(_finite(getattr(plan, "higher_strength_ratio", 0.0)), -12.0, 12.0),
             "lower_strength": _clip(_finite(getattr(plan, "lower_strength_ratio", 0.0)), -12.0, 12.0),
             "trigger_strength": _clip(_finite(getattr(plan, "trigger_strength_ratio", 0.0)), -12.0, 12.0),
-            "source_rule_count_log": _safe_log1p(_finite(getattr(plan, "source_rule_count", 0.0))),
+            # Several plans carry the repository-wide provenance catalogue.
+            # Its length is a code-version fingerprint, not trade confluence.
+            # Count only distinct structures actually used by this frozen plan.
+            "source_rule_count_log": _safe_log1p(len(local_structure_ids)),
             "higher_tf_log": _safe_log1p(higher_tf),
             "decision_tf_log": _safe_log1p(decision_tf),
             "trigger_tf_log": _safe_log1p(trigger_tf),

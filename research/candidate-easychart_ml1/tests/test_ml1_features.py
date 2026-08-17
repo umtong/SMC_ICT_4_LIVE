@@ -39,6 +39,10 @@ def _plan() -> SimpleNamespace:
         lower_zone_kind="FVG",
         trigger_zone_kind="ORDER_BLOCK",
         target_zone_kind="SWING_HIGH",
+        higher_zone_id="H",
+        lower_zone_id="L",
+        trigger_zone_id="H",
+        target_zone_id="T",
         higher_strength_ratio=2.0,
         lower_strength_ratio=1.5,
         trigger_strength_ratio=1.0,
@@ -142,3 +146,4 @@ def test_prior_only_feature_book_and_exact_schema() -> None:
     assert features["mechanism_channel"] == 0.0
     assert features["mechanism_wedge"] == 0.0
     assert features["mechanism_liquidity_sweep"] == 0.0
+    assert abs(features["source_rule_count_log"] - 1.3862943611198906) < 1e-12
