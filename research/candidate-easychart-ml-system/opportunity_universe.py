@@ -8,7 +8,9 @@ without pretending any one existing policy is the answer:
 * FLOW: broad structure/liquidity interactions with observable initiative or
   absorption;
 * SKILLED: completed sweep/reclaim reversal and accepted-control-transfer plans;
-* PULLBACK: current-leg, latest-level first pullback continuation.
+* PULLBACK: current-leg, latest-level first pullback continuation;
+* H4: rejection of the immediately preceding completed four-hour auction
+  extreme, followed by the first completed lower-timeframe response.
 
 Every owner still fixes direction, entry, invalidation and objective before the
 plan becomes executable. The ML router later selects among complete plans. No
@@ -23,18 +25,20 @@ from contracts_v5 import V5TradePlan
 from domain import Candle
 from easychart_re1_efficient_pullback import EfficientPullbackEngine
 from easychart_re1_flow import EasyChartRE1FlowBundle
+from easychart_re1_h4_liquidity import H4LiquiditySweepEngine
 from easychart_re1_skilled_integrated import EasyChartRE1SkilledIntegratedBundle
 
 OPPORTUNITY_UNIVERSE_POLICY = (
-    "ML_SYSTEM:FLOW_SKILLED_AND_CURRENT_LEG_FIRST_PULLBACK_OWN_DISTINCT_CAUSAL_"
-    "OPPORTUNITIES_AND_EMIT_COMPLETE_PREENTRY_PLANS_WITHOUT_POLICY_PRIORITY"
+    "ML_SYSTEM:FLOW_SKILLED_CURRENT_LEG_FIRST_PULLBACK_AND_COMPLETED_H4_AUCTION_"
+    "OWN_DISTINCT_CAUSAL_OPPORTUNITIES_AND_EMIT_COMPLETE_PREENTRY_PLANS_WITHOUT_"
+    "POLICY_PRIORITY"
 )
 
 
 class EasyChartMLOpportunityUniverse:
-    """One namespaced plan stream from three distinct auction mechanisms."""
+    """One namespaced plan stream from distinct auction mechanisms."""
 
-    OWNER_ORDER = ("FLOW", "SKILLED", "PULLBACK")
+    OWNER_ORDER = ("FLOW", "SKILLED", "PULLBACK", "H4")
 
     def __init__(
         self,
@@ -56,6 +60,14 @@ class EasyChartMLOpportunityUniverse:
             # and expects a different routing stack; the engine itself is the
             # complete 15m -> 5m -> 1m first-pullback causal family.
             "PULLBACK": EfficientPullbackEngine(
+                symbol,
+                tick_size,
+                minimum_gross_rr,
+            ),
+            # A skilled human scans a wider auction before using 15m/5m/1m for
+            # timing. Four completed 60m bars provide that causal context
+            # without adding a new feed or any future-dependent rolling range.
+            "H4": H4LiquiditySweepEngine(
                 symbol,
                 tick_size,
                 minimum_gross_rr,
