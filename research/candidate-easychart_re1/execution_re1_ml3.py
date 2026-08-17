@@ -2,9 +2,10 @@
 
 EasyChart still creates every trade plan and fixes entry, invalidation and
 objective before submission. ML3 is a meta-label/router only: at the complete
-four-symbol one-minute watermark it estimates target-before-stop probability,
-converts that probability to expected account-risk R after costs, rejects
-nonpositive expectancy, and ranks simultaneous executable plans by that value.
+four-symbol one-minute watermark it estimates target-before-stop probability.
+A plan must be more likely to win than lose and must retain positive post-cost
+account-risk expectancy. Simultaneous plans are ordered by win likelihood first;
+a larger distant target cannot buy priority over a higher-probability plan.
 """
 from __future__ import annotations
 
@@ -31,10 +32,11 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 ML3_MODEL_ENV = "EASYCHART_RE1_ML3_MODEL"
 ML3_TARGET_SLIPPAGE_TICKS = 1
+ML3_QUALITY_PROBABILITY = 0.5
 ML3_ROUTING_POLICY = (
     "COMPLETE_EASYCHART_PLAN_THEN_CAUSAL_TARGET_BEFORE_STOP_PROBABILITY;"
-    "COST_ADJUSTED_EXPECTED_ACCOUNT_R_MUST_BE_POSITIVE;"
-    "HIGHEST_EXPECTED_ACCOUNT_R_WINS_THE_SINGLE_GLOBAL_SLOT"
+    "TARGET_MUST_BE_MORE_LIKELY_THAN_STOP_AND_COST_ADJUSTED_EXPECTED_ACCOUNT_R_MUST_BE_POSITIVE;"
+    "HIGHEST_TARGET_FIRST_PROBABILITY_THEN_EXPECTED_ACCOUNT_R_WINS_THE_SINGLE_GLOBAL_SLOT"
 )
 
 
@@ -68,6 +70,7 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
             model_path=str(self.ml3_model_path),
             model_sha256=self.ml3_model.sha256,
             feature_count=self.ml3_model.feature_count,
+            quality_probability=ML3_QUALITY_PROBABILITY,
             routing_policy=ML3_ROUTING_POLICY,
         )
 
@@ -196,6 +199,7 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
             plan_id=plan.plan_id,
             instrument_id=str(instrument_id),
             target_first_probability=probability,
+            quality_probability=ML3_QUALITY_PROBABILITY,
             break_even_probability=break_even,
             probability_edge=probability - break_even,
             target_net_r=target_net_r,
@@ -208,6 +212,18 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
             routing_policy=ML3_ROUTING_POLICY,
         )
         self._minc("plan_scored")
+        if probability <= ML3_QUALITY_PROBABILITY:
+            self._minc("plan_rejected_target_not_more_likely")
+            self._record(
+                "ml3_plan_rejected_target_not_more_likely",
+                plan_id=plan.plan_id,
+                instrument_id=str(instrument_id),
+                target_first_probability=probability,
+                quality_probability=ML3_QUALITY_PROBABILITY,
+                break_even_probability=break_even,
+                expected_account_r=expected_account_r,
+            )
+            return None
         if not math.isfinite(expected_account_r) or expected_account_r <= 0.0:
             self._minc("plan_rejected_nonpositive_expectancy")
             self._record(
@@ -219,7 +235,7 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
                 expected_account_r=expected_account_r,
             )
             return None
-        self._minc("plan_positive_expectancy")
+        self._minc("plan_quality_and_expectancy_accepted")
         return ScoredPlan(
             instrument_id=instrument_id,
             plan=plan,
@@ -319,6 +335,7 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
             "model_path": str(self.ml3_model_path),
             "model_sha256": self.ml3_model.sha256,
             "feature_count": self.ml3_model.feature_count,
+            "quality_probability": ML3_QUALITY_PROBABILITY,
             "watermark_ns": self.ml3_state.watermark_ns,
             "gap_resets": dict(self.ml3_state.gap_resets),
             "routing_policy": ML3_ROUTING_POLICY,
@@ -328,6 +345,7 @@ class EasyChartRE1ML3Strategy(EasyChartRE1LocalAuctionStrategy):
 __all__ = [
     "EasyChartRE1ML3Strategy",
     "ML3_MODEL_ENV",
+    "ML3_QUALITY_PROBABILITY",
     "ML3_ROUTING_POLICY",
     "ML3_TARGET_SLIPPAGE_TICKS",
 ]
