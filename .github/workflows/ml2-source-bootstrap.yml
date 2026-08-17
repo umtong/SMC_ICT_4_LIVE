@@ -21,14 +21,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install audited ML2 source payload
+      - name: Install audited ML2 source payload without workflow mutations
         shell: bash
         run: |
           set -euo pipefail
           cat .ml2-bootstrap/payload.part* | base64 -d > /tmp/ml2_payload.tar.gz
           echo "9d6105702633dcdf81164cc72b26c66e4729813da7c8e19b8a511a261e75c5a6  /tmp/ml2_payload.tar.gz" | sha256sum -c -
           tar -xzf /tmp/ml2_payload.tar.gz -C .
-          rm -rf .ml2-bootstrap .github/workflows/ml2-source-bootstrap.yml
+
+          # The repository token can update ordinary source but not workflow
+          # files.  Keep workflow changes for a later user-authenticated commit.
+          git checkout -- .github/workflows
+          git clean -fd .github/workflows
+          rm -rf .ml2-bootstrap
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -37,5 +42,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "research: install causal EasyChart ML2 implementation"
+          git commit -m "research: install causal EasyChart ML2 source"
           git push
