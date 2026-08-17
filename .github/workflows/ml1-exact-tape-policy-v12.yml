@@ -1,0 +1,137 @@
+name: ml1-exact-tape-policy-v12
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - "research/candidate-easychart_ml1/mechanism_data_v2.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v2.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v3.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v4.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v5.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v6.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v7.py"
+      - "research/candidate-easychart_ml1/mechanism_harvest_v9.py"
+      - "research/candidate-easychart_ml1/mechanism_tape_v10.py"
+      - "research/candidate-easychart_ml1/mechanism_tape_v11.py"
+      - "research/candidate-easychart_ml1/mechanism_tape_v12.py"
+      - "research/candidate-easychart_ml1/mechanism_fit_v3.py"
+      - "research/candidate-easychart_ml1/mechanism_fit_v11.py"
+      - "research/candidate-easychart_ml1/.exact_tape_v12_dispatch"
+      - ".github/workflows/ml1-exact-tape-policy-v12.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ml1-exact-tape-policy-v12-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        include:
+          - {period: dev-2022-03, start: "2022-03-01", end: "2022-03-07"}
+          - {period: dev-2022-08, start: "2022-08-10", end: "2022-08-16"}
+          - {period: dev-2023-02, start: "2023-02-01", end: "2023-02-07"}
+          - {period: dev-2023-09, start: "2023-09-10", end: "2023-09-16"}
+          - {period: dev-2024-03, start: "2024-03-01", end: "2024-03-07"}
+          - {period: dev-2024-10, start: "2024-10-10", end: "2024-10-16"}
+          - {period: dev-2025-04, start: "2025-04-01", end: "2025-04-07"}
+          - {period: dev-2025-11, start: "2025-11-01", end: "2025-11-07"}
+          - {period: final-2026-02, start: "2026-02-01", end: "2026-02-14"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install numerical and learning runtime
+        run: python -m pip install --disable-pip-version-check numpy pandas scikit-learn
+      - name: Compile exact-tape research modules
+        run: |
+          python -m py_compile research/candidate-easychart_ml1/mechanism_data_v2.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v2.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v3.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v4.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v5.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v6.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v7.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_harvest_v9.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_tape_v10.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_tape_v11.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_tape_v12.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_fit_v3.py
+          python -m py_compile research/candidate-easychart_ml1/mechanism_fit_v11.py
+      - name: Harvest exact pre-decision tape and frozen plans
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python research/candidate-easychart_ml1/mechanism_tape_v12.py \
+            --period '${{ matrix.period }}' \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --cache '.cache/exact-tape-v12/${{ matrix.period }}' \
+            --output 'artifacts/${{ matrix.period }}'
+      - name: Preserve environment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-tape-v12-${{ matrix.period }}
+          path: artifacts/${{ matrix.period }}
+          if-no-files-found: error
+          retention-days: 30
+
+  fit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    needs: harvest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install numerical and learning runtime
+        run: python -m pip install --disable-pip-version-check numpy pandas scikit-learn
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: exact-tape-v12-*
+          path: gathered
+      - name: Fit family-routed period-held-out competing-risk policy
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python research/candidate-easychart_ml1/mechanism_fit_v11.py \
+            --root gathered \
+            --output exact-tape-v12-result
+      - name: Preserve full exact-tape evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-tape-v12-policy-result
+          path: exact-tape-v12-result
+          if-no-files-found: error
+          retention-days: 45
+      - name: Commit compact result
+        run: |
+          mkdir -p research/candidate-easychart_ml1/results/exact_tape_v12
+          cp exact-tape-v12-result/RESULT.md research/candidate-easychart_ml1/results/exact_tape_v12/RESULT.md
+          cp exact-tape-v12-result/summary.json research/candidate-easychart_ml1/results/exact_tape_v12/summary.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/candidate-easychart_ml1/results/exact_tape_v12
+          if ! git diff --cached --quiet; then
+            git commit -m 'research(ml1): preserve exact-tape v12 evidence'
+            git pull --rebase origin research_ML1
+            git push origin HEAD:research_ML1
+          fi
