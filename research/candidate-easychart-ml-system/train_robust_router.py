@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from robust_router import row_feature_record, train_robust_router
+from robust_router_system import row_feature_record, train_robust_router
 
 
 def _parse_input(value: str) -> tuple[str, Path]:
