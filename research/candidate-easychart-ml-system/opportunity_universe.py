@@ -21,9 +21,7 @@ from typing import Any
 
 from contracts_v5 import V5TradePlan
 from domain import Candle
-from easychart_re1_efficient_pullback_final import (
-    EasyChartRE1EfficientPullbackFinalBundle,
-)
+from easychart_re1_efficient_pullback import EfficientPullbackEngine
 from easychart_re1_flow import EasyChartRE1FlowBundle
 from easychart_re1_skilled_integrated import EasyChartRE1SkilledIntegratedBundle
 
@@ -53,7 +51,11 @@ class EasyChartMLOpportunityUniverse:
                 tick_size,
                 minimum_gross_rr,
             ),
-            "PULLBACK": EasyChartRE1EfficientPullbackFinalBundle(
+            # Use the independent mechanism engine, not the old integrated
+            # policy wrapper. The wrapper recursively embeds unrelated owners
+            # and expects a different routing stack; the engine itself is the
+            # complete 15m -> 5m -> 1m first-pullback causal family.
+            "PULLBACK": EfficientPullbackEngine(
                 symbol,
                 tick_size,
                 minimum_gross_rr,
