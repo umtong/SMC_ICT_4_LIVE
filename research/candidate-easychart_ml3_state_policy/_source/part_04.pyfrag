@@ -1,0 +1,250 @@
+            num_leaves=31,
+            max_depth=-1,
+            min_child_samples=120,
+            subsample=0.82,
+            colsample_bytree=0.72,
+            reg_alpha=1.0,
+            reg_lambda=5.0,
+            random_state=config.random_state + 3,
+            n_jobs=-1,
+            verbosity=-1,
+        )
+    else:
+        clf_extra = make_pipeline(
+            SimpleImputer(strategy="median"),
+            ExtraTreesClassifier(
+                n_estimators=96,
+                min_samples_leaf=60,
+                max_depth=18,
+                max_features=0.60,
+                class_weight="balanced_subsample",
+                n_jobs=-1,
+                random_state=config.random_state + 3,
+            ),
+        )
+    reg_hist.fit(x, y_reg)
+    reg_extra.fit(x, y_reg)
+    clf_hist.fit(x, y_clf)
+    clf_extra.fit(x, y_clf)
+    return reg_hist, reg_extra, clf_hist, clf_extra, columns
+
+
+def _raw_predictions(
+    frame: pd.DataFrame,
+    feature_columns: Sequence[str],
+    reg_hist: object,
+    reg_extra: object,
+    clf_hist: object,
+    clf_extra: object,
+) -> pd.DataFrame:
+    x, _ = _feature_matrix(frame, feature_columns)
+    rh = np.asarray(reg_hist.predict(x), dtype=float)
+    re = np.asarray(reg_extra.predict(x), dtype=float)
+    ph = np.asarray(clf_hist.predict_proba(x)[:, 1], dtype=float)
+    pe = np.asarray(clf_extra.predict_proba(x)[:, 1], dtype=float)
+    reg = 0.5 * (rh + re)
+    probability = 0.5 * (ph + pe)
+    barrier_ev = probability * frame["planned_net_target_r"].to_numpy(dtype=float) - (1.0 - probability)
+    disagreement = 0.5 * np.abs(rh - re) + 0.25 * np.abs(ph - pe)
+    raw = 0.62 * reg + 0.38 * barrier_ev - 0.20 * disagreement
+    result = frame.copy()
+    result["pred_reg_hist"] = rh
+    result["pred_reg_extra"] = re
+    result["pred_target_hist"] = ph
+    result["pred_target_extra"] = pe
+    result["pred_target_probability"] = probability
+    result["model_disagreement"] = disagreement
+    result["raw_action_value"] = raw
+    return result
+
+
+def _top_per_decision(frame: pd.DataFrame) -> pd.DataFrame:
+    ordered = frame.sort_values(
+        ["entry_time", "raw_action_value", "planned_net_target_r", "gross_rr"],
+        ascending=[True, False, False, False],
+    )
+    return ordered.groupby("entry_time", sort=True, as_index=False).head(1).copy()
+
+
+def fit_calibration(selected: pd.DataFrame, bins: int) -> CalibrationMap:
+    if len(selected) < max(96, bins * 6):
+        raise ValueError(f"calibration selection too small: {len(selected)}")
+    work = selected[["raw_action_value", "net_r"]].dropna().sort_values("raw_action_value").copy()
+    unique = work["raw_action_value"].nunique()
+    actual_bins = max(4, min(bins, unique, len(work) // 40))
+    work["bin"] = pd.qcut(work["raw_action_value"], q=actual_bins, duplicates="drop")
+    grouped = work.groupby("bin", observed=True)
+    table = grouped.agg(
+        lower=("raw_action_value", "min"),
+        upper=("raw_action_value", "max"),
+        center=("raw_action_value", "mean"),
+        mean=("net_r", "mean"),
+        std=("net_r", "std"),
+        count=("net_r", "size"),
+    ).reset_index(drop=True)
+    table["std"] = table["std"].fillna(0.0)
+    # The uncertainty term concerns the expected value of a selected action,
+    # not the volatility of one trade.  This avoids pretending that high
+    # confidence means individual losses cannot occur.
+    standard_error = table["std"] / np.sqrt(table["count"].clip(lower=1))
+    table["lower_mean"] = table["mean"] - 1.28 * standard_error
+    iso = IsotonicRegression(out_of_bounds="clip", increasing=True)
+    iso.fit(table["center"], table["mean"], sample_weight=table["count"])
+    return CalibrationMap(
+        lower_edges=table["lower"].to_numpy(dtype=float),
+        upper_edges=table["upper"].to_numpy(dtype=float),
+        raw_centers=table["center"].to_numpy(dtype=float),
+        means=table["mean"].to_numpy(dtype=float),
+        lower_means=table["lower_mean"].to_numpy(dtype=float),
+        counts=table["count"].to_numpy(dtype=int),
+        isotonic=iso,
+    )
+
+
+def train_policy(
+    train: pd.DataFrame,
+    calibration: pd.DataFrame,
+    config: PolicyConfig,
+) -> ModelBundle:
+    reg_hist, reg_extra, clf_hist, clf_extra, columns = _fit_models(train, config)
+    scored_calibration = _raw_predictions(
+        calibration, columns, reg_hist, reg_extra, clf_hist, clf_extra
+    )
+    selected_calibration = _top_per_decision(scored_calibration)
+    calibration_map = fit_calibration(selected_calibration, config.calibration_bins)
+    calibrated_probability = selected_calibration["pred_target_probability"].clip(0.0, 1.0)
+    diagnostics = {
+        "training_actions": int(len(train)),
+        "calibration_actions": int(len(calibration)),
+        "calibration_top_choices": int(len(selected_calibration)),
+        "raw_score_mae": float(mean_absolute_error(selected_calibration["net_r"], selected_calibration["raw_action_value"])),
+        "target_probability_brier": float(brier_score_loss(selected_calibration["target_hit"], calibrated_probability)),
+        "calibration_bin_centers": calibration_map.raw_centers.tolist(),
+        "calibration_bin_mean_net_r": calibration_map.means.tolist(),
+        "calibration_bin_lower_mean_net_r": calibration_map.lower_means.tolist(),
+        "calibration_bin_counts": calibration_map.counts.tolist(),
+    }
+    return ModelBundle(
+        feature_columns=columns,
+        reg_hist=reg_hist,
+        reg_extra=reg_extra,
+        clf_hist=clf_hist,
+        clf_extra=clf_extra,
+        calibration=calibration_map,
+        calibration_diagnostics=diagnostics,
+    )
+
+
+def score_policy(frame: pd.DataFrame, model: ModelBundle) -> pd.DataFrame:
+    scored = _raw_predictions(
+        frame,
+        model.feature_columns,
+        model.reg_hist,
+        model.reg_extra,
+        model.clf_hist,
+        model.clf_extra,
+    )
+    raw = scored["raw_action_value"].to_numpy(dtype=float)
+    scored["calibrated_mean_net_r"] = model.calibration.predict_mean(raw)
+    scored["conservative_action_value"] = model.calibration.predict_lower(raw)
+    return scored
+
+
+# ---------------------------------------------------------------------------
+# One continuous account, one position, independent causal episodes
+# ---------------------------------------------------------------------------
+
+
+def simulate_continuous_account(
+    scored: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    config: PolicyConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    eligible = scored[scored["conservative_action_value"] > 0.0].copy()
+    eligible = eligible.sort_values(
+        ["entry_time", "conservative_action_value", "raw_action_value", "planned_net_target_r"],
+        ascending=[True, False, False, False],
+    )
+    candidates_by_time = {
+        timestamp: group for timestamp, group in eligible.groupby("entry_time", sort=True)
+    }
+    nav = 1.0
+    flat_time = pd.Timestamp(start)
+    used_local: set[str] = set()
+    used_global: set[str] = set()
+    trades: list[dict[str, object]] = []
+    curve: list[dict[str, object]] = [{"time": pd.Timestamp(start), "nav": nav}]
+
+    for entry_time, group in candidates_by_time.items():
+        entry_time = pd.Timestamp(entry_time)
+        if entry_time < flat_time or entry_time < start or entry_time > end:
+            continue
+        chosen = None
+        for _, candidate in group.iterrows():
+            local_id = str(candidate["local_episode_id"])
+            global_id = str(candidate["global_episode_id"])
+            if local_id in used_local or global_id in used_global:
+                continue
+            chosen = candidate
+            break
+        if chosen is None:
+            continue
+        multiplier = 1.0 + config.risk_fraction * float(chosen["net_r"])
+        if multiplier <= 0.0:
+            multiplier = 1e-9
+        nav_before = nav
+        nav *= multiplier
+        exit_time = pd.Timestamp(chosen["exit_time"])
+        flat_time = max(exit_time, entry_time)
+        used_local.add(str(chosen["local_episode_id"]))
+        used_global.add(str(chosen["global_episode_id"]))
+        trade = chosen.to_dict()
+        trade.update(
+            {
+                "nav_before": nav_before,
+                "nav_after": nav,
+                "account_return": multiplier - 1.0,
+            }
+        )
+        trades.append(trade)
+        curve.append({"time": exit_time, "nav": nav})
+
+    ledger = pd.DataFrame(trades)
+    equity = pd.DataFrame(curve).sort_values("time").reset_index(drop=True)
+    equity["peak_nav"] = equity["nav"].cummax()
+    equity["drawdown"] = equity["nav"] / equity["peak_nav"] - 1.0
+    calendar_days = max((end.normalize() - start.normalize()).days + 1, 1)
+
+    if ledger.empty:
+        metrics: dict[str, object] = {
+            "start": str(start), "end": str(end), "calendar_days": calendar_days,
+            "trades": 0, "trades_per_day": 0.0, "ending_nav": nav,
+            "net_return": nav - 1.0, "max_drawdown": 0.0,
+        }
+        return ledger, equity, metrics
+
+    wins = ledger["net_r"] > 0.0
+    gross_profit = ledger.loc[ledger["net_r"] > 0.0, "net_r"].sum()
+    gross_loss = -ledger.loc[ledger["net_r"] < 0.0, "net_r"].sum()
+    positive_concentration = 0.0
+    positive = ledger.loc[ledger["net_r"] > 0.0, "net_r"].sort_values(ascending=False)
+    if positive.sum() > 0.0:
+        positive_concentration = float(positive.head(max(1, math.ceil(len(positive) * 0.05))).sum() / positive.sum())
+    metrics = {
+        "start": str(start),
+        "end": str(end),
+        "calendar_days": calendar_days,
+        "trades": int(len(ledger)),
+        "trades_per_day": float(len(ledger) / calendar_days),
+        "win_rate": float(wins.mean()),
+        "target_hit_rate": float((ledger["exit_reason"] == "TARGET").mean()),
+        "stop_hit_rate": float((ledger["exit_reason"] == "STOP").mean()),
+        "time_exit_rate": float((ledger["exit_reason"] == "TIME").mean()),
+        "average_net_r": float(ledger["net_r"].mean()),
+        "median_net_r": float(ledger["net_r"].median()),
+        "average_planned_gross_rr": float(ledger["gross_rr"].mean()),
+        "average_net_target_r": float(ledger["net_target_r"].mean()),
+        "average_hold_minutes": float(ledger["hold_minutes"].mean()),
+        "median_hold_minutes": float(ledger["hold_minutes"].median()),
+        "profit_factor_r": float(gross_profit / gross_loss) if gross_loss > 0.0 else float("inf"),

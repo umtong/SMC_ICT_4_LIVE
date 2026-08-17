@@ -1,0 +1,250 @@
+    required_leverage = np.full(n, np.nan, dtype=np.float64)
+    net_target_r = np.full(n, np.nan, dtype=np.float64)
+
+    for row_index in range(n):
+        entry_index = int(decision_indices[row_index]) + 1
+        side = int(sides[row_index])
+        horizon = int(horizons[row_index])
+        stop = stops[row_index]
+        target = targets[row_index]
+        entry_fill = opens[entry_index] * (1.0 + side * entry_slippage)
+        stop_fill = stop * (1.0 - side * stop_slippage)
+        stop_gross = side * (stop_fill - entry_fill) / entry_fill
+        stop_net = stop_gross - entry_fee - stop_fee * (stop_fill / entry_fill) - funding_per_8h / 480.0
+        unit_risk = -stop_net
+        if not np.isfinite(unit_risk) or unit_risk <= 0.0:
+            continue
+        leverage = risk_fraction / unit_risk
+        required_leverage[row_index] = leverage
+        target_gross = side * (target - entry_fill) / entry_fill
+        target_net = target_gross - entry_fee - target_fee * (target / entry_fill) - funding_per_8h / 480.0
+        net_target_r[row_index] = target_net / unit_risk
+        if leverage > max_leverage:
+            reason_code[row_index] = 4
+            continue
+
+        final_index = min(entry_index + horizon - 1, len(opens) - 1)
+        resolved = False
+        for bar_index in range(entry_index, final_index + 1):
+            if side > 0:
+                touched_stop = lows[bar_index] <= stop
+                touched_target = highs[bar_index] >= target
+            else:
+                touched_stop = highs[bar_index] >= stop
+                touched_target = lows[bar_index] <= target
+            held = bar_index - entry_index + 1
+            if touched_stop:
+                realised = (
+                    side * (stop_fill - entry_fill) / entry_fill
+                    - entry_fee
+                    - stop_fee * (stop_fill / entry_fill)
+                    - funding_per_8h * held / 480.0
+                )
+                net_r[row_index] = realised / unit_risk
+                exit_price[row_index] = stop_fill
+                exit_time_ns[row_index] = time_ns[bar_index] + 60_000_000_000
+                hold_minutes[row_index] = held
+                stop_hit[row_index] = 1
+                reason_code[row_index] = 1
+                resolved = True
+                break
+            if touched_target:
+                realised = (
+                    side * (target - entry_fill) / entry_fill
+                    - entry_fee
+                    - target_fee * (target / entry_fill)
+                    - funding_per_8h * held / 480.0
+                )
+                net_r[row_index] = realised / unit_risk
+                exit_price[row_index] = target
+                exit_time_ns[row_index] = time_ns[bar_index] + 60_000_000_000
+                hold_minutes[row_index] = held
+                target_hit[row_index] = 1
+                reason_code[row_index] = 2
+                resolved = True
+                break
+        if not resolved:
+            held = final_index - entry_index + 1
+            time_fill = closes[final_index] * (1.0 - side * time_slippage)
+            realised = (
+                side * (time_fill - entry_fill) / entry_fill
+                - entry_fee
+                - time_fee * (time_fill / entry_fill)
+                - funding_per_8h * held / 480.0
+            )
+            net_r[row_index] = realised / unit_risk
+            exit_price[row_index] = time_fill
+            exit_time_ns[row_index] = time_ns[final_index] + 60_000_000_000
+            hold_minutes[row_index] = held
+            reason_code[row_index] = 3
+    return (
+        exit_time_ns, exit_price, hold_minutes, net_r, target_hit, stop_hit,
+        reason_code, required_leverage, net_target_r,
+    )
+
+
+def label_candidates(
+    candidates: pd.DataFrame,
+    feature_frames: Mapping[str, pd.DataFrame],
+    config: PolicyConfig,
+    cost: CostModel,
+) -> pd.DataFrame:
+    pieces: list[pd.DataFrame] = []
+    reason_names = np.asarray(["UNRESOLVED", "STOP", "TARGET", "TIME", "LEVERAGE_REJECT"], dtype=object)
+    for symbol in SYMBOLS:
+        work = candidates[candidates["symbol"] == symbol].copy().reset_index(drop=True)
+        if work.empty:
+            continue
+        frame = feature_frames[symbol]
+        result = _label_numeric(
+            work["decision_index"].to_numpy(dtype=np.int32),
+            work["side"].to_numpy(dtype=np.int8),
+            work["horizon_minutes"].to_numpy(dtype=np.int16),
+            work["stop"].to_numpy(dtype=float),
+            work["target"].to_numpy(dtype=float),
+            frame["open"].to_numpy(dtype=float),
+            frame["high"].to_numpy(dtype=float),
+            frame["low"].to_numpy(dtype=float),
+            frame["close"].to_numpy(dtype=float),
+            frame.index.view("int64"),
+            cost.entry_slippage,
+            cost.stop_slippage,
+            cost.time_slippage,
+            cost.entry_taker_rate,
+            cost.stop_taker_rate,
+            cost.time_taker_rate,
+            cost.target_maker_rate,
+            cost.adverse_funding_per_8h,
+            config.risk_fraction,
+            config.max_leverage,
+        )
+        (
+            exit_time_ns, exit_price, hold_minutes, net_r, target_hit,
+            stop_hit, reason_code, required_leverage, net_target_r,
+        ) = result
+        work["exit_time"] = pd.to_datetime(exit_time_ns, utc=True, errors="coerce")
+        work["exit_price"] = exit_price
+        work["hold_minutes"] = hold_minutes
+        work["net_r"] = net_r
+        work["target_hit"] = target_hit
+        work["stop_hit"] = stop_hit
+        work["exit_reason"] = reason_names[reason_code]
+        work["required_leverage"] = required_leverage
+        work["net_target_r"] = net_target_r
+        work = work[(work["exit_reason"] != "LEVERAGE_REJECT") & work["net_r"].notna()].copy()
+        pieces.append(work)
+    if not pieces:
+        raise RuntimeError("all candidate actions were rejected")
+    return pd.concat(pieces, ignore_index=True).sort_values(
+        ["entry_time", "symbol", "side", "action_template"]
+    ).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Direct action-value learning and winner-aware calibration
+# ---------------------------------------------------------------------------
+
+
+CUSTOM_DIRECTIONAL_FEATURES = (
+    "dir_range_location_30",
+    "dir_range_location_60",
+    "dir_range_location_120",
+    "dir_rejection_wick",
+    "dir_sweep_reclaim",
+    "dir_accepted_break",
+)
+ACTION_DESCRIPTOR_FEATURES = (
+    "side",
+    "horizon_minutes",
+    "stop_pct",
+    "target_pct",
+    "gross_rr",
+    "planned_net_target_r",
+    "planned_required_leverage",
+)
+
+
+def _feature_matrix(frame: pd.DataFrame, feature_columns: Sequence[str] | None = None) -> tuple[pd.DataFrame, tuple[str, ...]]:
+    # An explicit allow-list is safer than excluding label columns.  In
+    # particular, realised hold time, next-open leverage and realised target R
+    # must never become model inputs.
+    allowed = [
+        *STATE_FEATURES,
+        *(f"dir_{name}" for name in DIRECTIONAL_FEATURES),
+        *CUSTOM_DIRECTIONAL_FEATURES,
+        *ACTION_DESCRIPTOR_FEATURES,
+        "action_template",
+    ]
+    base = frame.loc[:, allowed].copy()
+    base["side"] = base["side"].astype(float)
+    base = pd.get_dummies(base, columns=["action_template"], prefix="action", dtype=float)
+    base = base.replace([np.inf, -np.inf], np.nan)
+    if feature_columns is None:
+        columns = tuple(sorted(base.columns))
+    else:
+        columns = tuple(feature_columns)
+        for column in columns:
+            if column not in base:
+                base[column] = 0.0
+    return base.loc[:, columns].astype(np.float32), columns
+
+
+def _fit_models(train: pd.DataFrame, config: PolicyConfig) -> tuple[object, object, object, object, tuple[str, ...]]:
+    x, colums = _feature_matrix(train)
+    y_reg = train["net_r"].clip(-1.5, 4.5).to_numpy(dtype=float)
+    y_clf = train["target_hit"].to_numpy(dtype=int)
+
+    reg_hist = make_pipeline(
+        SimpleImputer(strategy="median"),
+        HistGradientBoostingRegressor(
+            loss="squared_error",
+            learning_rate=0.045,
+            max_iter=120,
+            max_leaf_nodes=31,
+            min_samples_leaf=100,
+            l2_regularization=2.0,
+            random_state=config.random_state,
+        ),
+    )
+    if LGBMRegressor is not None:
+        reg_extra = LGBMRegressor(
+            n_estimators=360,
+            learning_rate=0.035,
+            num_leaves=31,
+            max_depth=-1,
+            min_child_samples=120,
+            subsample=0.82,
+            colsample_bytree=0.72,
+            reg_alpha=1.0,
+            reg_lambda=5.0,
+            random_state=config.random_state + 1,
+            n_jobs=-1,
+            verbosity=-1,
+        )
+    else:
+        reg_extra = make_pipeline(
+            SimpleImputer(strategy="median"),
+            ExtraTreesRegressor(
+                n_estimators=96,
+                min_samples_leaf=60,
+                max_depth=18,
+                max_features=0.66,
+                n_jobs=-1,
+                random_state=config.random_state + 1,
+            ),
+        )
+    clf_hist = make_pipeline(
+        SimpleImputer(strategy="median"),
+        HistGradientBoostingClassifier(
+            learning_rate=0.045,
+            max_iter=120,
+            max_leaf_nodes=31,
+            min_samples_leaf=100,
+            l2_regularization=2.0,
+            random_state=config.random_state + 2,
+        ),
+    )
+    if LGBMClassifier is not None:
+        clf_extra = LGBMClassifier(
+            n_estimators=360,
+            learning_rate=0.035,

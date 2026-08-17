@@ -1,0 +1,250 @@
+        np.log1p(frame["quote_volume"] / frame["count"].clip(lower=1)),
+        240,
+    )
+    out["impact_per_flow_5"] = _safe_div(out["ret_5"], out["flow_5"].abs() + 0.025).clip(-0.2, 0.2)
+    out["impact_per_flow_15"] = _safe_div(out["ret_15"], out["flow_15"].abs() + 0.025).clip(-0.3, 0.3)
+    out["flow_price_agreement_5"] = np.sign(out["ret_5"] * out["flow_5"])
+    out["absorption_5"] = out["flow_z_5"].abs() - _rolling_z(out["ret_5"].abs(), 240).abs()
+
+    abs_ret = ret1.abs()
+    for horizon in (15, 30, 60, 120):
+        travel = abs_ret.rolling(horizon, min_periods=max(8, horizon // 2)).sum()
+        out[f"efficiency_{horizon}"] = _safe_div(out[f"ret_{horizon}"].abs(), travel).clip(0.0, 1.0)
+
+    for horizon in (15, 30, 60, 120, 240, 480):
+        prior_high = frame["high"].shift(1).rolling(horizon, min_periods=max(10, horizon // 2)).max()
+        prior_low = frame["low"].shift(1).rolling(horizon, min_periods=max(10, horizon // 2)).min()
+        width = (prior_high - prior_low).clip(lower=1e-12)
+        out[f"prior_high_{horizon}"] = prior_high
+        out[f"prior_low_{horizon}"] = prior_low
+        out[f"range_width_pct_{horizon}"] = width / frame["close"]
+        out[f"range_pos_{horizon}"] = ((frame["close"] - prior_low) / width).clip(-2.0, 3.0)
+        out[f"dist_high_atr_{horizon}"] = (prior_high - frame["close"]) / out["atr_60"].clip(lower=1e-12)
+        out[f"dist_low_atr_{horizon}"] = (frame["close"] - prior_low) / out["atr_60"].clip(lower=1e-12)
+
+    range15 = frame["high"].rolling(15, min_periods=10).max() - frame["low"].rolling(15, min_periods=10).min()
+    range60 = frame["high"].rolling(60, min_periods=30).max() - frame["low"].rolling(60, min_periods=30).min()
+    out["compression_15"] = _safe_div(range15, range15.rolling(240, min_periods=60).median())
+    out["compression_60"] = _safe_div(range60, range60.rolling(720, min_periods=180).median())
+
+    typical = (frame["high"] + frame["low"] + frame["close"]) / 3.0
+    for horizon in (30, 120, 480):
+        qv = frame["quote_volume"].rolling(horizon, min_periods=max(10, horizon // 2)).sum()
+        vwap = (typical * frame["quote_volume"]).rolling(horizon, min_periods=max(10, horizon // 2)).sum() / qv.clip(lower=1e-12)
+        out[f"vwap_dev_atr_{horizon}"] = (frame["close"] - vwap) / out["atr_60"].clip(lower=1e-12)
+
+    # Continuous auction-event descriptors.  These are features, not entry gates.
+    low60 = out["prior_low_60"]
+    high60 = out["prior_high_60"]
+    out["sweep_reclaim_low_60"] = ((frame["low"] < low60) & (frame["close"] > low60)).astype(float)
+    out["sweep_reclaim_high_60"] = ((frame["high"] > high60) & (frame["close"] < high60)).astype(float)
+    out["accepted_break_high_60"] = ((frame["close"] > high60) & (frame["low"] > low60)).astype(float)
+    out["accepted_break_low_60"] = ((frame["close"] < low60) & (frame["high"] < high60)).astype(float)
+    out["break_distance_high_atr"] = (frame["close"] - high60) / out["atr_60"].clip(lower=1e-12)
+    out["break_distance_low_atr"] = (low60 - frame["close"]) / out["atr_60"].clip(lower=1e-12)
+    return out
+
+
+def build_feature_frames(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    aligned = align_universe(frames)
+    base = {symbol: _single_symbol_features(aligned[symbol]) for symbol in SYMBOLS}
+    index = base[SYMBOLS[0]].index
+
+    ret1 = pd.DataFrame({symbol: base[symbol]["ret_1"] for symbol in SYMBOLS}, index=index)
+    flow1 = pd.DataFrame({symbol: base[symbol]["flow_1"] for symbol in SYMBOLS}, index=index)
+    factor_ret1 = ret1.mean(axis=1)
+    factor_flow1 = flow1.mean(axis=1)
+    factor_log = factor_ret1.fillna(0.0).cumsum()
+    factor_high60 = factor_log.shift(1).rolling(60, min_periods=30).max()
+    factor_low60 = factor_log.shift(1).rolling(60, min_periods=30).min()
+
+    for symbol in SYMBOLS:
+        out = base[symbol]
+        factor_var = factor_ret1.rolling(240, min_periods=120).var(ddof=0).clip(lower=1e-12)
+        beta = out["ret_1"].rolling(240, min_periods=120).cov(factor_ret1) / factor_var
+        beta = beta.clip(-1.0, 3.0)
+        residual1 = out["ret_1"] - beta * factor_ret1
+        out["factor_beta_240"] = beta
+        out["residual_1"] = residual1
+        for horizon in (5, 15, 30, 60, 120):
+            factor_h = factor_ret1.rolling(horizon, min_periods=max(2, horizon // 2)).sum()
+            residual_h = residual1.rolling(horizon, min_periods=max(2, horizon // 2)).sum()
+            out[f"factor_ret_{horizon}"] = factor_h
+            out[f"factor_breadth_{horizon}"] = np.sign(
+                pd.DataFrame({s: base[s][f"ret_{horizon}"] for s in SYMBOLS}, index=index)
+            ).mean(axis=1)
+            out[f"factor_dispersion_{horizon}"] = pd.DataFrame(
+                {s: base[s][f"ret_{horizon}"] for s in SYMBOLS}, index=index
+            ).std(axis=1, ddof=0)
+            out[f"residual_{horizon}"] = residual_h
+            out[f"residual_z_{horizon}"] = _rolling_z(residual_h, 480)
+        out["factor_flow_5"] = factor_flow1.rolling(5, min_periods=3).mean()
+        out["factor_flow_15"] = factor_flow1.rolling(15, min_periods=8).mean()
+        out["relative_flow_15"] = out["flow_15"] - out["factor_flow_15"]
+        out["btc_lead_5"] = base["BTCUSDT"]["ret_5"] - out["ret_5"]
+        out["btc_lead_15"] = base["BTCUSDT"]["ret_15"] - out["ret_15"]
+        out["factor_impulse_z_15"] = _rolling_z(out["factor_ret_15"], 480)
+        out["factor_range_pos_60"] = ((factor_log - factor_low60) / (factor_high60 - factor_low60).clip(lower=1e-12)).clip(-2.0, 3.0)
+        out["factor_range_width_60"] = factor_high60 - factor_low60
+        out["factor_anchor_high_60"] = factor_high60
+        out["factor_anchor_low_60"] = factor_low60
+
+        minute = out.index.minute + 60 * out.index.hour
+        angle = 2.0 * math.pi * minute / 1440.0
+        out["tod_sin"] = np.sin(angle)
+        out["tod_cos"] = np.cos(angle)
+        out["dow_sin"] = np.sin(2.0 * math.pi * out.index.dayofweek / 7.0)
+        out["dow_cos"] = np.cos(2.0 * math.pi * out.index.dayofweek / 7.0)
+        base[symbol] = out.replace([np.inf, -np.inf], np.nan)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Dense causal action library
+# ---------------------------------------------------------------------------
+
+
+STATE_FEATURES = (
+    "ret_1", "ret_3", "ret_5", "ret_15", "ret_30", "ret_60", "ret_120",
+    "tr_pct", "atr_pct_14", "atr_pct_30", "atr_pct_60", "atr_pct_120",
+    "rv_15", "rv_60", "rv_regime", "body_fraction", "close_location",
+    "upper_wick_fraction", "lower_wick_fraction", "flow_1", "flow_3",
+    "flow_5", "flow_15", "flow_30", "flow_60", "flow_z_5", "flow_z_15",
+    "flow_z_30", "quote_z", "trade_count_z", "avg_trade_quote_z",
+    "impact_per_flow_5", "impact_per_flow_15", "flow_price_agreement_5",
+    "absorption_5", "efficiency_15", "efficiency_30", "efficiency_60",
+    "efficiency_120", "range_width_pct_30", "range_width_pct_60",
+    "range_width_pct_120", "range_width_pct_240", "range_pos_30",
+    "range_pos_60", "range_pos_120", "range_pos_240", "dist_high_atr_30",
+    "dist_low_atr_30", "dist_high_atr_60", "dist_low_atr_60",
+    "dist_high_atr_120", "dist_low_atr_120", "compression_15",
+    "compression_60", "vwap_dev_atr_30", "vwap_dev_atr_120",
+    "vwap_dev_atr_480", "sweep_reclaim_low_60", "sweep_reclaim_high_60",
+    "accepted_break_high_60", "accepted_break_low_60", "break_distance_high_atr",
+    "break_distance_low_atr", "factor_beta_240", "residual_1", "residual_5",
+    "residual_15", "residual_30", "residual_60", "residual_120",
+    "residual_z_5", "residual_z_15", "residual_z_30", "residual_z_60",
+    "residual_z_120", "factor_ret_5", "factor_ret_15", "factor_ret_30",
+    "factor_ret_60", "factor_ret_120", "factor_breadth_5",
+    "factor_breadth_15", "factor_breadth_30", "factor_breadth_60",
+    "factor_dispersion_5", "factor_dispersion_15", "factor_dispersion_30",
+    "factor_dispersion_60", "factor_flow_5", "factor_flow_15",
+    "relative_flow_15", "btc_lead_5", "btc_lead_15", "factor_impulse_z_15",
+    "factor_range_pos_60", "factor_range_width_60", "tod_sin", "tod_cos",
+    "dow_sin", "dow_cos",
+)
+
+DIRECTIONAL_FEATURES = (
+    "ret_1", "ret_3", "ret_5", "ret_15", "ret_30", "ret_60", "ret_120",
+    "flow_1", "flow_3", "flow_5", "flow_15", "flow_30", "flow_60",
+    "flow_z_5", "flow_z_15", "flow_z_30", "impact_per_flow_5",
+    "impact_per_flow_15", "vwap_dev_atr_30", "vwap_dev_atr_120",
+    "vwap_dev_atr_480", "residual_1", "residual_5", "residual_15",
+    "residual_30", "residual_60", "residual_120", "residual_z_5",
+    "residual_z_15", "residual_z_30", "residual_z_60", "residual_z_120",
+    "factor_ret_5", "factor_ret_15", "factor_ret_30", "factor_ret_60",
+    "factor_ret_120", "factor_breadth_5", "factor_breadth_15",
+    "factor_breadth_30", "factor_breadth_60", "factor_flow_5",
+    "factor_flow_15", "relative_flow_15", "btc_lead_5", "btc_lead_15",
+    "factor_impulse_z_15", "break_distance_high_atr", "break_distance_low_atr",
+)
+
+
+def _round_anchor(value: float) -> str:
+    if not math.isfinite(value):
+        return "NA"
+    return f"{value:.8g}"
+
+
+def _episode_id(symbol: str, side: int, row: pd.Series) -> tuple[str, str]:
+    local = (
+        f"{symbol}:{side}:"
+        f"{_round_anchor(float(row['prior_high_60']))}:"
+        f"{_round_anchor(float(row['prior_low_60']))}"
+    )
+    global_id = (
+        f"{side}:"
+        f"{_round_anchor(float(row['factor_anchor_high_60']))}:"
+        f"{_round_anchor(float(row['factor_anchor_low_60']))}"
+    )
+    return local, global_id
+
+
+def _action_geometry(
+    symbol: str,
+    template: str,
+    side: int,
+    row: pd.Series,
+    cost: CostModel,
+) -> tuple[float, float, int] | None:
+    close = float(row["close"])
+    atr = float(row["atr_60"])
+    if not (math.isfinite(close) and math.isfinite(atr) and close > 0.0 and atr > 0.0):
+        return None
+    planned_entry = close * (1.0 + side * cost.entry_slippage)
+    tick = TICK_SIZE[symbol]
+    buffer = max(0.15 * atr, 2.0 * tick)
+
+    if side > 0:
+        local_stop_distance = planned_entry - (float(row["prior_low_30"]) - buffer)
+        broad_stop_distance = planned_entry - (float(row["prior_low_120"]) - buffer)
+        local_target_distance = float(row["prior_high_60"]) - planned_entry
+        broad_target_distance = float(row["prior_high_240"]) - planned_entry
+    else:
+        local_stop_distance = (float(row["prior_high_30"]) + buffer) - planned_entry
+        broad_stop_distance = (float(row["prior_high_120"]) + buffer) - planned_entry
+        local_target_distance = planned_entry - float(row["prior_low_60"])
+        broad_target_distance = planned_entry - float(row["prior_low_240"])
+
+    local_stop_distance = max(local_stop_distance, 1.10 * atr, 4.0 * tick)
+    broad_stop_distance = max(broad_stop_distance, 1.50 * atr, 4.0 * tick)
+    range60 = max(float(row["prior_high_60"]) - float(row["prior_low_60"]), atr)
+    residual_repair = max(abs(float(row["residual_60"])) * planned_entry * 0.75, 0.80 * atr)
+
+    if template == "FAST_BALANCE":
+        stop_distance, target_distance, horizon = 1.20 * atr, 1.05 * 1.20 * atr, 45
+    elif template == "BASE_ASYMMETRIC":
+        stop_distance, target_distance, horizon = 1.65 * atr, 1.55 * 1.65 * atr, 120
+    elif template == "LOCAL_STRUCTURE":
+        stop_distance = local_stop_distance
+        target_distance = max(local_target_distance, 0.80 * stop_distance)
+        horizon = 120
+    elif template == "BROAD_STRUCTURE":
+        stop_distance = broad_stop_distance
+        target_distance = max(broad_target_distance, 0.90 * stop_distance)
+        horizon = 240
+    elif template == "RESIDUAL_REPAIR":
+        stop_distance = max(1.35 * atr, 4.0 * tick)
+        target_distance = max(residual_repair, 0.75 * stop_distance)
+        horizon = 120
+    elif template == "RANGE_EXTENSION":
+        stop_distance = local_stop_distance
+        target_distance = max(0.65 * range60, 1.10 * stop_distance)
+        horizon = 180
+    else:
+        raise ValueError(template)
+
+    stop_distance = max(stop_distance, 4.0 * tick)
+    target_distance = max(target_distance, 4.0 * tick)
+    stop = planned_entry - side * stop_distance
+    target = planned_entry + side * target_distance
+    if stop <= 0.0 or target <= 0.0:
+        return None
+    gross_rr = target_distance / stop_distance
+    stop_pct = stop_distance / planned_entry
+    target_pct = target_distance / planned_entry
+    if not (0.0008 <= stop_pct <= 0.035 and 0.0005 <= target_pct <= 0.08 and 0.45 <= gross_rr <= 5.0):
+        return None
+    return stop, target, horizon
+
+
+def enumerate_candidates(
+    feature_frames: Mapping[str, pd.DataFrame],
+    config: PolicyConfig,
+    cost: CostModel,
+) -> pd.DataFrame:
+    """Enumerate the dense state-action surface without Python row loops."""
+    pieces: list[pd.DataFrame] = []
+    repeats_per_state = 2 * len(ACTION_TEMPLATES)
+    for symbol in SYMBOLS:
+        frame = feature_frames[symbol]

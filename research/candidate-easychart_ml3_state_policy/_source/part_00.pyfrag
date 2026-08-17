@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Direct causal state-action policy research for four liquid crypto perpetuals.
+
+This candidate deliberately does not begin with hand-authored trade plans.  It
+observes a dense, causal market state at regular decision times, enumerates a
+small set of economically distinct stop/target geometries, learns their
+cost-after action value, and lets one account choose at most one action across
+BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT.
+
+The fast research simulator is intentionally independent from order/accounting
+plumbing.  A policy with durable evidence is meant to be moved into the existing
+NautilusTrader continuous-account runner for canonical execution validation.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, dataclass
+from datetime import date, timedelta
+import hashlib
+import json
+import math
+from pathlib import Path
+import sys
+import time
+from typing import Iterable, Mapping, Sequence
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+except ImportError:  # pragma: no cover
+    LGBMClassifier = None
+    LGBMRegressor = None
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.isotonic import IsotonicRegression
+from sklearn.metrics import brier_score_loss, mean_absolute_error
+from sklearn.pipeline import make_pipeline
+from sklearn.impute import SimpleImputer
+
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - Actions installs numba; fallback remains correct.
+    def njit(*args, **kwargs):
+        def decorate(function):
+            return function
+        return decorate
+
+
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+TICK_SIZE = {
+    "BTCUSDT": 0.1,
+    "ETHUSDT": 0.01,
+    "SOLUSDT": 0.001,
+    "XRPUSDT": 0.0001,
+}
+ACTION_TEMPLATES = (
+    "FAST_BALANCE",
+    "BASE_ASYMMETRIC",
+    "LOCAL_STRUCTURE",
+    "BROAD_STRUCTURE",
+    "RESIDUAL_REPAIR",
+    "RANGE_EXTENSION",
+)
+MAX_HORIZON_MINUTES = 240
+
+
+@dataclass(frozen=True, slots=True)
+class CostModel:
+    entry_taker_rate: float = 0.00050
+    stop_taker_rate: float = 0.00050
+    time_taker_rate: float = 0.00050
+    target_maker_rate: float = 0.00020
+    entry_slippage_bps: float = 2.0
+    stop_slippage_bps: float = 2.0
+    time_slippage_bps: float = 2.0
+    adverse_funding_per_8h: float = 0.00010
+
+    @property
+    def entry_slippage(self) -> float:
+        return self.entry_slippage_bps / 10_000.0
+
+    @property
+    def stop_slippage(self) -> float:
+        return self.stop_slippage_bps / 10_000.0
+
+    @property
+    def time_slippage(self) -> float:
+        return self.time_slippage_bps / 10_000.0
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyConfig:
+    decision_step_minutes: int = 5
+    risk_fraction: float = 0.03
+    max_leverage: float = 20.0
+    warmup_minutes: int = 720
+    calibration_bins: int = 16
+    random_state: int = 9417
+
+
+@dataclass(slots=True)
+class CalibrationMap:
+    lower_edges: np.ndarray
+    upper_edges: np.ndarray
+    raw_centers: np.ndarray
+    means: np.ndarray
+    lower_means: np.ndarray
+    counts: np.ndarray
+    isotonic: IsotonicRegression
+
+    def predict_mean(self, raw_score: np.ndarray) -> np.ndarray:
+        return np.asarray(self.isotonic.predict(raw_score), dtype=float)
+
+    def predict_lower(self, raw_score: np.ndarray) -> np.ndarray:
+        if len(self.raw_centers) == 1:
+            return np.full_like(raw_score, self.lower_means[0], dtype=float)
+        return np.interp(
+            raw_score,
+            self.raw_centers,
+            self.lower_means,
+            left=self.lower_means[0],
+            right=self.lower_means[-1],
+        )
+
+
+@dataclass(slots=True)
+class ModelBundle:
+    feature_columns: tuple[str, ...]
+    reg_hist: object
+    reg_extra: object
+    clf_hist: object
+    clf_extra: object
+    calibration: CalibrationMap
+    calibration_diagnostics: dict[str, object]
+
+
+# ---------------------------------------------------------------------------
+# Data and feature state
+# ---------------------------------------------------------------------------
+
+
+def _safe_div(numerator: pd.Series, denominator: pd.Series | float) -> pd.Series:
+    if isinstance(denominator, pd.Series):
+        denominator = denominator.where(denominator.abs() > 1e-12)
+    elif abs(float(denominator)) <= 1e-12:
+        denominator = np.nan
+    return numerator / denominator
+
+
+def _rolling_z(series: pd.Series, window: int, min_periods: int | None = None) -> pd.Series:
+    minimum = min_periods or max(20, window // 4)
+    mean = series.rolling(window, min_periods=minimum).mean()
+    std = series.rolling(window, min_periods=minimum).std(ddof=0)
+    return _safe_div(series - mean, std.clip(lower=1e-12)).clip(-12.0, 12.0)
+
+
+def _true_range(frame: pd.DataFrame) -> pd.Series:
+    previous = frame["close"].shift(1)
+    return pd.concat(
+        [
+            frame["high"] - frame["low"],
+            (frame["high"] - previous).abs(),
+            (frame["low"] - previous).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+
+def _ensure_frame(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    required = {
+        "open_time_dt",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "count",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+    }
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"{symbol} missing columns: {sorted(missing)}")
+    data = frame.copy()
+    data["open_time_dt"] = pd.to_datetime(data["open_time_dt"], utc=True)
+    data = data.set_index("open_time_dt").sort_index()
+    if data.index.has_duplicates:
+        raise ValueError(f"{symbol} has duplicate timestamps")
+    numeric = sorted(required - {"open_time_dt"})
+    data[numeric] = data[numeric].apply(pd.to_numeric, errors="raise")
+    return data
+
+
+def align_universe(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    if set(frames) != set(SYMBOLS):
+        raise ValueError(f"exact universe required: {SYMBOLS}")
+    normalized = {symbol: _ensure_frame(frames[symbol], symbol) for symbol in SYMBOLS}
+    common = normalized[SYMBOLS[0]].index
+    for symbol in SYMBOLS[1:]:
+        common = common.intersection(normalized[symbol].index)
+    common = common.sort_values()
+    if len(common) < 2_000:
+        raise ValueError("aligned universe is too short")
+    expected = pd.date_range(common[0], common[-1], freq="1min", tz="UTC")
+    coverage = len(common) / max(len(expected), 1)
+    if coverage < 0.995:
+        raise ValueError(f"aligned one-minute coverage is too low: {coverage:.6f}")
+    return {symbol: frame.reindex(common).copy() for symbol, frame in normalized.items()}
+
+
+def _single_symbol_features(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame[["open", "high", "low", "close", "quote_volume", "count", "taker_buy_quote_volume"]].copy()
+    log_price = np.log(frame["close"].clip(lower=1e-12))
+    ret1 = log_price.diff()
+    out["ret_1"] = ret1
+    for horizon in (3, 5, 15, 30, 60, 120, 240):
+        out[f"ret_{horizon}"] = log_price - log_price.shift(horizon)
+
+    tr = _true_range(frame)
+    out["tr_pct"] = _safe_div(tr, frame["close"])
+    for horizon in (14, 30, 60, 120):
+        atr = tr.rolling(horizon, min_periods=max(8, horizon // 2)).mean()
+        out[f"atr_{horizon}"] = atr
+        out[f"atr_pct_{horizon}"] = _safe_div(atr, frame["close"])
+    out["rv_15"] = ret1.rolling(15, min_periods=10).std(ddof=0) * math.sqrt(15)
+    out["rv_60"] = ret1.rolling(60, min_periods=30).std(ddof=0) * math.sqrt(60)
+    out["rv_regime"] = _safe_div(out["rv_15"], out["rv_60"])
+
+    body = (frame["close"] - frame["open"]).abs()
+    candle_range = (frame["high"] - frame["low"]).clip(lower=1e-12)
+    out["body_fraction"] = body / candle_range
+    out["close_location"] = (frame["close"] - frame["low"]) / candle_range
+    out["upper_wick_fraction"] = (frame["high"] - frame[["open", "close"]].max(axis=1)) / candle_range
+    out["lower_wick_fraction"] = (frame[["open", "close"]].min(axis=1) - frame["low"]) / candle_range
+
+    signed_quote = 2.0 * frame["taker_buy_quote_volume"] - frame["quote_volume"]
+    quote = frame["quote_volume"].clip(lower=1e-12)
+    flow1 = signed_quote / quote
+    out["flow_1"] = flow1.clip(-1.0, 1.0)
+    for horizon in (3, 5, 15, 30, 60):
+        signed_sum = signed_quote.rolling(horizon, min_periods=max(1, horizon // 2)).sum()
+        quote_sum = quote.rolling(horizon, min_periods=max(1, horizon // 2)).sum()
+        flow = signed_sum / quote_sum
+        out[f"flow_{horizon}"] = flow.clip(-1.0, 1.0)
+        out[f"flow_z_{horizon}"] = _rolling_z(flow, 240)
+    out["quote_z"] = _rolling_z(np.log1p(frame["quote_volume"]), 240)
+    out["trade_count_z"] = _rolling_z(np.log1p(frame["count"]), 240)
+    out["avg_trade_quote_z"] = _rolling_z(

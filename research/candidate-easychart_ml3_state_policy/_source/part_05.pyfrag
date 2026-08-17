@@ -1,0 +1,226 @@
+        "ending_nav": float(nav),
+        "net_return": float(nav - 1.0),
+        "max_drawdown": float(equity["drawdown"].min()),
+        "positive_r_top_5pct_concentration": positive_concentration,
+        "mean_required_leverage": float(ledger["required_leverage"].mean()),
+        "max_required_leverage": float(ledger["required_leverage"].max()),
+        "by_symbol": {
+            str(key): {
+                "trades": int(len(group)),
+                "win_rate": float((group["net_r"] > 0.0).mean()),
+                "mean_net_r": float(group["net_r"].mean()),
+            }
+            for key, group in ledger.groupby("symbol")
+        },
+        "by_action": {
+            str(key): {
+                "trades": int(len(group)),
+                "win_rate": float((group["net_r"] > 0.0).mean()),
+                "mean_net_r": float(group["net_r"].mean()),
+            }
+            for key, group in ledger.groupby("action_template")
+        },
+    }
+    return ledger, equity, metrics
+
+
+# ---------------------------------------------------------------------------
+# Synthetic causal contract and CLI
+# ---------------------------------------------------------------------------
+
+
+def make_synthetic_universe(start: str = "2025-01-01", days: int = 55, seed: int = 1234) -> dict[str, pd.DataFrame]:
+    """Generate a latent-factor market with causal flow, lag and absorption motifs."""
+    rng = np.random.default_rng(seed)
+    n = days * 1440
+    index = pd.date_range(start, periods=n, freq="1min", tz="UTC")
+    factor = np.zeros(n, dtype=float)
+    regime = np.zeros(n, dtype=float)
+    innovations = rng.normal(0.0, 0.00024, n)
+    for i in range(1, n):
+        if i % 720 == 0:
+            regime[i:] += rng.normal(0.0, 0.000012)
+        factor[i] = 0.08 * factor[i - 1] + regime[i] + innovations[i]
+    common_log = np.cumsum(factor)
+    frames: dict[str, pd.DataFrame] = {}
+    betas = {"BTCUSDT": 1.00, "ETHUSDT": 1.08, "SOLUSDT": 1.35, "XRPUSDT": 1.15}
+    bases = {"BTCUSDT": 45_000.0, "ETHUSDT": 2_400.0, "SOLUSDT": 95.0, "XRPUSDT": 0.62}
+    for ordinal, symbol in enumerate(SYMBOLS):
+        residual = np.zeros(n, dtype=float)
+        shock = rng.normal(0.0, 0.00034 + 0.00004 * ordinal, n)
+        flow_lead = rng.normal(0.0, 1.0, n)
+        for i in range(1, n):
+            # Mean-reverting idiosyncratic component plus a causal flow lead.
+            residual[i] = 0.92 * residual[i - 1] + shock[i] + 0.000055 * flow_lead[i - 1]
+        log_close = math.log(bases[symbol]) + betas[symbol] * common_log + residual
+        close = np.exp(log_close)
+        open_ = np.r_[close[0], close[:-1]]
+        spread = np.abs(rng.normal(0.00028, 0.00014, n)) * close
+        high = np.maximum(open_, close) + spread
+        low = np.minimum(open_, close) - spread
+        # Inject occasional stop-runs that are subsequently repaired.
+        for i in range(360, n - 10, 997 + 13 * ordinal):
+            direction = -1.0 if (i // 997) % 2 == 0 else 1.0
+            if direction < 0:
+                low[i] -= 0.0035 * close[i]
+                close[i] = max(close[i], open_[i] * 1.0010)
+            else:
+                high[i] += 0.0035 * close[i]
+                close[i] = min(close[i], open_[i] * 0.9990)
+        quote_volume = np.exp(rng.normal(14.0 + 0.2 * (symbol == "BTCUSDT"), 0.55, n))
+        future_signal = np.r_[factor[1:], 0.0] + np.r_[residual[1:] - 0.92 * residual[:-1], 0.0]
+        flow_ratio = np.tanh(1_200.0 * future_signal + 0.55 * flow_lead + rng.normal(0, 0.35, n))
+        taker_buy_quote = quote_volume * (flow_ratio + 1.0) / 2.0
+        volume = quote_volume / close
+        taker_buy_volume = taker_buy_quote / close
+        count = np.maximum(1, (quote_volume / np.median(quote_volume) * rng.integers(50, 180, n)).astype(int))
+        frames[symbol] = pd.DataFrame(
+            {
+                "open_time_dt": index,
+                "open": open_, "high": high, "low": low, "close": close,
+                "volume": volume, "quote_volume": quote_volume, "count": count,
+                "taker_buy_volume": taker_buy_volume,
+                "taker_buy_quote_volume": taker_buy_quote,
+            }
+        )
+    return frames
+
+
+def _load_real_universe(start: date, end: date, cache: Path) -> dict[str, pd.DataFrame]:
+    try:
+        from data_re1_flow import load_range_flow
+    except ImportError as error:
+        raise SystemExit(
+            "data_re1_flow import failed; include research/candidate-easychart_re1 and "
+            "research/candidate-easychart-v2 on PYTHONPATH"
+        ) from error
+    return {symbol: load_range_flow(symbol, start, end, cache) for symbol in SYMBOLS}
+
+
+def _split_labeled(
+    labeled: pd.DataFrame,
+    train_end: pd.Timestamp,
+    calibration_end: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    # The label must be fully known before a split boundary.  This purges every
+    # action whose exit would cross into the next segment.
+    train = labeled[labeled["exit_time"] < train_end].copy()
+    calibration = labeled[
+        (labeled["entry_time"] >= train_end) & (labeled["exit_time"] < calibration_end)
+    ].copy()
+    evaluation = labeled[labeled["entry_time"] >= calibration_end].copy()
+    if min(len(train), len(calibration), len(evaluation)) == 0:
+        raise RuntimeError(
+            f"empty split: train={len(train)}, calibration={len(calibration)}, evaluation={len(evaluation)}"
+        )
+    return train, calibration, evaluation
+
+
+def run_research(
+    frames: Mapping[str, pd.DataFrame],
+    train_end: pd.Timestamp,
+    calibration_end: pd.Timestamp,
+    output: Path,
+    config: PolicyConfig,
+    cost: CostModel,
+) -> dict[str, object]:
+    output.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    feature_frames = build_feature_frames(frames)
+    print(f"stage=features seconds={time.perf_counter()-started:.2f}", file=sys.stderr, flush=True)
+    checkpoint = time.perf_counter()
+    candidates = enumerate_candidates(feature_frames, config, cost)
+    print(f"stage=enumerate rows={len(candidates)} seconds={time.perf_counter()-checkpoint:.2f}", file=sys.stderr, flush=True)
+    checkpoint = time.perf_counter()
+    labeled = label_candidates(candidates, feature_frames, config, cost)
+    print(f"stage=label rows={len(labeled)} seconds={time.perf_counter()-checkpoint:.2f}", file=sys.stderr, flush=True)
+    train, calibration, evaluation = _split_labeled(labeled, train_end, calibration_end)
+    checkpoint = time.perf_counter()
+    model = train_policy(train, calibration, config)
+    print(f"stage=train train={len(train)} calibration={len(calibration)} seconds={time.perf_counter()-checkpoint:.2f}", file=sys.stderr, flush=True)
+    checkpoint = time.perf_counter()
+    scored = score_policy(evaluation, model)
+    print(f"stage=score evaluation={len(evaluation)} seconds={time.perf_counter()-checkpoint:.2f}", file=sys.stderr, flush=True)
+    start = pd.Timestamp(calibration_end)
+    end = max(pd.Timestamp(frame.index[-1]) for frame in feature_frames.values()) + pd.Timedelta(minutes=1)
+    checkpoint = time.perf_counter()
+    ledger, equity, metrics = simulate_continuous_account(scored, start, end, config)
+    print(f"stage=simulate trades={len(ledger)} seconds={time.perf_counter()-checkpoint:.2f}", file=sys.stderr, flush=True)
+
+    provenance = {
+        "candidate": "candidate-easychart_ml3_state_policy",
+        "policy": (
+            "dense causal four-market state -> direct side/geometry/horizon action value -> "
+            "winner-aware expected-net-R calibration -> one-position continuous account"
+        ),
+        "uses_existing_plan_candidates": False,
+        "universe": list(SYMBOLS),
+        "risk_fraction": config.risk_fraction,
+        "single_position_across_universe": True,
+        "no_partial_entry_or_exit": True,
+        "same_bar_stop_precedence": True,
+        "entry_timing": "decision on closed minute; fill no earlier than next minute open",
+        "cost_model": asdict(cost),
+        "config": asdict(config),
+        "split": {
+            "train_end_exclusive": str(train_end),
+            "calibration_end_exclusive": str(calibration_end),
+            "label_end_embargo": True,
+        },
+        "candidate_actions": int(len(labeled)),
+        "train_actions": int(len(train)),
+        "calibration_actions": int(len(calibration)),
+        "evaluation_actions": int(len(evaluation)),
+        "model_calibration": model.calibration_diagnostics,
+    }
+    result = {**provenance, **metrics}
+    (output / "metrics.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    ledger.to_csv(output / "trades.csv", index=False)
+    equity.to_csv(output / "equity.csv", index=False)
+    scored[
+        [
+            "symbol", "decision_time", "entry_time", "exit_time", "side", "action_template",
+            "gross_rr", "planned_net_target_r", "net_target_r", "net_r", "exit_reason", "hold_minutes",
+            "raw_action_value", "calibrated_mean_net_r", "conservative_action_value",
+            "pred_target_probability", "model_disagreement", "local_episode_id", "global_episode_id",
+        ]
+    ].to_csv(output / "evaluation_actions.csv", index=False)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+    return result
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=date.fromisoformat)
+    parser.add_argument("--end", type=date.fromisoformat)
+    parser.add_argument("--train-end", type=date.fromisoformat, required=True)
+    parser.add_argument("--calibration-end", type=date.fromisoformat, required=True)
+    parser.add_argument("--cache", type=Path, default=Path("/tmp/binance-cache"))
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--decision-step-minutes", type=int, default=5)
+    parser.add_argument("--synthetic", action="store_true")
+    parser.add_argument("--synthetic-days", type=int, default=55)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    if args.decision_step_minutes < 1:
+        raise SystemExit("decision step must be positive")
+    config = PolicyConfig(decision_step_minutes=args.decision_step_minutes)
+    cost = CostModel()
+    if args.synthetic:
+        frames = make_synthetic_universe(days=args.synthetic_days)
+    else:
+        if args.start is None or args.end is None:
+            raise SystemExit("--start and --end are required outside synthetic mode")
+        if not args.start < args.train_end < args.calibration_end <= args.end:
+            raise SystemExit("require start < train-end < calibration-end <= end")
+        frames = _load_real_universe(args.start, args.end, args.cache)
+    train_end = pd.Timestamp(args.train_end, tz="UTC")
+    calibration_end = pd.Timestamp(args.calibration_end, tz="UTC")
+    run_research(frames, train_end, calibration_end, args.output, config, cost)
+
+
+if __name__ == "__main__":
+    main()

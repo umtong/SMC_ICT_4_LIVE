@@ -1,0 +1,250 @@
+        indices = np.arange(
+            max(config.warmup_minutes, 480),
+            len(frame) - MAX_HORIZON_MINUTES - 2,
+            config.decision_step_minutes,
+            dtype=np.int32,
+        )
+        required_geometry = (
+            "close", "atr_60", "prior_high_30", "prior_low_30",
+            "prior_high_60", "prior_low_60", "prior_high_120",
+            "prior_low_120", "prior_high_240", "prior_low_240",
+            "factor_anchor_high_60", "factor_anchor_low_60",
+        )
+        state_columns = tuple(dict.fromkeys((*STATE_FEATURES, *required_geometry)))
+        states = frame.iloc[indices][list(state_columns)].copy()
+        valid = np.isfinite(states[["close", "atr_60", "prior_high_240", "prior_low_240"]]).all(axis=1)
+        states = states.loc[valid]
+        indices = indices[valid.to_numpy()]
+        if states.empty:
+            continue
+
+        state_pos = np.repeat(np.arange(len(states), dtype=np.int32), repeats_per_state)
+        side = np.tile(np.repeat(np.array([1, -1], dtype=np.int8), len(ACTION_TEMPLATES)), len(states))
+        template = np.tile(np.asarray(ACTION_TEMPLATES, dtype=object), len(states) * 2)
+        candidate = pd.DataFrame(
+            {
+                "symbol": symbol,
+                "decision_index": np.repeat(indices, repeats_per_state),
+                "decision_time": np.repeat((states.index + pd.Timedelta(minutes=1)).to_numpy(), repeats_per_state),
+                "entry_time": np.repeat(frame.index[indices + 1].to_numpy(), repeats_per_state),
+                "side": side,
+                "action_template": template,
+            }
+        )
+        for name in STATE_FEATURES:
+            candidate[name] = np.repeat(states[name].to_numpy(dtype=float), repeats_per_state)
+
+        close = np.repeat(states["close"].to_numpy(dtype=float), repeats_per_state)
+        atr = np.repeat(states["atr_60"].to_numpy(dtype=float), repeats_per_state)
+        prior_low_30 = np.repeat(states["prior_low_30"].to_numpy(dtype=float), repeats_per_state)
+        prior_high_30 = np.repeat(states["prior_high_30"].to_numpy(dtype=float), repeats_per_state)
+        prior_low_60 = np.repeat(states["prior_low_60"].to_numpy(dtype=float), repeats_per_state)
+        prior_high_60 = np.repeat(states["prior_high_60"].to_numpy(dtype=float), repeats_per_state)
+        prior_low_120 = np.repeat(states["prior_low_120"].to_numpy(dtype=float), repeats_per_state)
+        prior_high_120 = np.repeat(states["prior_high_120"].to_numpy(dtype=float), repeats_per_state)
+        prior_low_240 = np.repeat(states["prior_low_240"].to_numpy(dtype=float), repeats_per_state)
+        prior_high_240 = np.repeat(states["prior_high_240"].to_numpy(dtype=float), repeats_per_state)
+        planned_entry = close * (1.0 + side * cost.entry_slippage)
+        tick = TICK_SIZE[symbol]
+        buffer = np.maximum(0.15 * atr, 2.0 * tick)
+
+        local_stop_distance = np.where(
+            side > 0,
+            planned_entry - (prior_low_30 - buffer),
+            (prior_high_30 + buffer) - planned_entry,
+        )
+        broad_stop_distance = np.where(
+            side > 0,
+            planned_entry - (prior_low_120 - buffer),
+            (prior_high_120 + buffer) - planned_entry,
+        )
+        local_target_distance = np.where(
+            side > 0,
+            prior_high_60 - planned_entry,
+            planned_entry - prior_low_60,
+        )
+        broad_target_distance = np.where(
+            side > 0,
+            prior_high_240 - planned_entry,
+            planned_entry - prior_low_240,
+        )
+        local_stop_distance = np.maximum.reduce(
+            [local_stop_distance, 1.10 * atr, np.full_like(atr, 4.0 * tick)]
+        )
+        broad_stop_distance = np.maximum.reduce(
+            [broad_stop_distance, 1.50 * atr, np.full_like(atr, 4.0 * tick)]
+        )
+        range60 = np.maximum(prior_high_60 - prior_low_60, atr)
+        residual_repair = np.maximum(
+            np.abs(candidate["residual_60"].to_numpy(dtype=float)) * planned_entry * 0.75,
+            0.80 * atr,
+        )
+
+        stop_distance = np.full(len(candidate), np.nan, dtype=float)
+        target_distance = np.full(len(candidate), np.nan, dtype=float)
+        horizon = np.zeros(len(candidate), dtype=np.int16)
+        mask = template == "FAST_BALANCE"
+        stop_distance[mask], target_distance[mask], horizon[mask] = (
+            1.20 * atr[mask], 1.05 * 1.20 * atr[mask], 45
+        )
+        mask = template == "BASE_ASYMMETRIC"
+        stop_distance[mask], target_distance[mask], horizon[mask] = (
+            1.65 * atr[mask], 1.55 * 1.65 * atr[mask], 120
+        )
+        mask = template == "LOCAL_STRUCTURE"
+        stop_distance[mask] = local_stop_distance[mask]
+        target_distance[mask] = np.maximum(local_target_distance[mask], 0.80 * stop_distance[mask])
+        horizon[mask] = 120
+        mask = template == "BROAD_STRUCTURE"
+        stop_distance[mask] = broad_stop_distance[mask]
+        target_distance[mask] = np.maximum(broad_target_distance[mask], 0.90 * stop_distance[mask])
+        horizon[mask] = 240
+        mask = template == "RESIDUAL_REPAIR"
+        stop_distance[mask] = np.maximum(1.35 * atr[mask], 4.0 * tick)
+        target_distance[mask] = np.maximum(residual_repair[mask], 0.75 * stop_distance[mask])
+        horizon[mask] = 120
+        mask = template == "RANGE_EXTENSION"
+        stop_distance[mask] = local_stop_distance[mask]
+        target_distance[mask] = np.maximum(0.65 * range60[mask], 1.10 * stop_distance[mask])
+        horizon[mask] = 180
+
+        stop_distance = np.maximum(stop_distance, 4.0 * tick)
+        target_distance = np.maximum(target_distance, 4.0 * tick)
+        stop = planned_entry - side * stop_distance
+        target = planned_entry + side * target_distance
+        gross_rr = target_distance / stop_distance
+        stop_pct = stop_distance / planned_entry
+        target_pct = target_distance / planned_entry
+        geometry_valid = (
+            np.isfinite(stop) & np.isfinite(target) & (stop > 0.0) & (target > 0.0)
+            & (stop_pct >= 0.0008) & (stop_pct <= 0.035)
+            & (target_pct >= 0.0005) & (target_pct <= 0.08)
+            & (gross_rr >= 0.45) & (gross_rr <= 5.0)
+        )
+        candidate["planned_entry"] = planned_entry
+        candidate["stop"] = stop
+        candidate["target"] = target
+        candidate["horizon_minutes"] = horizon
+        candidate["stop_pct"] = stop_pct
+        candidate["target_pct"] = target_pct
+        candidate["gross_rr"] = gross_rr
+        planned_stop_fill = stop * (1.0 - side * cost.stop_slippage)
+        planned_stop_net = (
+            side * (planned_stop_fill - planned_entry) / planned_entry
+            - cost.entry_taker_rate
+            - cost.stop_taker_rate * (planned_stop_fill / planned_entry)
+            - cost.adverse_funding_per_8h / 480.0
+        )
+        planned_unit_risk = -planned_stop_net
+        planned_target_net = (
+            side * (target - planned_entry) / planned_entry
+            - cost.entry_taker_rate
+            - cost.target_maker_rate * (target / planned_entry)
+            - cost.adverse_funding_per_8h / 480.0
+        )
+        candidate["planned_net_target_r"] = planned_target_net / planned_unit_risk
+        candidate["planned_required_leverage"] = config.risk_fraction / planned_unit_risk
+        geometry_valid &= np.isfinite(planned_unit_risk) & (planned_unit_risk > 0.0)
+        geometry_valid &= candidate["planned_required_leverage"].to_numpy(dtype=float) <= config.max_leverage
+
+        for name in DIRECTIONAL_FEATURES:
+            candidate[f"dir_{name}"] = side * candidate[name].to_numpy(dtype=float)
+        candidate["dir_range_location_30"] = side * (candidate["range_pos_30"].to_numpy(dtype=float) - 0.5)
+        candidate["dir_range_location_60"] = side * (candidate["range_pos_60"].to_numpy(dtype=float) - 0.5)
+        candidate["dir_range_location_120"] = side * (candidate["range_pos_120"].to_numpy(dtype=float) - 0.5)
+        candidate["dir_rejection_wickb] = np.where(
+            side > 0,
+            candidate["lower_wick_fraction"].to_numpy(dtype=float),
+            candidate["upper_wick_fraction"].to_numpy(dtype=float),
+        )
+        candidate["dir_sweep_reclaim"] = np.where(
+            side > 0,
+            candidate["sweep_reclaim_low_60"].to_numpy(dtype=float),
+            candidate["sweep_reclaim_high_60"].to_numpy(dtype=float),
+        )
+        candidate["dir_accepted_break"] = np.where(
+            side > 0,
+            candidate["accepted_break_high_60"].to_numpy(dtype=float),
+            candidate["accepted_break_low_60"].to_numpy(dtype=float),
+        )
+
+        local_high = np.repeat(states["prior_high_60"].to_numpy(dtype=float), repeats_per_state)
+        local_low = np.repeat(states["prior_low_60"].to_numpy(dtype=float), repeats_per_state)
+        factor_high = np.repeat(states["factor_anchor_high_60"].to_numpy(dtype=float), repeats_per_state)
+        factor_low = np.repeat(states["factor_anchor_low_60"].to_numpy(dtype=float), repeats_per_state)
+        candidate["local_episode_id"] = [
+            f"{symbol}:{int(s)}:{h:.8g}:{l:.8g}" for s, h, l in zip(side, local_high, local_low, strict=True)
+        ]
+        candidate["global_episode_id"] = [
+            f"{int(s)}:{h:.8g}:{l:.8g}" for s, h, l in zip(side, factor_high, factor_low, strict=True)
+        ]
+        pieces.append(candidate.loc[geometry_valid].copy())
+
+    if not pieces:
+        raise RuntimeError("no causal state actions were enumerated")
+    candidates = pd.concat(pieces, ignore_index=True)
+    candidates = candidates.sort_values(["entry_time", "symbol", "side", "action_template"]).reset_index(drop=True)
+    candidates["decision_index"] = candidates["decision_index"].astype(np.int32)
+    candidates["side"] = candidates["side"].astype(np.int8)
+    candidates["horizon_minutes"] = candidates["horizon_minutes"].astype(np.int16)
+    float_columns = [
+        column for column in candidates.columns
+        if column not in {
+            "symbol", "decision_index", "decision_time", "entry_time", "side",
+            "action_template", "horizon_minutes", "local_episode_id", "global_episode_id",
+        }
+    ]
+    candidates[float_columns] = candidates[float_columns].astype(np.float32)
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# First-passage labels and realistic action value
+# ---------------------------------------------------------------------------
+
+
+def _net_return(
+    side: int,
+    entry_fill: float,
+    exit_fill: float,
+    exit_fee: float,
+    hold_minutes: int,
+    cost: CostModel,
+) -> float:
+    gross = side * (exit_fill - entry_fill) / entry_fill
+    fees = cost.entry_taker_rate + exit_fee * (exit_fill / entry_fill)
+    funding = cost.adverse_funding_per_8h * hold_minutes / 480.0
+    return gross - fees - funding
+
+
+@njit(cache=True)
+def _label_numeric(
+    decision_indices: np.ndarray,
+    sides: np.ndarray,
+    horizons: np.ndarray,
+    stops: np.ndarray,
+    targets: np.ndarray,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    time_ns: np.ndarray,
+    entry_slippage: float,
+    stop_slippage: float,
+    time_slippage: float,
+    entry_fee: float,
+    stop_fee: float,
+    time_fee: float,
+    target_fee: float,
+    funding_per_8h: float,
+    risk_fraction: float,
+    max_leverage: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    n = len(decision_indices)
+    exit_time_ns = np.full(n, -1, dtype=np.int64)
+    exit_price = np.full(n, np.nan, dtype=np.float64)
+    hold_minutes = np.zeros(n, dtype=np.int32)
+    net_r = np.full(n, np.nan, dtype=np.float64)
+    target_hit = np.zeros(n, dtype=np.int8)
+    stop_hit = np.zeros(n, dtype=np.int8)
+    reason_code = np.zeros(n, dtype=np.int8)
