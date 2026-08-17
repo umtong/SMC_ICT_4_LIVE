@@ -1,10 +1,18 @@
 """Portable ML probability model and trade economics for EasyChart ML1.
 
-Training exports a small JSON forest, and live/backtest inference uses only the
-Python standard library.  EasyChart remains responsible for the causal setup and
-for the frozen entry, stop and target.  ML estimates P(target before stop).
-The only runtime quality boundary is the candidate's own post-cost break-even
-expectancy; there is no extra confidence margin, coverage target or risk layer.
+EasyChart creates a complete causal plan with a frozen entry, stop and target.
+The model estimates P(target before stop).  It does not resize the fixed 3% NAV
+risk and it does not optimize toward a user-stated win-rate target.
+
+Runtime selection asks two ordinary trading questions:
+
+* Is the planned target more likely to be reached before the stop?
+* Is the trade still positive after the configured execution costs?
+
+A large theoretical target is therefore not allowed to compensate for a setup
+which the model regards as more likely to lose than win.  Among valid plans,
+probability of completing the intended trade path is primary; expected R is only
+a secondary ordering value.
 """
 from __future__ import annotations
 
@@ -94,8 +102,8 @@ def estimate_trade_economics(
 ) -> TradeEconomics:
     """Estimate the two frozen outcomes in planned-risk units.
 
-    Costs are the explicit assumptions supplied by the runner.  This function
-    does not add a confidence buffer, risk multiplier or position-size haircut.
+    Costs are exactly the assumptions supplied by the runner.  This function
+    adds no confidence buffer, position-size haircut or second risk budget.
     """
 
     entry = _finite(entry)
@@ -182,6 +190,8 @@ class PortableBinaryModel:
             if isinstance(value, Sequence) and len(value) == 2
         }
         self.calibration = dict(self.document.get("calibration", {"kind": "identity"}))
+        # Kept only for artifact introspection.  Runtime never reads tuned
+        # min_probability/probability_edge fields from old artifacts.
         self.decision_policy = dict(self.document.get("decision", {}))
         self._validate_structure()
 
@@ -287,11 +297,12 @@ class PortableBinaryModel:
         features: Mapping[str, Any],
         economics: TradeEconomics,
     ) -> ModelDecision:
-        """Use only the candidate's own post-cost break-even boundary.
+        """Classify plan quality without fitting a desired aggregate win rate.
 
-        No fixed probability floor, probability edge, confidence sizing or
-        calibration-coverage gate is applied.  Fixed 3% NAV risk stays entirely
-        in the inherited execution layer.
+        The intrinsic binary boundary is 0.5: the target must be more likely than
+        the stop.  Positive post-cost expectancy is also required, but RR cannot
+        rescue a below-0.5 target probability.  No 60%, 70% or calibrated
+        coverage target is searched or stored.
         """
 
         tree_probabilities = self.raw_tree_probabilities(features)
@@ -307,19 +318,22 @@ class PortableBinaryModel:
         elif economics.loss_net_r >= 0.0:
             accepted = False
             reason = "INVALID_POST_COST_LOSS"
+        elif probability <= 0.5:
+            accepted = False
+            reason = "TARGET_NOT_MORE_LIKELY_THAN_STOP"
         elif expected <= 0.0:
             accepted = False
-            reason = "NONPOSITIVE_MODEL_EXPECTANCY"
+            reason = "NONPOSITIVE_POST_COST_EXPECTANCY"
         else:
             accepted = True
-            reason = "MODEL_EXPECTANCY_ACCEPTED"
+            reason = "TARGET_MORE_LIKELY_AND_POST_COST_POSITIVE"
 
         return ModelDecision(
             raw_probability=raw,
             target_probability=probability,
             tree_probability_std=tree_std,
             expected_net_r=expected,
-            required_probability=economics.break_even_probability,
+            required_probability=0.5,
             accepted=accepted,
             reason=reason,
         )
@@ -342,7 +356,7 @@ def make_shadow_document(
         "feature_clip_ranges": {},
         "constant_probability": _clip(float(probability), 0.0, 1.0),
         "calibration": {"kind": "identity"},
-        "decision": {"kind": "positive_post_cost_expectancy"},
+        "decision": {"kind": "target_more_likely_than_stop_and_post_cost_positive"},
         "training": {
             "note": "Wiring-only model. Harvest causal plan features and train before select mode.",
         },

@@ -3,10 +3,13 @@
 
 The model learns P(frozen target before frozen stop).  Training, probability
 calibration and test periods are chronological and disjoint; rows whose future
-label interval crosses the next split are purged.  Runtime selection uses the
-candidate's own post-cost break-even expectancy only.  Training does not search
-for an extra confidence floor, probability edge, target win rate or coverage
-quota.
+label interval crosses the next split are purged.
+
+No desired aggregate win rate is fitted.  In particular, the user's description
+of an accomplished day trader is not converted into a 70% threshold or an
+optimization target.  Runtime asks whether the individual plan is more likely
+to reach target than stop and remains positive after configured costs.  RR above
+1R cannot compensate for a predicted probability below 0.5.
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ from ml1_model import MODEL_SCHEMA, PortableBinaryModel
 TRAINING_POLICY = (
     "CHRONOLOGICAL_TRAIN_CALIBRATION_TEST; PURGE_LABEL_INTERVALS_CROSSING_NEXT_SPLIT; "
     "PLATT_CALIBRATION_ON_DISJOINT_CALIBRATION_DATA; SYMBOL_ID_NOT_A_FEATURE; "
-    "NO_TUNED_CONFIDENCE_OR_COVERAGE_GATE"
+    "NO_AGGREGATE_WIN_RATE_TARGET; NO_RR_COMPENSATION_FOR_BELOW_HALF_TARGET_PROBABILITY"
 )
 
 
@@ -89,33 +92,36 @@ def _prediction_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, Any]:
 
 
 def _selection_metrics(frame: pd.DataFrame, probabilities: np.ndarray) -> dict[str, Any]:
+    """Describe the fixed runtime rule; do not search a winning threshold."""
+
     win_r = pd.to_numeric(frame["ml_win_net_r"], errors="coerce").to_numpy(float)
     loss_r = pd.to_numeric(frame["ml_loss_net_r"], errors="coerce").to_numpy(float)
-    break_even = pd.to_numeric(
-        frame["ml_break_even_probability"],
-        errors="coerce",
-    ).to_numpy(float)
     realized = pd.to_numeric(
         frame["counterfactual_net_r_conservative"],
         errors="coerce",
     ).to_numpy(float)
     expected = probabilities * win_r + (1.0 - probabilities) * loss_r
-    selected = expected > 0.0
+    selected = (probabilities > 0.5) & (expected > 0.0)
     chosen = realized[selected]
     labels = frame["label"].to_numpy(float)[selected]
     calendar_days = max(1, frame["event_date"].nunique())
     return {
-        "policy": "positive_post_cost_expected_r",
+        "policy": "target_probability_above_half_and_post_cost_expected_r_positive",
         "selected": int(selected.sum()),
         "coverage": float(selected.mean()),
         "target_first_rate": None if not selected.any() else float(labels.mean()),
         "sum_observed_counterfactual_net_r": float(chosen.sum()) if len(chosen) else 0.0,
         "mean_observed_counterfactual_net_r": None if not len(chosen) else float(chosen.mean()),
         "selected_per_calendar_day": float(selected.sum() / calendar_days),
-        "mean_model_expected_net_r": None if not selected.any() else float(expected[selected].mean()),
-        "mean_probability_minus_break_even": None
+        "mean_model_target_probability": None
         if not selected.any()
-        else float((probabilities[selected] - break_even[selected]).mean()),
+        else float(probabilities[selected].mean()),
+        "mean_model_expected_net_r": None
+        if not selected.any()
+        else float(expected[selected].mean()),
+        "note": (
+            "The observed target-first rate is an output.  It is not fitted to 70% or any other target."
+        ),
     }
 
 
@@ -253,7 +259,6 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         "counterfactual_net_r_conservative",
         "ml_win_net_r",
         "ml_loss_net_r",
-        "ml_break_even_probability",
         *(f"mlf_{name}" for name in FEATURE_NAMES),
     }
     missing = sorted(required_columns - set(frame.columns))
@@ -355,7 +360,11 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
             "coefficient": coefficient,
             "intercept": intercept,
         },
-        "decision": {"kind": "positive_post_cost_expectancy"},
+        "decision": {
+            "kind": "target_more_likely_than_stop_and_post_cost_positive",
+            "probability_boundary": 0.5,
+            "boundary_origin": "binary_outcome_not_aggregate_win_rate_target",
+        },
         "training": {
             "policy": TRAINING_POLICY,
             "dataset": str(args.dataset),
@@ -416,16 +425,15 @@ def train(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
             ),
             "test": _prediction_metrics(test_frame["label"].to_numpy(int), calibrated_test),
         },
-        "selection": {
+        "selection_diagnostic": {
             "calibration": _selection_metrics(calibration_frame, calibrated_calibration),
             "test": _selection_metrics(test_frame, calibrated_test),
         },
         "top_feature_importance": importance[:30],
         "portable_probability_max_abs_error": max_parity_error,
         "notes": (
-            "Selection diagnostics use positive model post-cost expectancy without a tuned "
-            "confidence margin. Final performance still comes from the four-symbol, one-slot "
-            "continuous NautilusTrader account."
+            "Prediction and selected win rate are observed consequences, not fitted targets. "
+            "Final behavior is the four-symbol, one-slot continuous NautilusTrader account."
         ),
     }
     return model, report

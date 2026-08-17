@@ -1,10 +1,13 @@
-"""Wide but still causal EasyChart candidate generator for ML1.
+"""Causal EasyChart candidate generator for ML1.
 
-RE1 mixed two responsibilities: detecting a structurally valid opportunity and
-hard-coding whether its broad context was good enough.  ML1 keeps every existing
-mechanism, immutable entry/stop/target and duplicate-episode ownership, but moves
-macro/common-factor quality routing to the calibrated selector.  This exposes
-counterfactual examples that the former boolean router could never learn from.
+RE1 mixed structural opportunity detection with broad-context boolean routing.
+ML1 keeps the existing mechanisms, frozen entry/stop/target and causal-episode
+ownership, while exposing the context variables to the probability model.
+
+The candidate set is not widened by weakening stops, targets or RR.  It is widened
+only by recording structurally complete plans which a broad-context boolean gate
+would otherwise hide.  Whether those plans are genuinely better is learned from
+their target-before-stop outcomes, not assumed.
 """
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ from typing import Any
 
 import contracts_v5 as _contracts
 from contracts_v5 import V5TradePlan
+from domain import Candle
+from easychart_re1_auction_router_v3 import MatureDiagonalResponseFamily
 from easychart_re1_complete_bot_policy_v2 import EasyChartRE1CompleteBotPolicyV2Bundle
 from easychart_re1_efficient_pullback_context import EFFICIENT_PULLBACK_BROAD_CONTEXT_RULE
 
@@ -24,8 +29,30 @@ if ML1_CANDIDATE_SELECTION_SEPARATION_RULE not in _contracts.RESEARCH_RULES:
     _contracts.RESEARCH_RULES += (ML1_CANDIDATE_SELECTION_SEPARATION_RULE,)
 
 
+class ML1MatureDiagonalResponseFamily(MatureDiagonalResponseFamily):
+    """Feed the 15m/5m/1m engine only the timeframes it was built to consume."""
+
+    _SUPPORTED_TIMEFRAMES = frozenset((1, 5, 15))
+
+    def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        if timeframe_minutes not in self._SUPPORTED_TIMEFRAMES:
+            return []
+        return super().on_bar(timeframe_minutes, bar)
+
+
 class EasyChartML1CandidateBundle(EasyChartRE1CompleteBotPolicyV2Bundle):
-    """RE1 complete opportunity set without deterministic context suppression."""
+    """RE1 complete opportunity set with context recorded for ML judgment."""
+
+    def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
+        super().__init__(symbol, tick_size, minimum_gross_rr)
+        # The parent aggregate sends every account timeframe to every family.
+        # This family is explicitly a 15m/5m/1m engine; a 60m bar is context for
+        # other families, not an input to its HumanMicroEngine.
+        self.mature_diagonal_acceptance = ML1MatureDiagonalResponseFamily(
+            symbol,
+            tick_size,
+            minimum_gross_rr,
+        )
 
     def _context_allows(self, plan: V5TradePlan, prefix: str) -> bool:
         counter = getattr(self, prefix)
@@ -85,6 +112,9 @@ class EasyChartML1CandidateBundle(EasyChartRE1CompleteBotPolicyV2Bundle):
             "policy": (
                 "KEEP_CAUSAL_MECHANISM_AND_DUPLICATE_EPISODE_OWNERSHIP; "
                 "DEFER_MACRO_COMMON_FACTOR_AND_FLOW_QUALITY_TO_ML_SELECTOR"
+            ),
+            "mature_diagonal_timeframes": sorted(
+                ML1MatureDiagonalResponseFamily._SUPPORTED_TIMEFRAMES,
             ),
             "rule": ML1_CANDIDATE_SELECTION_SEPARATION_RULE,
         }

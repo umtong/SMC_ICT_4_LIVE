@@ -28,8 +28,8 @@ def _constant_model(probability: float, *, status: str = "trained") -> PortableB
             "feature_clip_ranges": {},
             "constant_probability": probability,
             "calibration": {"kind": "identity"},
-            # Old artifacts may still contain these fields. Runtime must not
-            # turn them into an extra conservative gate.
+            # Old artifacts may contain tuned thresholds.  Runtime must ignore
+            # them instead of recreating a 70%-target or coverage gate.
             "decision": {
                 "min_probability": 0.99,
                 "probability_edge": 0.40,
@@ -39,16 +39,16 @@ def _constant_model(probability: float, *, status: str = "trained") -> PortableB
     )
 
 
-def _two_r_economics():
+def _economics(target: float, *, fee: float = 0.0):
     return estimate_trade_economics(
         side=Side.LONG,
         entry=100.0,
         stop=99.0,
-        target=102.0,
+        target=target,
         tick_size=0.1,
-        entry_fee_rate=0.0,
-        target_fee_rate=0.0,
-        stop_fee_rate=0.0,
+        entry_fee_rate=fee,
+        target_fee_rate=fee,
+        stop_fee_rate=fee,
         funding_rate=0.0,
     )
 
@@ -108,28 +108,43 @@ def test_portable_tree_and_platt_calibration() -> None:
             }
         ],
         "calibration": {"kind": "platt_logit", "coefficient": 1.0, "intercept": 0.0},
-        "decision": {"kind": "positive_post_cost_expectancy"},
+        "decision": {"kind": "target_more_likely_than_stop_and_post_cost_positive"},
     }
     model = PortableBinaryModel(document)
     assert model.probability({"x": 0.0}) == pytest.approx(0.2)
     assert model.probability({"x": 1.0}) == pytest.approx(0.8)
 
 
-def test_old_probability_floors_do_not_create_an_extra_runtime_gate() -> None:
-    economics = _two_r_economics()
+def test_high_rr_does_not_rescue_a_more_likely_loser() -> None:
+    economics = _economics(104.0)  # 4R target
     decision = _constant_model(0.40).decide({}, economics)
-    assert economics.break_even_probability == pytest.approx(1.0 / 3.0)
+    assert decision.expected_net_r > 0.0
     assert decision.target_probability < 0.50
+    assert not decision.accepted
+    assert decision.reason == "TARGET_NOT_MORE_LIKELY_THAN_STOP"
+    assert decision.required_probability == pytest.approx(0.5)
+
+
+def test_normal_rr_high_quality_plan_is_accepted_without_a_70_percent_target() -> None:
+    decision = _constant_model(0.60).decide({}, _economics(101.0))  # 1R target
+    assert decision.target_probability == pytest.approx(0.60)
     assert decision.expected_net_r > 0.0
     assert decision.accepted
-    assert decision.required_probability == pytest.approx(economics.break_even_probability)
+    assert decision.reason == "TARGET_MORE_LIKELY_AND_POST_COST_POSITIVE"
 
 
-def test_nonpositive_expectancy_is_not_misrepresented_as_alpha() -> None:
-    decision = _constant_model(0.30).decide({}, _two_r_economics())
+def test_costs_can_invalidate_a_barely_more_likely_plan() -> None:
+    decision = _constant_model(0.51).decide({}, _economics(101.0, fee=0.001))
+    assert decision.target_probability > 0.50
     assert decision.expected_net_r < 0.0
     assert not decision.accepted
-    assert decision.reason == "NONPOSITIVE_MODEL_EXPECTANCY"
+    assert decision.reason == "NONPOSITIVE_POST_COST_EXPECTANCY"
+
+
+def test_old_probability_floors_do_not_become_runtime_targets() -> None:
+    decision = _constant_model(0.60).decide({}, _economics(101.0))
+    assert decision.accepted
+    assert decision.required_probability == pytest.approx(0.5)
 
 
 def test_shadow_model_is_not_selectable() -> None:

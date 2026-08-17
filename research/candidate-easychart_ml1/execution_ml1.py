@@ -1,10 +1,15 @@
 """NautilusTrader execution binding for the EasyChart ML1 selector.
 
-RE1 remains responsible for one-account execution, fixed 3% NAV risk sizing,
-entry/stop/target orders, fees, fills and the single global position slot.  ML1
-changes only candidate quality selection and simultaneous-candidate ordering.
-It never reduces risk by model confidence and adds no daily loss, exposure or
-trade-count limit.
+RE1 remains responsible for one-account execution, fixed approximately 3% NAV
+risk sizing, entry/stop/target orders, fees, fills and the single global
+position slot.  ML1 changes only candidate quality judgment and simultaneous
+candidate ordering.
+
+The selector does not chase a configured aggregate win rate.  It estimates
+whether each complete plan is more likely to reach its target before its stop.
+RR must already be at least 1R, and a large RR cannot compensate for a plan that
+is predicted to lose more often than it wins.  Among accepted plans, target-first
+probability is primary and expected post-cost R is secondary.
 """
 from __future__ import annotations
 
@@ -55,7 +60,7 @@ class _ScoredPlan:
 
 
 class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
-    """Causal candidate selector over the complete RE1 opportunity set."""
+    """Causal quality selector over the complete RE1 opportunity set."""
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
@@ -143,8 +148,8 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             stop_fee_rate=stop_fee,
             funding_rate=float(getattr(self.config, "estimated_funding_rate", 0.0)),
             entry_slippage_ticks=int(self.config.estimated_entry_slippage_ticks),
-            # The target is a resting limit.  Do not add a separate arbitrary
-            # target-slippage haircut on top of the configured execution model.
+            # The target is a resting limit.  Do not add another arbitrary
+            # target-slippage haircut on top of the execution model.
             target_slippage_ticks=0,
             stop_slippage_ticks=int(self.config.estimated_stop_slippage_ticks),
         )
@@ -173,9 +178,12 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
             "ml_raw_probability": decision.raw_probability,
             "ml_target_probability": decision.target_probability,
             "ml_tree_probability_std": decision.tree_probability_std,
-            "ml_break_even_probability": decision.required_probability,
+            "ml_quality_probability_boundary": decision.required_probability,
+            "ml_required_probability": decision.required_probability,
+            "ml_break_even_probability": economics.break_even_probability,
             "ml_expected_net_r": decision.expected_net_r,
-            "ml_positive_expectancy": decision.accepted,
+            "ml_quality_accepted": decision.accepted,
+            "ml_model_accepted": decision.accepted,
             "ml_decision_reason": decision.reason,
             "ml_baseline_eligible": baseline_eligible,
             "ml_win_net_r": economics.win_net_r,
@@ -209,10 +217,13 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
 
     @staticmethod
     def _ml_rank(item: _ScoredPlan) -> tuple[Any, ...]:
+        """Quality first; RR/EV never buys priority over lower win likelihood."""
+
         plan = item.plan
         return (
-            -item.decision.expected_net_r,
             -item.decision.target_probability,
+            -item.decision.expected_net_r,
+            -plan.gross_rr,
             plan.interaction_time_ns,
             -plan.higher_timeframe_minutes,
             plan.symbol,
@@ -273,12 +284,12 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
                     self._minc("plans_below_minimum_gross_rr")
                     continue
                 # A scoring failure is an implementation error.  Do not hide it
-                # behind a conservative skip/fallback path.
+                # behind a skip/fallback path.
                 scored.append(self._score_plan(instrument_id, plan))
 
         ranked = self._selection_pool(scored)
         if scored and not ranked:
-            self._minc("bucket_no_positive_model_expectancy")
+            self._minc("bucket_no_model_quality_candidate")
         if ranked:
             if self.active_plan is not None or not self._portfolio_flat():
                 for rank, item in enumerate(ranked, start=1):
@@ -337,7 +348,8 @@ class EasyChartML1Strategy(EasyChartRE1LocalAuctionStrategy):
                 "model_path": str(self.ml_runtime.model_path),
                 "model_id": self.ml_model.model_id,
                 "model_status": self.ml_model.status,
-                "decision": "positive_post_cost_expectancy_only",
+                "decision": "target_more_likely_than_stop_and_post_cost_positive",
+                "arbitration": "target_probability_then_expected_r",
             },
             "counts": dict(sorted(self.ml_counts.items())),
             "feature_count": len(FEATURE_NAMES),
