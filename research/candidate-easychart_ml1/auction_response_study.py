@@ -105,6 +105,8 @@ def build_defense_levels(
     tick: float,
 ) -> list[DefenseLevel]:
     bars = aggregate(frame, timeframe)
+    # All mature levels interact on the completed five-minute decision clock.
+    interaction_bars = aggregate(frame, 5)
     candidates = [p for p in pivots if p.timeframe == timeframe]
     claimed: set[str] = set()
     levels: list[DefenseLevel] = []
@@ -143,7 +145,7 @@ def build_defense_levels(
             else max(first.price, second.price) + tick
         )
         interaction = _first_interaction(
-            bars,
+            interaction_bars,
             max(first.observed_ts, opposite.observed_ts, second.observed_ts),
             second.side,
             lower,
@@ -223,9 +225,7 @@ def _window_features(
     signed = 2.0 * minute.taker_buy_quote_volume.astype(float) - q
     start_price = float(minute.open.iloc[0])
     end_price = float(minute.close.iloc[-1])
-    log_returns = np.log(minute.close.astype(float).clip(lower=1e-12)).diff().fillna(
-        math.log(max(end_price, 1e-12) / max(start_price, 1e-12))
-    )
+    log_returns = np.log(minute.close.astype(float).clip(lower=1e-12)).diff().fillna(0.0)
     net = side * math.log(max(end_price, 1e-12) / max(start_price, 1e-12))
     total = float(log_returns.abs().sum())
     out[f"{prefix}_minutes"] = float(len(minute))
@@ -311,28 +311,29 @@ def _find_retest(
     decision_ts: pd.Timestamp,
     event_low: float,
     event_high: float,
+    tick: float,
 ) -> int | None:
+    """Return the first distinct retest after completed detachment."""
     idx = frame.index
     start = idx.searchsorted(decision_ts + pd.Timedelta(minutes=1), side="left")
     end = min(start + (121 if state == "ACCEPTED_BREAK" else 61), len(frame) - 1)
+    detached = False
     for i in range(start, end):
         bar = frame.iloc[i]
         if state == "ACCEPTED_BREAK":
-            if side > 0:
-                invalid = float(bar.close) < level.lower
-                touched = float(bar.low) <= level.upper and float(bar.close) > level.upper
-            else:
-                invalid = float(bar.close) > level.upper
-                touched = float(bar.high) >= level.lower and float(bar.close) < level.lower
+            invalid = float(bar.close) < level.lower if side > 0 else float(bar.close) > level.upper
         else:
-            if side > 0:
-                invalid = float(bar.low) <= event_low - TICKS[str(bar.symbol)] if "symbol" in bar else float(bar.low) <= event_low
-                touched = float(bar.low) <= level.upper and float(bar.close) > level.upper
-            else:
-                invalid = float(bar.high) >= event_high + TICKS[str(bar.symbol)] if "symbol" in bar else float(bar.high) >= event_high
-                touched = float(bar.high) >= level.lower and float(bar.close) < level.lower
+            invalid = float(bar.low) <= event_low - tick if side > 0 else float(bar.high) >= event_high + tick
         if invalid:
             return None
+        if not detached:
+            detached = float(bar.low) > level.upper if side > 0 else float(bar.high) < level.lower
+            continue
+        touched = (
+            float(bar.low) <= level.upper and float(bar.close) > level.upper
+            if side > 0
+            else float(bar.high) >= level.lower and float(bar.close) < level.lower
+        )
         if touched:
             return i
     return None
@@ -406,7 +407,10 @@ def _event_row(
     state, side, interaction_ts, decision_base_ts, event_low, event_high = classified
     if interaction_ts < start_ts:
         return None
-    retest_i = _find_retest(frame, level, state, side, decision_base_ts, event_low, event_high)
+    tick = TICKS[symbol]
+    retest_i = _find_retest(
+        frame, level, state, side, decision_base_ts, event_low, event_high, tick
+    )
     if retest_i is None or retest_i >= len(frame) - 1:
         return None
     retest = frame.iloc[retest_i]
@@ -414,7 +418,6 @@ def _event_row(
     entry_i = retest_i + 1
     entry_ts = frame.index[entry_i]
     entry = float(frame.iloc[entry_i].open)
-    tick = TICKS[symbol]
     if state == "ACCEPTED_BREAK":
         stop = (
             min(float(retest.low), level.lower) - tick
@@ -493,6 +496,11 @@ def _event_row(
         "structural_gross_rr": None if structural_target is None else abs(structural_target - entry) / risk,
     }
     row.update(snapshot_features(frame, decision_ts, side))
+    decision_bar = frame.loc[decision_ts]
+    row["decision_close_location_aligned"] = (
+        float(decision_bar.close_location) if side > 0
+        else 1.0 - float(decision_bar.close_location)
+    )
     row.update(_pre_features(frame, bars5, interaction_ts))
     # Completed interaction bar(s), response to retest, and the retest itself.
     event_bar = bars5.loc[interaction_ts]
