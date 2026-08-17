@@ -135,3 +135,10 @@ def test_prior_only_feature_book_and_exact_schema() -> None:
     assert features["lower_strength"] == 1.5
     assert features["trigger_strength"] == 1.0
     assert features["confluence_strength"] >= 4.5
+    assert features["mechanism_order_block"] == 1.0
+    assert features["mechanism_fvg"] == 1.0
+    assert features["mechanism_continuation"] == 1.0
+    assert features["mechanism_flow"] == 0.0
+    assert features["mechanism_channel"] == 0.0
+    assert features["mechanism_wedge"] == 0.0
+    assert features["mechanism_liquidity_sweep"] == 0.0

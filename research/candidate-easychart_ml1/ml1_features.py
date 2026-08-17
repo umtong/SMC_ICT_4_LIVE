@@ -455,8 +455,10 @@ def _text_features(plan: Any) -> dict[str, float]:
         _token(getattr(plan, "target_zone_kind", "")),
         _token(getattr(plan, "scale_name", "")),
     ]
-    provenance = getattr(plan, "rule_provenance", ()) or ()
-    parts.extend(_token(item) for item in provenance)
+    # ``rule_provenance`` contains the repository-wide audit catalogue in
+    # several V5 plans.  Parsing it as plan-local evidence marks unrelated
+    # mechanisms as present.  Mechanism identity must come only from the frozen
+    # plan's family, scenario, zones, trigger and scale.
     text = "|".join(parts)
     feature_keywords = {
         "mechanism_order_block": ("ORDER_BLOCK", "_OB", "OB_"),
