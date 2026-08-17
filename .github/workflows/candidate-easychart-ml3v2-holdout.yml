@@ -1,0 +1,135 @@
+name: candidate-easychart-ml3v2-holdout
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3v2-holdout.yml"
+      - "research/candidate-easychart_ml3v2/.holdout_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml3v2-holdout
+  cancel-in-progress: true
+
+permissions: {contents: read, packages: read}
+
+jobs:
+  account:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [shadow, select]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v4:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml3v2/holdout-${{ matrix.mode }}
+      OUT: artifacts/candidate-easychart-ml3v2/holdout-${{ matrix.mode }}
+      MODEL: research/candidate-easychart_ml3v2/models/frozen_response_state_v1.json
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile reused causal nonlinear selector
+        run: |
+          python -m py_compile research/candidate-easychart_ml3v2/*.py
+          python - <<'PY'
+          from pathlib import Path
+          from ml1_features import FEATURE_NAMES
+          from ml1_model import PortableBinaryModel
+          model = PortableBinaryModel.load(Path("research/candidate-easychart_ml3v2/models/frozen_response_state_v1.json"))
+          assert model.status == "trained"
+          assert tuple(model.feature_names) == tuple(FEATURE_NAMES)
+          model.assert_selectable()
+          assert not any("symbol" in name.lower() for name in FEATURE_NAMES)
+          PY
+      - name: Run untouched chronological holdout account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          set -o pipefail
+          python research/candidate-easychart_ml3v2/run_mtf_backtest_ml1.py \
+            --start 2025-08-21 \
+            --end 2025-08-25 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            --ml-mode "${{ matrix.mode }}" \
+            --ml-model "$MODEL" \
+            2>&1 | tee "$OUT/backtest.log"
+      - name: Label every frozen holdout plan after shadow execution
+        if: matrix.mode == 'shadow'
+        run: |
+          python research/candidate-easychart_ml3v2/harvest_ml1.py \
+            --start 2025-08-21 \
+            --end 2025-08-25 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+          python research/candidate-easychart_ml3v2/build_ml1_dataset.py \
+            --run-output "$OUT"
+      - name: Summarize actual and counterfactual selection
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path(os.environ["OUT"])
+          result = {"mode": "${{ matrix.mode }}"}
+          metrics = out / "metrics.json"
+          if metrics.exists():
+              result["metrics"] = json.loads(metrics.read_text())
+          audit_path = out / "trade_audit.csv"
+          if audit_path.exists():
+              audit = pd.read_csv(audit_path, low_memory=False)
+              r = pd.to_numeric(audit.get("actual_net_r"), errors="coerce")
+              result["actual"] = {
+                  "closed_trades": int(len(audit)),
+                  "wins": int((r > 0).sum()),
+                  "losses": int((r < 0).sum()),
+                  "win_rate": None if len(audit) == 0 else float((r > 0).mean()),
+                  "sum_actual_net_r": float(r.sum()),
+                  "mean_actual_net_r": None if len(audit) == 0 else float(r.mean()),
+              }
+          dataset_path = out / "ml1_dataset.csv"
+          if dataset_path.exists():
+              data = pd.read_csv(dataset_path, low_memory=False)
+              selected = data[
+                  (pd.to_numeric(data["ml_target_probability"], errors="coerce") > 0.5)
+                  & (pd.to_numeric(data["ml_expected_net_r"], errors="coerce") > 0.0)
+              ].copy()
+              result["counterfactual_selection"] = {
+                  "plans": int(len(data)),
+                  "selected": int(len(selected)),
+                  "target_first": int(pd.to_numeric(selected.get("label"), errors="coerce").sum()),
+                  "win_rate": None if selected.empty else float(pd.to_numeric(selected["label"], errors="coerce").mean()),
+                  "sum_conservative_net_r": float(pd.to_numeric(selected.get("counterfactual_net_r_conservative"), errors="coerce").sum()),
+                  "families": selected["family"].value_counts().to_dict(),
+              }
+          (out / "holdout_summary.json").write_text(
+              json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+      - name: Preserve untouched holdout account
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml3v2-holdout-${{ matrix.mode }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3v2/holdout-${{ matrix.mode }}/**
+          if-no-files-found: warn
+          retention-days: 30
