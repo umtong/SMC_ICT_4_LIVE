@@ -32,13 +32,10 @@ jobs:
 
       - name: Compile and exercise the causal ML runtime
         run: |
-          mkdir -p "$OUT"
-          set -o pipefail
-          {
-            python -m py_compile \
-              research/candidate-easychart_ml1/*.py \
-              research/candidate-easychart_ml1/tests/*.py
-            python - <<'PY'
+          python -m py_compile \
+            research/candidate-easychart_ml1/*.py \
+            research/candidate-easychart_ml1/tests/*.py
+          python - <<'PY'
           from candidate_bundle_ml1 import EasyChartML1CandidateBundle
           from ml1_features import FEATURE_NAMES
           from ml1_model import PortableBinaryModel, estimate_trade_economics
@@ -80,7 +77,6 @@ jobs:
           for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
               EasyChartML1CandidateBundle(symbol, tick)
           PY
-          } 2>&1 | tee "$OUT/compile_runtime.log"
 
       - name: Run one four-symbol continuous shadow account
         run: |
@@ -168,6 +164,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: candidate-easychart-ml1-live-examples-${{ github.sha }}
-          path: artifacts/candidate-easychart-ml1/live-examples-2025/**
+          path: artifacts/candidate-easychart-ml1/live-examples-2025/
           if-no-files-found: warn
           retention-days: 30
