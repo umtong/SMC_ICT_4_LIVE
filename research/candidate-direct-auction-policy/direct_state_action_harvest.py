@@ -253,7 +253,13 @@ def _add_common_state(prepared: dict[str, pd.DataFrame]) -> dict[str, pd.DataFra
     rolling_activity = pd.concat(
         {s: aligned[s]["quote_volume"].rolling(60, min_periods=30).median() for s in symbols}, axis=1
     )
-    leader_name = rolling_activity.idxmax(axis=1)
+    # Warmup rows can be all-NaN across every symbol.  ``idxmax`` raises on
+    # that state, and choosing an arbitrary symbol would contaminate the leader
+    # features.  Select on a filled view, then explicitly restore NaN wherever
+    # no causal rolling-liquidity observation exists yet.
+    all_missing_leader = rolling_activity.isna().all(axis=1)
+    leader_name = rolling_activity.fillna(-float("inf")).idxmax(axis=1)
+    leader_name = leader_name.mask(all_missing_leader)
     for h in (1, 2, 5, 10, 15):
         ret_matrix = pd.concat({s: aligned[s][f"ret_{h}m"] for s in symbols}, axis=1)
         leader_ret = pd.Series(index=common_index, dtype=float)
