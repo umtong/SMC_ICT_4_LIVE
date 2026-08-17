@@ -15,6 +15,10 @@ permissions:
   contents: read
   packages: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   core-check:
     runs-on: ubuntu-24.04
@@ -35,13 +39,19 @@ jobs:
             research/candidate-easychart-ml-system/opportunity_universe.py \
             research/candidate-easychart-ml-system/augment_causal_state.py \
             research/candidate-easychart-ml-system/robust_router.py \
+            research/candidate-easychart-ml-system/robust_router_system.py \
             research/candidate-easychart-ml-system/train_robust_router.py \
             research/candidate-easychart-ml-system/execution_ml_system.py \
             research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
             research/candidate-easychart-ml-system/run_mtf_backtest_ml_system.py \
             research/candidate-easychart-ml-system/self_check_ml_system.py
       - name: Dependency-light causality and learning check
-        run: python research/candidate-easychart-ml-system/self_check_ml_system.py
+        run: |
+          python - <<'PY'
+          import robust_router_system  # noqa: F401
+          import self_check_ml_system
+          self_check_ml_system.main()
+          PY
       - name: Construct every mechanism owner on all symbols
         run: |
           python - <<'PY'
@@ -165,7 +175,6 @@ jobs:
           pattern: ml-system-harvest-*
           path: artifacts/candidate-easychart-ml-system/downloaded-harvest
       - name: Train cross-environment robust nonlinear router
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$MODEL_DIR"
@@ -245,7 +254,7 @@ jobs:
           retention-days: 30
 
   summarize:
-    if: always()
+    if: always() && needs.evaluate.result != 'skipped'
     needs: evaluate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
