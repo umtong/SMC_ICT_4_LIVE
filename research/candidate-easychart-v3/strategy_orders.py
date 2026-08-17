@@ -51,11 +51,10 @@ class EasyChartOrderMixin:
         step = Decimal(str(instrument.size_increment))
         floored = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
         minimum = Decimal(str(instrument.min_quantity))
-        maximum = Decimal(str(instrument.max_quantity)) if instrument.max_quantity is not None else None
         if floored <= 0 or floored < minimum:
             return None
-        if maximum is not None and floored > maximum:
-            return None
+        # The structural stop and 3% NAV risk budget determine quantity. Do not
+        # silently cap it or reject the trade through frozen research metadata.
         return instrument.make_qty(floored)
 
     def _submit_plan(self, instrument_id: InstrumentId, plan: TradePlan) -> bool:
