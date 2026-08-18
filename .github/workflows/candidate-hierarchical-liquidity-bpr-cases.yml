@@ -7,9 +7,14 @@ on:
     paths:
       - ".github/workflows/candidate-hierarchical-liquidity-bpr-cases.yml"
       - "research/candidate-hierarchical-liquidity-bpr-v1/render_cases.py"
+      - "!research/candidate-hierarchical-liquidity-bpr-v1/.latest-case-run"
+
+concurrency:
+  group: candidate-hierarchical-liquidity-bpr-cases
+  cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 defaults:
@@ -17,6 +22,19 @@ defaults:
     shell: bash
 
 jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > research/candidate-hierarchical-liquidity-bpr-v1/.latest-case-run
+          git add research/candidate-hierarchical-liquidity-bpr-v1/.latest-case-run
+          git commit -m "Record hierarchical BPR case run $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_ML_thinking
+
   render:
     strategy:
       fail-fast: false
