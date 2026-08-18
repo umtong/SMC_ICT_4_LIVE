@@ -69,6 +69,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$CACHE" "$OUT"
           python research/candidate-coherent-auction-system-v4/run_research.py --start "$START" --end "$END" --warmup-days 45 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT"
+      - name: Preserve exact chart-clinic price and volume path
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py --period "${{ matrix.period }}" --start "$START" --end "$END" --cache "$CACHE" --output "$OUT/chart"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
