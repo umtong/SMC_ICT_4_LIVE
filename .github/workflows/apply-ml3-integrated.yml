@@ -1,0 +1,59 @@
+name: apply-ml3-integrated
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/apply-ml3-integrated.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish apply locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_INTEGRATED_APPLY_RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_INTEGRATED_APPLY_SHA
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_INTEGRATED_APPLY_RUN_ID research/_run_locators/ML3_INTEGRATED_APPLY_SHA
+          git commit -m "chore(research): publish integrated-auction apply locator [skip ci]"
+          git push origin HEAD:research_ML3
+      - name: Apply and test hierarchical integrated policy
+        run: |
+          set -euo pipefail
+          cat research/_apply_integrated/part* | base64 --decode > /tmp/ml3-integrated.tgz
+          echo "abf8ecc0b758318a5c972f0f3cdb6c652916b5db983bd56bad1d25eea0848d08  /tmp/ml3-integrated.tgz" | sha256sum -c -
+          tar -xzf /tmp/ml3-integrated.tgz
+          rm -rf research/_apply_integrated
+          python -m py_compile research/candidate-easychart_ml3_breakthrough/*.py research/candidate-easychart_ml3_breakthrough/tests/*.py
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+          total = 0
+          for path in sorted(Path("research/candidate-easychart_ml3_breakthrough/tests").glob("test_*.py")):
+              namespace = runpy.run_path(str(path))
+              for name, value in namespace.items():
+                  if name.startswith("test_") and callable(value):
+                      value()
+                      total += 1
+          if total < 17:
+              raise SystemExit(f"only {total} integrated auction tests executed")
+          print(f"executed {total} integrated auction tests")
+          PY
+          git add -A research/candidate-easychart_ml3_breakthrough research/_apply_integrated
+          git commit -m "research(ml3): integrate direction liquidity structure event and entry"
+          git pull --rebase origin research_ML3
+          git push origin HEAD:research_ML3
