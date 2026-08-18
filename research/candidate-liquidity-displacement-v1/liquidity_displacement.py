@@ -388,6 +388,16 @@ def _action_from_sequence(
         "source_side": boundary.side,
         "event_bars": event["event_bars"],
         "event_to_displacement_minutes": float(zone["displacement_index"] - event["event_index"]),
+        # Absolute prices/times below are diagnostic-only. They are never
+        # part of the ML contract or the action decision.
+        "diagnostic_event_time_ns": _time_ns(data.index, int(event["event_index"])),
+        "diagnostic_event_extreme": float(event["event_extreme"]),
+        "diagnostic_displacement_time_ns": _time_ns(data.index, int(zone["displacement_index"])),
+        "diagnostic_origin_lower": float(zone["lower"]),
+        "diagnostic_origin_upper": float(zone["upper"]),
+        "diagnostic_first_return_time_ns": _time_ns(data.index, int(response["touch_index"])),
+        "diagnostic_response_time_ns": _time_ns(data.index, int(response["response_index"])),
+        "diagnostic_retest_extreme": float(response["retest_extreme"]),
         "source_strength_ratio": boundary.strength_ratio,
         "source_defense_count": boundary.defense_count,
         "source_age_minutes": (emission_ns - boundary.observed_time_ns) / 60_000_000_000.0,
