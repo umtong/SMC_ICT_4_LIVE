@@ -1,0 +1,138 @@
+name: candidate-easychart-ml3-latent-diagnostic
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3-latent-diagnostic.yml"
+      - "research/candidate-easychart_ml3_breakthrough/latent_auction.py"
+      - "research/candidate-easychart_ml3_breakthrough/run_mtf_backtest_latent*.py"
+      - "research/candidate-easychart_ml3_breakthrough/tests/test_latent_auction.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  locate-run:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish latent diagnostic locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_LATENT_RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_LATENT_RUN_SHA
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_LATENT_RUN_ID research/_run_locators/ML3_LATENT_RUN_SHA
+          git commit -m "chore(research): publish latent diagnostic locator [skip ci]"
+          git push origin HEAD:research_ML3
+
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    needs: locate-run
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: 2024-03
+            start: 2024-02-26
+            end: 2024-03-01
+          - name: 2025-03
+            start: 2025-02-25
+            end: 2025-03-01
+          - name: 2025-11
+            start: 2025-11-10
+            end: 2025-11-14
+          - name: 2026-05
+            start: 2026-05-11
+            end: 2026-05-15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml3-latent/${{ matrix.name }}
+      OUT: artifacts/candidate-easychart-ml3-latent/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compile and exercise latent auction contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_ml3_breakthrough/*.py \
+            research/candidate-easychart_ml3_breakthrough/tests/*.py
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+          total=0
+          for path in sorted(Path("research/candidate-easychart_ml3_breakthrough/tests").glob("test_*.py")):
+              namespace=runpy.run_path(str(path))
+              for name,value in namespace.items():
+                  if name.startswith("test_") and callable(value):
+                      value(); total+=1
+          if total < 20:
+              raise SystemExit(f"only {total} breakthrough tests executed")
+          print(f"executed {total} breakthrough tests")
+          PY
+
+      - name: Harvest latent price-volume auction paths
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml3_breakthrough/run_mtf_backtest_latent_shadow.py \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/shadow.log"
+          python research/candidate-easychart_ml3v2/harvest_ml1.py \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+          python research/candidate-easychart_ml3v3/build_ml3v3_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+          python research/candidate-easychart_ml3_breakthrough/summarize_intrinsic_run.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/summary.log"
+          test -s "$OUT/decision_events.csv"
+          test -s "$OUT/counterfactual_plans.csv"
+          test -s "$OUT/ml3v3_dataset.csv"
+
+      - name: Preserve latent trade paths
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml3-latent-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3-latent/${{ matrix.name }}/
+          if-no-files-found: warn
+          retention-days: 14
