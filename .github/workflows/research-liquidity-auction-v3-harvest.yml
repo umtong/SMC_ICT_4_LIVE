@@ -38,6 +38,7 @@ jobs:
           git push origin HEAD:research_liquidity_auction_v3
 
   harvest:
+    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -86,11 +87,12 @@ jobs:
         with:
           name: liquidity-auction-v3-${{ matrix.period }}
           path: artifacts/v3/${{ matrix.period }}/**
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   control-transfer:
     needs: harvest
+    if: always() && needs.harvest.result != 'cancelled'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
