@@ -1,0 +1,157 @@
+name: candidate-liquidity-auction-v1-diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction"]
+    paths:
+      - "research/candidate-coherent-auction-system-v3/**"
+      - ".github/workflows/candidate-liquidity-auction-v1-diagnostic.yml"
+
+concurrency:
+  group: candidate-liquidity-auction-v1-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and import coherent liquidity-auction policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-coherent-auction-system-v3/semantic_liquidity.py \
+            research/candidate-coherent-auction-system-v3/semantic_liquidity_safe.py \
+            research/candidate-coherent-auction-system-v3/coherent_system.py \
+            research/candidate-coherent-auction-system-v3/coherent_system_safe.py \
+            research/candidate-coherent-auction-system-v3/run_research.py \
+            research/candidate-coherent-liquidity-policy-v1/train_select.py \
+            research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py
+          python - <<'PY'
+          from coherent_system_safe import POLICY, MAX_HOLD_MINUTES
+          assert 'SEMANTIC_LIQUIDITY_DIRECTION' in POLICY
+          assert MAX_HOLD_MINUTES == 360
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: eval-2026-feb, start: 2026-02-01, end: 2026-02-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-liquidity-auction-v1/${{ matrix.period }}
+      OUT: artifacts/candidate-liquidity-auction-v1/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest semantic liquidity-auction episodes
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-auction-system-v3/run_research.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          test -f "$OUT/summary.json"
+          if [ ! -s "$OUT/coherent_actions.csv" ]; then printf 'action_id\n' > "$OUT/coherent_actions.csv"; fi
+          if [ ! -s "$OUT/destination_states.csv" ]; then printf 'state_id\n' > "$OUT/destination_states.csv"; fi
+      - name: Verify causal execution contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT'])
+          actions=pd.read_csv(out/'coherent_actions.csv')
+          if actions.empty:
+              print({'actions':0})
+              raise SystemExit(0)
+          if actions.action_id.duplicated().any():
+              raise RuntimeError('duplicate action identity')
+          if not pd.to_numeric(actions.gross_rr, errors='coerce').ge(1.0).all():
+              raise RuntimeError('signal-time gross RR below one')
+          filled=actions[actions.fill_state.astype(str).eq('FILLED_MARKET_NEXT_OPEN')]
+          if not filled.empty:
+              if not (pd.to_numeric(filled.fill_time_ns)>pd.to_numeric(filled.emission_time_ns)).all():
+                  raise RuntimeError('future timing violation')
+              if not (pd.to_numeric(filled.actual_stop_net_r).add(1.0).abs()<1e-9).all():
+                  raise RuntimeError('cost-adjusted stop not normalized to -1 account R')
+          print(actions.groupby(['narrative_branch','setup_kind','response_kind']).outcome.value_counts())
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-auction-v1-${{ matrix.period }}
+          path: artifacts/candidate-liquidity-auction-v1/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  learn-route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v1-*
+          path: downloaded
+          merge-multiple: false
+      - name: Blocked causal learning and one-account routing
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py \
+            --root downloaded --output result
+          cat result/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v1-diagnostic-result
+          path: |
+            result/**
+            downloaded/**/summary.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
