@@ -1,0 +1,28 @@
+name: export-research-ml3-source
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/export-research-ml3-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack branch source
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude='.cache' --exclude='artifacts' -czf research-ml3-source.tgz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-ml3-source-${{ github.sha }}
+          path: research-ml3-source.tgz
+          if-no-files-found: error
+          retention-days: 2
