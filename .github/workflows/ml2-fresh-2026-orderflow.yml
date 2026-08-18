@@ -1,0 +1,113 @@
+name: ml2-fresh-2026-orderflow
+
+on:
+  push:
+    branches: ["research_ML2"]
+    paths:
+      - "research/candidate-easychart_ml2/.fresh_data_dispatch_v18"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download unseen checksum-verified Binance futures aggTrades
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fresh_raw fresh_dataset
+          python - <<'PY'
+          from __future__ import annotations
+          import gzip
+          import hashlib
+          import io
+          import json
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          periods = {
+              "mar2026fresh": ["2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13"],
+              "may2026fresh": ["2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15"],
+              "jul2026fresh": ["2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10"],
+          }
+          symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+          raw_root = Path("fresh_raw")
+          out_root = Path("fresh_dataset")
+          manifest = {"source": "https://data.binance.vision futures/um/daily/aggTrades", "periods": periods, "files": {}}
+
+          def curl(url: str, path: Path) -> None:
+              subprocess.run([
+                  "curl", "-fL", "--retry", "6", "--retry-all-errors", "--connect-timeout", "20",
+                  "--max-time", "900", "-o", str(path), url,
+              ], check=True)
+
+          for period, dates in periods.items():
+              (out_root / period).mkdir(parents=True, exist_ok=True)
+              for symbol in symbols:
+                  chunks: list[bytes] = []
+                  header: bytes | None = None
+                  source_items = []
+                  for date in dates:
+                      filename = f"{symbol}-aggTrades-{date}.zip"
+                      base = f"https://data.binance.vision/data/futures/um/daily/aggTrades/{symbol}/{filename}"
+                      zpath = raw_root / filename
+                      cpath = raw_root / f"{filename}.CHECKSUM"
+                      curl(base, zpath)
+                      try:
+                          curl(base + ".CHECKSUM", cpath)
+                          expected = cpath.read_text().strip().split()[0]
+                          actual = hashlib.sha256(zpath.read_bytes()).hexdigest()
+                          if expected.lower() != actual.lower():
+                              raise RuntimeError(f"checksum mismatch {filename}: {expected} != {actual}")
+                      except subprocess.CalledProcessError:
+                          expected = None
+                          actual = hashlib.sha256(zpath.read_bytes()).hexdigest()
+                      with zipfile.ZipFile(zpath) as zf:
+                          members = [n for n in zf.namelist() if not n.endswith("/")]
+                          if len(members) != 1:
+                              raise RuntimeError(f"unexpected members in {filename}: {members}")
+                          data = zf.read(members[0])
+                      lines = data.splitlines(keepends=True)
+                      if not lines:
+                          continue
+                      first = lines[0].lower()
+                      has_header = any(token in first for token in (b"price", b"transact", b"maker", b"qty"))
+                      if has_header:
+                          if header is None:
+                              header = lines[0]
+                              chunks.append(lines[0])
+                          chunks.extend(lines[1:])
+                      else:
+                          chunks.extend(lines)
+                      source_items.append({"date": date, "zip_sha256": actual, "checksum_published": expected is not None, "bytes": zpath.stat().st_size})
+                      zpath.unlink(missing_ok=True)
+                      cpath.unlink(missing_ok=True)
+                  payload = b"".join(chunks)
+                  out = out_root / period / f"{symbol}.csv.gz"
+                  with gzip.open(out, "wb", compresslevel=6) as gz:
+                      gz.write(payload)
+                  manifest["files"][f"{period}/{symbol}.csv.gz"] = {
+                      "sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
+                      "compressed_bytes": out.stat().st_size,
+                      "uncompressed_bytes": len(payload),
+                      "sources": source_items,
+                  }
+          (out_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+      - name: Upload fresh unseen research dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml2-fresh-2026-orderflow-${{ github.sha }}
+          path: fresh_dataset
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
