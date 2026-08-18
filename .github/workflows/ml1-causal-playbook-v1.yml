@@ -1,0 +1,209 @@
+name: ml1-causal-playbook-v1
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - "research/candidate-easychart_ml1/causal_playbook_v1.py"
+      - "research/candidate-easychart_ml1/.causal_playbook_v1_dispatch"
+      - ".github/workflows/ml1-causal-playbook-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ml1-causal-playbook-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2022-03, start: "2022-03-07", end: "2022-03-13"}
+          - {period: dev-2022-11, start: "2022-11-07", end: "2022-11-13"}
+          - {period: dev-2023-03, start: "2023-03-13", end: "2023-03-19"}
+          - {period: dev-2023-10, start: "2023-10-16", end: "2023-10-22"}
+          - {period: dev-2024-03, start: "2024-03-04", end: "2024-03-10"}
+          - {period: dev-2024-08, start: "2024-08-05", end: "2024-08-11"}
+          - {period: dev-2025-02, start: "2025-02-03", end: "2025-02-09"}
+          - {period: dev-2025-11, start: "2025-11-03", end: "2025-11-09"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install numerical runtime
+        run: python -m pip install --disable-pip-version-check numpy pandas
+      - name: Compile target-led causal playbook
+        run: python -m py_compile research/candidate-easychart_ml1/causal_playbook_v1.py
+      - name: Harvest and route one continuous account window
+        env:
+          PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart_ml1
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python research/candidate-easychart_ml1/causal_playbook_v1.py \
+            --period '${{ matrix.period }}' \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --cache '.cache/causal-playbook-v1/${{ matrix.period }}' \
+            --output 'artifacts/${{ matrix.period }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: causal-playbook-v1-${{ matrix.period }}
+          path: artifacts/${{ matrix.period }}
+          if-no-files-found: error
+          retention-days: 30
+
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: harvest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check numpy pandas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: causal-playbook-v1-*
+          path: gathered
+      - name: Consolidate actual trade evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import numpy as np
+          import pandas as pd
+
+          root = Path('gathered')
+          output = Path('consolidated')
+          output.mkdir(parents=True, exist_ok=True)
+          summaries = []
+          selected_frames = []
+          candidate_frames = []
+          window_lines = []
+          for path in sorted(root.rglob('summary.json')):
+              summaries.append(json.loads(path.read_text(encoding='utf-8')))
+          for path in sorted(root.rglob('selected_trades.csv')):
+              frame = pd.read_csv(path, low_memory=False)
+              if not frame.empty:
+                  selected_frames.append(frame)
+          for path in sorted(root.rglob('candidate_trades.csv')):
+              frame = pd.read_csv(path, low_memory=False)
+              if not frame.empty:
+                  candidate_frames.append(frame)
+          for path in sorted(root.rglob('selected_trade_windows.jsonl')):
+              window_lines.extend(line for line in path.read_text(encoding='utf-8').splitlines() if line.strip())
+
+          selected = pd.concat(selected_frames, ignore_index=True, sort=False) if selected_frames else pd.DataFrame()
+          candidates = pd.concat(candidate_frames, ignore_index=True, sort=False) if candidate_frames else pd.DataFrame()
+          if not selected.empty:
+              selected['entry_time'] = pd.to_datetime(selected['entry_time'], utc=True)
+              selected['exit_time'] = pd.to_datetime(selected['exit_time'], utc=True)
+              selected = selected.sort_values(['entry_time', 'plan_id']).reset_index(drop=True)
+              nav = 1.0
+              peak = 1.0
+              nav_before, nav_after, drawdowns = [], [], []
+              for realized_r in pd.to_numeric(selected['realized_r'], errors='raise'):
+                  nav_before.append(nav)
+                  nav *= 1.0 + 0.03 * float(realized_r)
+                  peak = max(peak, nav)
+                  nav_after.append(nav)
+                  drawdowns.append(nav / peak - 1.0)
+              selected['nav_before_aggregate'] = nav_before
+              selected['nav_after_aggregate'] = nav_after
+              selected['drawdown_after_aggregate'] = drawdowns
+          selected.to_csv(output / 'selected_trades.csv', index=False)
+          candidates.to_csv(output / 'candidate_trades.csv', index=False)
+          (output / 'selected_trade_windows.jsonl').write_text(
+              ('\n'.join(window_lines) + '\n') if window_lines else '',
+              encoding='utf-8',
+          )
+
+          def metrics(frame):
+              if frame.empty:
+                  return {'trades': 0, 'ending_nav': 1.0}
+              realized = pd.to_numeric(frame['realized_r'], errors='raise').to_numpy(float)
+              positive = realized[realized > 0.0]
+              negative = realized[realized < 0.0]
+              nav = np.cumprod(1.0 + 0.03 * realized)
+              peak = np.maximum.accumulate(np.concatenate(([1.0], nav)))[1:]
+              return {
+                  'trades': int(len(frame)),
+                  'positive_trade_rate': float(np.mean(realized > 0.0)),
+                  'target_first_rate': float(np.mean(frame['outcome'].astype(str).eq('TARGET_FIRST'))),
+                  'stop_first_rate': float(np.mean(frame['outcome'].astype(str).eq('STOP_FIRST'))),
+                  'timeout_rate': float(np.mean(frame['outcome'].astype(str).eq('TIMEOUT'))),
+                  'mean_realized_r': float(np.mean(realized)),
+                  'median_realized_r': float(np.median(realized)),
+                  'mean_planned_gross_rr': float(pd.to_numeric(frame['gross_rr']).mean()),
+                  'median_planned_gross_rr': float(pd.to_numeric(frame['gross_rr']).median()),
+                  'mean_holding_minutes': float(pd.to_numeric(frame['holding_minutes']).mean()),
+                  'median_holding_minutes': float(pd.to_numeric(frame['holding_minutes']).median()),
+                  'profit_factor_r': None if not len(negative) else float(positive.sum() / -negative.sum()),
+                  'ending_nav': float(nav[-1]),
+                  'maximum_drawdown': float(np.min(nav / peak - 1.0)),
+              }
+
+          aggregate = {
+              'schema': 'target-led-causal-auction-playbook-v1-diverse-window-evidence',
+              'periods': [item.get('period') for item in summaries],
+              'calendar_days': int(sum((pd.Timestamp(item['period']['end']) - pd.Timestamp(item['period']['start'])).days + 1 for item in summaries)),
+              'candidate_trades': metrics(candidates),
+              'continuous_account': metrics(selected),
+              'by_period': {},
+              'by_family': {},
+              'by_symbol': {},
+          }
+          if not selected.empty:
+              days = max(aggregate['calendar_days'], 1)
+              aggregate['continuous_account']['trades_per_calendar_day'] = float(len(selected) / days)
+              for value, group in selected.groupby('period'):
+                  aggregate['by_period'][str(value)] = metrics(group)
+              for value, group in selected.groupby('family'):
+                  aggregate['by_family'][str(value)] = metrics(group)
+              for value, group in selected.groupby('symbol'):
+                  aggregate['by_symbol'][str(value)] = metrics(group)
+          (output / 'summary.json').write_text(json.dumps(aggregate, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(aggregate, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: causal-playbook-v1-consolidated
+          path: consolidated
+          if-no-files-found: error
+          retention-days: 45
+      - name: Preserve compact evidence on the research branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4; do
+            git fetch origin research_ML1
+            git reset --hard origin/research_ML1
+            rm -rf research/candidate-easychart_ml1/results/causal_playbook_v1
+            mkdir -p research/candidate-easychart_ml1/results/causal_playbook_v1
+            cp consolidated/summary.json research/candidate-easychart_ml1/results/causal_playbook_v1/
+            cp consolidated/selected_trades.csv research/candidate-easychart_ml1/results/causal_playbook_v1/
+            cp consolidated/candidate_trades.csv research/candidate-easychart_ml1/results/causal_playbook_v1/
+            cp consolidated/selected_trade_windows.jsonl research/candidate-easychart_ml1/results/causal_playbook_v1/
+            git add research/candidate-easychart_ml1/results/causal_playbook_v1
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m 'research(ml1): preserve causal playbook v1 trade evidence'
+            if git push origin HEAD:research_ML1; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
