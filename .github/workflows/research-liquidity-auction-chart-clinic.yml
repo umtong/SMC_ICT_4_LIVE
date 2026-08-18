@@ -10,10 +10,29 @@ on:
       - ".github/workflows/research-liquidity-auction-chart-clinic.yml"
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record run identity without retriggering
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_SHA}" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .latest-liquidity-auction-chart-clinic
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-auction-chart-clinic
+          git commit -m "Record liquidity-auction chart clinic run ${GITHUB_RUN_ID}" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
   export:
     name: export-${{ matrix.period }}
     runs-on: ubuntu-24.04
