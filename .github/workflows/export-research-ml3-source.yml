@@ -18,16 +18,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Publish run locator
+        run: |
+          set -euo pipefail
+          printf '%s\n' '${{ github.run_id }}' > research/_apply_ml3_breakthrough/RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_apply_ml3_breakthrough/SOURCE_SHA
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_apply_ml3_breakthrough/RUN_ID research/_apply_ml3_breakthrough/SOURCE_SHA
+          git commit -m "chore(research): publish ML3 payload run locator"
+          git push origin HEAD:research_ML3
       - name: Verify and apply intrinsic-auction payload
         run: |
           set -euo pipefail
-          cat research/_apply_ml3_breakthrough/part* | base64 -d > /tmp/ml3-breakthrough-payload.tgz
+          cat research/_apply_ml3_breakthrough/part0* | base64 --decode > /tmp/ml3-breakthrough-payload.tgz
           echo "4d3440fdc503cbcbda224d724e018a6a9f801b2a2c38d6cbf590652ed90fb928  /tmp/ml3-breakthrough-payload.tgz" | sha256sum -c -
           tar -xzf /tmp/ml3-breakthrough-payload.tgz
           rm -rf research/_apply_ml3_breakthrough research/_source_export
           rm -f .github/workflows/export-research-ml3-source.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git commit -m "research(ml3): add intrinsic-time auction breakthrough"
           git push origin HEAD:research_ML3
