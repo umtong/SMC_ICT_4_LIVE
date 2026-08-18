@@ -17,8 +17,30 @@ permissions:
   packages: read
 
 jobs:
+  locate-run:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish active run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_BREAKTHROUGH_RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_BREAKTHROUGH_RUN_SHA
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators
+          git commit -m "chore(research): publish active intrinsic diagnostic locator [skip ci]"
+          git push origin HEAD:research_ML3
+
   diagnose-auction-policy:
     if: github.actor != 'github-actions[bot]'
+    needs: locate-run
     runs-on: ubuntu-24.04
     timeout-minutes: 80
     defaults:
@@ -36,18 +58,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Publish active run locator
-        run: |
-          set -euo pipefail
-          mkdir -p research/_run_locators
-          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_BREAKTHROUGH_RUN_ID
-          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_BREAKTHROUGH_RUN_SHA
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add research/_run_locators
-          git commit -m "chore(research): publish active intrinsic diagnostic locator [skip ci]"
-          git push origin HEAD:research_ML3
 
       - name: Exercise intrinsic auction contracts
         run: |
@@ -142,19 +152,3 @@ jobs:
           path: artifacts/candidate-easychart-ml3-breakthrough/diagnostic/
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Publish run locator
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p research/candidate-easychart_ml3_breakthrough/evidence
-          printf '%s\n' '${{ github.run_id }}' > research/candidate-easychart_ml3_breakthrough/evidence/LAST_RUN_ID
-          printf '%s\n' '${{ github.sha }}' > research/candidate-easychart_ml3_breakthrough/evidence/LAST_RUN_SHA
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add research/candidate-easychart_ml3_breakthrough/evidence
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "chore(research): record intrinsic diagnostic run [skip ci]"
-          git push origin HEAD:research_ML3
