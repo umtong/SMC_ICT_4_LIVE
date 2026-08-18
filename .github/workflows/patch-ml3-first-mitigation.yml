@@ -1,0 +1,98 @@
+name: patch-ml3-first-mitigation
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/patch-ml3-first-mitigation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  locate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish patch run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_FIRST_MITIGATION_PATCH_RUN_ID
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_FIRST_MITIGATION_PATCH_RUN_ID
+          git commit -m "chore(research): publish first-mitigation patch locator [skip ci]"
+          git push origin HEAD:research_ML3
+
+  patch:
+    needs: locate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply structural entry and objective corrections
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-easychart_ml3_breakthrough/intrinsic_auction.py")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''            and self.is_recent(pool)\n            and (\n                (side is Side.LONG and pool.side == "HIGH" and pool.lower > entry)\n                or (side is Side.SHORT and pool.side == "LOW" and pool.upper < entry)\n            )\n'''
+          new = '''            and self.is_recent(pool)\n            # A single one-minute turn is internal path noise, not a level at\n            # which a full-position day trade must exit.  One-minute liquidity\n            # becomes a decision obstacle only when equal extrema cluster.\n            # Five-minute and higher completed turns remain valid objectives.\n            and (pool.timeframe_minutes >= 5 or pool.member_count >= 2)\n            and (\n                (side is Side.LONG and pool.side == "HIGH" and pool.lower > entry)\n                or (side is Side.SHORT and pool.side == "LOW" and pool.upper < entry)\n            )\n'''
+          if text.count(old) != 1:
+              raise SystemExit("target-role patch point changed")
+          text = text.replace(old, new, 1)
+
+          old = '''    def _origin_zone(self, episode: AuctionEpisode, bar: Candle) -> tuple[float, float]:\n        prior = [item for item in self.one_minute if item.ts_close_ns < bar.ts_close_ns]\n        for item in reversed(prior[-6:]):\n            opposite = item.close <= item.open if episode.side is Side.LONG else item.close >= item.open\n            if not opposite:\n                continue\n            lower = min(item.open, item.close)\n            upper = max(item.open, item.close)\n            if upper - lower >= self.tick_size:\n                return lower, upper\n        # No opposite body: use the third of the displacement bar nearest the\n        # source.  This is a mitigation area, not a generic candle pattern.\n        width = max(bar.high - bar.low, self.tick_size * 3.0) / 3.0\n        if episode.side is Side.LONG:\n            return bar.low, bar.low + width\n        return bar.high - width, bar.high\n'''
+          new = '''    def _origin_zone(self, episode: AuctionEpisode, bar: Candle) -> tuple[float, float]:\n        prior = [item for item in self.one_minute if item.ts_close_ns < bar.ts_close_ns]\n        # Prefer the actual three-candle imbalance created by the control\n        # transfer.  This encodes the source material's FVG/mitigation logic\n        # instead of naming an arbitrary opposite candle an order block.\n        if len(prior) >= 2:\n            first = prior[-2]\n            if episode.side is Side.LONG and bar.low > first.high:\n                return first.high, bar.low\n            if episode.side is Side.SHORT and bar.high < first.low:\n                return bar.high, first.low\n        # When no clean imbalance exists, the final opposite body before the\n        # displacement is the remaining executable footprint.\n        for item in reversed(prior[-6:]):\n            opposite = item.close <= item.open if episode.side is Side.LONG else item.close >= item.open\n            if not opposite:\n                continue\n            lower = min(item.open, item.close)\n            upper = max(item.open, item.close)\n            if upper - lower >= self.tick_size:\n                return lower, upper\n        width = max(bar.high - bar.low, self.tick_size * 3.0) / 3.0\n        if episode.side is Side.LONG:\n            return bar.low, bar.low + width\n        return bar.high - width, bar.high\n'''
+          if text.count(old) != 1:
+              raise SystemExit("origin-zone patch point changed")
+          text = text.replace(old, new, 1)
+
+          old = '''            if episode.phase is EpisodePhase.WAIT_RETEST:\n                if episode.origin_lower is None or episode.origin_upper is None:\n                    episode.origin_lower = episode.source_lower\n                    episode.origin_upper = episode.source_upper\n                if not self._touches_zone(episode, bar):\n                    continue\n                episode.retest_time_ns = bar.ts_close_ns\n                episode.retest_extreme = (\n                    bar.low\n                    if episode.side is Side.LONG\n                    else bar.high\n                )\n                accepted, strength = self._response_evidence(episode, bar, observation)\n                if accepted:\n                    plan = self._build_plan(episode, bar, strength)\n                    if plan is not None:\n                        emitted.append(plan)\n                    continue\n                episode.phase = EpisodePhase.WAIT_RESPONSE\n                episode.phase_time_ns = bar.ts_close_ns\n                self._inc("retest_touched_waiting_response")\n                self._audit(\n                    "intrinsic_retest_touched",\n                    bar.ts_close_ns,\n                    episode_id=episode.episode_id,\n                    pool_id=episode.pool_id,\n                    side=_side_name(episode.side),\n                    retest_extreme=episode.retest_extreme,\n                    origin_lower=episode.origin_lower,\n                    origin_upper=episode.origin_upper,\n                )\n                continue\n'''
+          new = '''            if episode.phase is EpisodePhase.WAIT_RETEST:\n                if episode.origin_lower is None or episode.origin_upper is None:\n                    episode.origin_lower = episode.source_lower\n                    episode.origin_upper = episode.source_upper\n                if not self._touches_zone(episode, bar):\n                    continue\n                episode.retest_time_ns = bar.ts_close_ns\n                episode.retest_extreme = (\n                    bar.low\n                    if episode.side is Side.LONG\n                    else bar.high\n                )\n                # The sweep/reclaim+displacement or break+hold already proved\n                # control transfer.  The first mitigation is the skilled\n                # trader's good-price entry; requiring another micro breakout\n                # after it made the machine late and discarded almost every\n                # coherent episode.  Keep response evidence as a feature, not\n                # as a second compulsory confirmation gate.\n                accepted, strength = self._response_evidence(episode, bar, observation)\n                touch_strength = max(\n                    1.0,\n                    episode.transition_strength,\n                    episode.evidence_strength,\n                    strength if accepted else 0.0,\n                )\n                plan = self._build_plan(episode, bar, touch_strength)\n                if plan is not None:\n                    emitted.append(plan)\n                continue\n'''
+          if text.count(old) != 1:
+              raise SystemExit("first-mitigation patch point changed")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          tests = Path("research/candidate-easychart_ml3_breakthrough/tests/test_intrinsic_auction.py")
+          t = tests.read_text(encoding="utf-8")
+          old = '''def test_one_minute_turn_is_target_only_not_source() -> None:\n    book = LiquidityBook("BTCUSDT", 0.1)\n    source = book.register(IntrinsicSwing("low", "LOW", 100.0, 1, 2, 1.0, 15, 1.0))\n    micro = book.register(IntrinsicSwing("micro", "HIGH", 102.0, 3, 4, 1.0, 1, 1.0))\n    assert micro not in book.eligible_sources(10)\n    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is micro\n'''
+          new = '''def test_one_minute_turn_is_internal_noise_until_equal_extrema_cluster() -> None:\n    book = LiquidityBook("BTCUSDT", 0.1)\n    source = book.register(IntrinsicSwing("low", "LOW", 100.0, 1, 2, 1.0, 15, 1.0))\n    micro = book.register(IntrinsicSwing("micro", "HIGH", 102.0, 3, 4, 1.0, 1, 1.0))\n    assert micro not in book.eligible_sources(10)\n    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is None\n    clustered = book.register(IntrinsicSwing("micro2", "HIGH", 102.05, 5, 6, 1.0, 1, 1.0))\n    assert clustered is micro\n    assert clustered.member_count == 2\n    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is clustered\n'''
+          if t.count(old) != 1:
+              raise SystemExit("one-minute target test patch point changed")
+          tests.write_text(t.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          python -m py_compile research/candidate-easychart_ml3_breakthrough/*.py research/candidate-easychart_ml3_breakthrough/tests/*.py
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+          total = 0
+          for path in sorted(Path("research/candidate-easychart_ml3_breakthrough/tests").glob("test_*.py")):
+              namespace = runpy.run_path(str(path))
+              for name, value in namespace.items():
+                  if name.startswith("test_") and callable(value):
+                      value()
+                      total += 1
+          if total < 13:
+              raise SystemExit(f"only {total} tests executed")
+          print(f"executed {total} first-mitigation tests")
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_ml3_breakthrough
+          git commit -m "research(ml3): enter first mitigation at decision-scale objectives"
+          git pull --rebase origin research_ML3
+          git push origin HEAD:research_ML3
