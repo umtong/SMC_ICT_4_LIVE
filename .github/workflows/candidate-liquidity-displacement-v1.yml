@@ -22,15 +22,9 @@ defaults:
     shell: bash
 
 jobs:
-  core-check:
+  announce:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      options: --user 0
-    env:
-      PYTHONPATH: research/candidate-liquidity-displacement-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Record run identity without retriggering
@@ -44,6 +38,18 @@ jobs:
           git add research/candidate-liquidity-displacement-v1/.latest-run
           git commit -m "Record liquidity displacement run $GITHUB_RUN_ID" || true
           git push origin HEAD:research_ML_thinking
+
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-displacement-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
       - name: Compile structural candidate
         run: |
           set -euo pipefail
