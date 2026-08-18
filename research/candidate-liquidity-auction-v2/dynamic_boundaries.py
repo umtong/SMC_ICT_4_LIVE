@@ -14,7 +14,7 @@ obstacle for an already valid episode.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 from typing import Iterable, Sequence
 import hashlib
@@ -105,9 +105,10 @@ def _atr_price(data: pd.DataFrame, index: int, window: int = 120) -> float:
 
 
 def _event_index(data: pd.DataFrame, event_time_ns: int) -> int:
+    timestamp = pd.Timestamp(event_time_ns, unit="ns", tz="UTC")
     return min(
         len(data) - 1,
-        max(0, int(data.index.searchsorted(pd.Timestamp(event_time_ns, tz="UTC"), side="left"))),
+        max(0, int(data.index.searchsorted(timestamp, side="left"))),
     )
 
 
@@ -127,7 +128,8 @@ def _anchor_rows(
             continue
         event_index = _event_index(data, int(level.event_time_ns))
         observed = int(level.observed_index_1m)
-        key = (event_index, int(round(float(level.price) / max(abs(level.upper - level.lower), EPS))))
+        quantum = max(abs(level.upper - level.lower), abs(level.price) * 1e-8, EPS)
+        key = (event_index, int(round(float(level.price) / quantum)))
         candidate = (event_index, observed, float(level.price), level.level_id)
         previous = dedup.get(key)
         if previous is None or candidate[1] < previous[1]:
@@ -158,11 +160,20 @@ def _fit(points: Sequence[tuple[int, int, float, str]], data: pd.DataFrame) -> D
     atr = max(_atr_price(data, observed), EPS)
     normalized_slope = slope * 60.0 / atr
     span_minutes = x[-1] - x[0]
-    spacing_quality = min(1.0, span_minutes / max(4.0 * 60.0, 2.0 * (points[-1][0] - points[-2][0])))
+    spacing_quality = min(
+        1.0,
+        span_minutes / max(240.0, 2.0 * (points[-1][0] - points[-2][0])),
+    )
     residual_quality = math.exp(-residual / max(0.20 * atr, EPS))
     anchor_quality = min(1.0, len(points) / 4.0)
     slope_quality = math.exp(-max(0.0, abs(normalized_slope) - 2.5))
-    quality = float(np.clip(spacing_quality * residual_quality * anchor_quality * slope_quality, 0.0, 1.0))
+    quality = float(
+        np.clip(
+            spacing_quality * residual_quality * anchor_quality * slope_quality,
+            0.0,
+            1.0,
+        )
+    )
     if quality < 0.18:
         return None
     identity = hashlib.sha1(
@@ -211,22 +222,25 @@ def _raw_models(
                 )
                 if active_until <= fitted.observed_index + 1:
                     continue
-                fitted = DynamicBoundary(
-                    **{
-                        **fitted.__dict__,
-                        "boundary_id": f"{fitted.boundary_id}:{symbol}:{timeframe}:{side}:{position}",
-                        "symbol": symbol,
-                        "side": side,
-                        "timeframe_minutes": timeframe,
-                        "active_until_index": active_until,
-                    }
+                fitted = replace(
+                    fitted,
+                    boundary_id=(
+                        f"{fitted.boundary_id}:{symbol}:{timeframe}:{side}:{position}"
+                    ),
+                    symbol=symbol,
+                    side=side,
+                    timeframe_minutes=timeframe,
+                    active_until_index=active_until,
                 )
                 models.append(fitted)
             output.extend(models)
     return output
 
 
-def _attach_channels(models: Sequence[DynamicBoundary], data: pd.DataFrame) -> list[DynamicBoundary]:
+def _attach_channels(
+    models: Sequence[DynamicBoundary],
+    data: pd.DataFrame,
+) -> list[DynamicBoundary]:
     output: list[DynamicBoundary] = []
     for model in models:
         candidates = [
@@ -251,17 +265,21 @@ def _attach_channels(models: Sequence[DynamicBoundary], data: pd.DataFrame) -> l
             parallel = math.exp(-slope_gap / max(width, atr))
             overlap_start = max(model.observed_index, other.observed_index)
             overlap_end = min(model.active_until_index, other.active_until_index)
-            overlap_quality = min(1.0, max(0, overlap_end - overlap_start) / max(120.0, 2.0 * model.timeframe_minutes))
-            channel_quality = min(model.quality, other.quality) * parallel * overlap_quality
+            overlap_quality = min(
+                1.0,
+                max(0, overlap_end - overlap_start)
+                / max(120.0, 2.0 * model.timeframe_minutes),
+            )
+            channel_quality = (
+                min(model.quality, other.quality) * parallel * overlap_quality
+            )
             if channel_quality > best_quality:
                 best_quality, best_width = channel_quality, width
         output.append(
-            DynamicBoundary(
-                **{
-                    **model.__dict__,
-                    "channel_quality": float(np.clip(best_quality, 0.0, 1.0)),
-                    "channel_width_at_observation": float(best_width),
-                }
+            replace(
+                model,
+                channel_quality=float(np.clip(best_quality, 0.0, 1.0)),
+                channel_width_at_observation=float(best_width),
             )
         )
     return output
@@ -300,17 +318,13 @@ def build_dynamic_boundaries(
 ) -> list[DynamicBoundary]:
     clear_symbol(symbol)
     models = _attach_channels(_raw_models(symbol, data, levels), data)
-    output: list[DynamicBoundary] = []
-    for model in models:
-        penetration = _first_penetration(model, data, tick)
-        output.append(
-            DynamicBoundary(
-                **{
-                    **model.__dict__,
-                    "first_penetration_index": penetration,
-                }
-            )
+    output = [
+        replace(
+            model,
+            first_penetration_index=_first_penetration(model, data, tick),
         )
+        for model in models
+    ]
     _BOUNDARIES[symbol] = output
     return output
 
@@ -336,15 +350,23 @@ def source_levels(
         for level in static_levels:
             if int(level.observed_index_1m) >= interaction:
                 continue
-            if abs(float(level.price) - price) <= max(width, abs(level.upper - level.lower)):
-                coincident = max(coincident, float(level.timeframe_minutes) / 240.0)
+            if abs(float(level.price) - price) <= max(
+                width,
+                abs(level.upper - level.lower),
+            ):
+                coincident = max(
+                    coincident,
+                    float(level.timeframe_minutes) / 240.0,
+                )
         source_id = f"{model.boundary_id}:PENETRATION:{interaction}"
         kind = (
             f"{model.timeframe_minutes}M_DYNAMIC_CHANNEL_{model.side}"
             if model.is_channel_edge
             else f"{model.timeframe_minutes}M_DYNAMIC_TRENDLINE_{model.side}"
         )
-        strength = model.quality * (1.0 + 0.50 * model.channel_quality + 0.25 * coincident)
+        strength = model.quality * (
+            1.0 + 0.50 * model.channel_quality + 0.25 * coincident
+        )
         level = hl.LiquidityLevel(
             level_id=source_id,
             symbol=symbol,
@@ -390,12 +412,15 @@ def active_route_boundaries(
 ) -> list[tuple[DynamicBoundary, float]]:
     wanted = "HIGH" if side == "LONG" else "LOW"
     output: list[tuple[DynamicBoundary, float]] = []
-    for model in _BOUNDARIES.get(symbol, ()): 
+    for model in _BOUNDARIES.get(symbol, ()):
         if model.side != wanted:
             continue
         if not (model.observed_index < index <= model.active_until_index):
             continue
-        if model.first_penetration_index is not None and model.first_penetration_index <= index:
+        if (
+            model.first_penetration_index is not None
+            and model.first_penetration_index <= index
+        ):
             continue
         price = float(model.value_at(index))
         if side == "LONG" and price <= entry + tick:
