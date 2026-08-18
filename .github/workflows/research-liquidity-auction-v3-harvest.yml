@@ -6,7 +6,11 @@ on:
     branches: ["research_liquidity_auction_v3"]
     paths:
       - ".github/workflows/research-liquidity-auction-v3-harvest.yml"
-      - "research/candidate-liquidity-auction-v3/.dispatch-broad-harvest"
+      - "research/candidate-liquidity-auction-v3/**"
+
+concurrency:
+  group: research-liquidity-auction-v3
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -84,3 +88,39 @@ jobs:
           path: artifacts/v3/${{ matrix.period }}/**
           if-no-files-found: error
           retention-days: 14
+
+  control-transfer:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v3-*
+          path: downloaded
+          merge-multiple: false
+      - name: Learn direction and execute the control-transfer policy
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-liquidity-auction-v3/control_transfer_research.py --root downloaded --output result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v3-control-transfer
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve compact result on branch
+        run: |
+          set -euo pipefail
+          cp result/summary.json research/candidate-liquidity-auction-v3/LATEST_RESULT.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-liquidity-auction-v3/LATEST_RESULT.json
+          git commit -m "Preserve liquidity-auction v3 result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_liquidity_auction_v3
+          git push origin HEAD:research_liquidity_auction_v3
