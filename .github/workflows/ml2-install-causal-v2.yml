@@ -1,0 +1,46 @@
+name: ml2-install-causal-v2
+
+on:
+  push:
+    branches: ["research_ML2"]
+    paths:
+      - "research/candidate-easychart_ml2/.install_causal_v2_dispatch"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML2
+      - name: Reconstruct and install payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .ml2-causal-v2-bootstrap/part00 .ml2-causal-v2-bootstrap/part01 > /tmp/payload.b64
+          base64 -d /tmp/payload.b64 > /tmp/payload.tar.gz
+          echo "41cced7050246e268c05307d1ab430cad84bb670463611d56b40e942072a4c7e  /tmp/payload.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/payload.tar.gz -C .
+          python -m py_compile \
+            research/candidate-easychart_ml2/causal_auction_policy_v2.py \
+            research/candidate-easychart_ml2/run_mtf_backtest_ml2_causal_auction_v2.py
+      - name: Commit installed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            research/candidate-easychart_ml2/causal_auction_policy_v2.py \
+            research/candidate-easychart_ml2/run_mtf_backtest_ml2_causal_auction_v2.py \
+            .github/workflows/candidate-easychart-ml2-causal-auction-v2.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research: install causal auction v2 policy"
+          git push origin HEAD:research_ML2
