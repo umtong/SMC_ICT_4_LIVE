@@ -1,0 +1,78 @@
+name: Research liquidity auction v3 broad harvest
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v3"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v3-harvest.yml"
+      - "research/candidate-liquidity-auction-v3/.dispatch-broad-harvest"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record run identity
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-liquidity-auction-v3-harvest
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-auction-v3-harvest
+          git commit -m "Record liquidity-auction v3 harvest $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-may, start: 2023-05-01, end: 2023-05-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2023-nov, start: 2023-11-01, end: 2023-11-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: eval-2026-feb, start: 2026-02-01, end: 2026-02-08}
+          - {period: eval-2026-may, start: 2026-05-01, end: 2026-05-08}
+          - {period: eval-2026-aug, start: 2026-08-01, end: 2026-08-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/v3/${{ matrix.period }}
+      OUT: artifacts/v3/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest semantic boundary episodes and immutable plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-auction-system-v4/run_research.py --start "$START" --end "$END" --warmup-days 45 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-auction-v3-${{ matrix.period }}
+          path: artifacts/v3/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 14
