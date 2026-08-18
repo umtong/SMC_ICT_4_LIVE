@@ -19,9 +19,11 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[2]
+EASY_V2 = ROOT / "research" / "candidate-easychart-v2"
 RE1 = ROOT / "research" / "candidate-easychart_re1"
-if str(RE1) not in sys.path:
-    sys.path.insert(0, str(RE1))
+for module_path in (EASY_V2, RE1):
+    if str(module_path) not in sys.path:
+        sys.path.insert(0, str(module_path))
 
 from data_re1_flow import load_range_flow  # noqa: E402
 
