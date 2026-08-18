@@ -517,6 +517,11 @@ class LiquidityBook:
             and pool.pool_id != exclude_pool_id
             and pool.observed_time_ns < time_ns
             and self.is_recent(pool)
+            # A single one-minute turn is internal path noise, not a level at
+            # which a full-position day trade must exit.  One-minute liquidity
+            # becomes a decision obstacle only when equal extrema cluster.
+            # Five-minute and higher completed turns remain valid objectives.
+            and (pool.timeframe_minutes >= 5 or pool.member_count >= 2)
             and (
                 (side is Side.LONG and pool.side == "HIGH" and pool.lower > entry)
                 or (side is Side.SHORT and pool.side == "LOW" and pool.upper < entry)
@@ -1214,6 +1219,17 @@ class IntrinsicAuctionBundle:
 
     def _origin_zone(self, episode: AuctionEpisode, bar: Candle) -> tuple[float, float]:
         prior = [item for item in self.one_minute if item.ts_close_ns < bar.ts_close_ns]
+        # Prefer the actual three-candle imbalance created by the control
+        # transfer.  This encodes the source material's FVG/mitigation logic
+        # instead of naming an arbitrary opposite candle an order block.
+        if len(prior) >= 2:
+            first = prior[-2]
+            if episode.side is Side.LONG and bar.low > first.high:
+                return first.high, bar.low
+            if episode.side is Side.SHORT and bar.high < first.low:
+                return bar.high, first.low
+        # When no clean imbalance exists, the final opposite body before the
+        # displacement is the remaining executable footprint.
         for item in reversed(prior[-6:]):
             opposite = item.close <= item.open if episode.side is Side.LONG else item.close >= item.open
             if not opposite:
@@ -1222,8 +1238,6 @@ class IntrinsicAuctionBundle:
             upper = max(item.open, item.close)
             if upper - lower >= self.tick_size:
                 return lower, upper
-        # No opposite body: use the third of the displacement bar nearest the
-        # source.  This is a mitigation area, not a generic candle pattern.
         width = max(bar.high - bar.low, self.tick_size * 3.0) / 3.0
         if episode.side is Side.LONG:
             return bar.low, bar.low + width
@@ -1507,25 +1521,22 @@ class IntrinsicAuctionBundle:
                     if episode.side is Side.LONG
                     else bar.high
                 )
+                # The sweep/reclaim+displacement or break+hold already proved
+                # control transfer.  The first mitigation is the skilled
+                # trader's good-price entry; requiring another micro breakout
+                # after it made the machine late and discarded almost every
+                # coherent episode.  Keep response evidence as a feature, not
+                # as a second compulsory confirmation gate.
                 accepted, strength = self._response_evidence(episode, bar, observation)
-                if accepted:
-                    plan = self._build_plan(episode, bar, strength)
-                    if plan is not None:
-                        emitted.append(plan)
-                    continue
-                episode.phase = EpisodePhase.WAIT_RESPONSE
-                episode.phase_time_ns = bar.ts_close_ns
-                self._inc("retest_touched_waiting_response")
-                self._audit(
-                    "intrinsic_retest_touched",
-                    bar.ts_close_ns,
-                    episode_id=episode.episode_id,
-                    pool_id=episode.pool_id,
-                    side=_side_name(episode.side),
-                    retest_extreme=episode.retest_extreme,
-                    origin_lower=episode.origin_lower,
-                    origin_upper=episode.origin_upper,
+                touch_strength = max(
+                    1.0,
+                    episode.transition_strength,
+                    episode.evidence_strength,
+                    strength if accepted else 0.0,
                 )
+                plan = self._build_plan(episode, bar, touch_strength)
+                if plan is not None:
+                    emitted.append(plan)
                 continue
 
             if episode.phase is EpisodePhase.WAIT_RESPONSE:

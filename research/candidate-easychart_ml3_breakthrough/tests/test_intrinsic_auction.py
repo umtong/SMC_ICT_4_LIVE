@@ -284,10 +284,14 @@ def test_old_equal_extreme_starts_new_pool_after_intrinsic_horizon() -> None:
     assert later.pool_id != first.pool_id
 
 
-def test_one_minute_turn_is_target_only_not_source() -> None:
+def test_one_minute_turn_is_internal_noise_until_equal_extrema_cluster() -> None:
     book = LiquidityBook("BTCUSDT", 0.1)
     source = book.register(IntrinsicSwing("low", "LOW", 100.0, 1, 2, 1.0, 15, 1.0))
     micro = book.register(IntrinsicSwing("micro", "HIGH", 102.0, 3, 4, 1.0, 1, 1.0))
     assert micro not in book.eligible_sources(10)
-    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is micro
+    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is None
+    clustered = book.register(IntrinsicSwing("micro2", "HIGH", 102.05, 5, 6, 1.0, 1, 1.0))
+    assert clustered is micro
+    assert clustered.member_count == 2
+    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is clustered
 
