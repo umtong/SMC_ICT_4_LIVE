@@ -1,0 +1,50 @@
+name: apply-ml3-v2
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/apply-ml3-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply and validate active-auction-map payload
+        env:
+          PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+        run: |
+          set -euo pipefail
+          cat research/_apply_ml3_v2/part* | base64 --decode > /tmp/ml3-v2.tgz
+          echo "373e14c4fe08f1fb3f811a81a89b8ed749a893810d49bdb2597f636e82ccf0e6  /tmp/ml3-v2.tgz" | sha256sum -c -
+          tar -xzf /tmp/ml3-v2.tgz
+          rm -rf research/_apply_ml3_v2
+          python -m py_compile research/candidate-easychart_ml3_breakthrough/*.py research/candidate-easychart_ml3_breakthrough/tests/*.py
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+          total = 0
+          for path in sorted(Path("research/candidate-easychart_ml3_breakthrough/tests").glob("test_*.py")):
+              namespace = runpy.run_path(str(path))
+              for name, value in sorted(namespace.items()):
+                  if name.startswith("test_") and callable(value):
+                      value()
+                      total += 1
+          if total < 13:
+              raise SystemExit(f"only {total} tests executed")
+          print(f"executed {total} active-auction-map tests")
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A research/candidate-easychart_ml3_breakthrough research/_apply_ml3_v2
+          git commit -m "research(ml3): replace immortal swing pools with active auction map"
+          git pull --rebase origin research_ML3
+          git push origin HEAD:research_ML3
