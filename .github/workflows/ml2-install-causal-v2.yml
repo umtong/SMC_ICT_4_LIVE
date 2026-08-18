@@ -1,24 +1,54 @@
-name: ml2-install-causal-v2
+name: ml2-causal-v2-research
 
 on:
-  push:
+  pull_request:
     branches: ["research_ML2"]
     paths:
-      - "research/candidate-easychart_ml2/.install_causal_v2_dispatch"
+      - "research/candidate-easychart_ml2/.causal_v2_pr_dispatch"
   workflow_dispatch:
 
+concurrency:
+  group: ml2-causal-v2-research-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write
+  contents: read
+  packages: read
 
 jobs:
-  install:
+  research:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: may-2024
+            start: 2024-05-01
+            end: 2024-05-31
+          - name: feb-2025
+            start: 2025-02-01
+            end: 2025-02-28
+          - name: aug-2025
+            start: 2025-08-01
+            end: 2025-08-31
+          - name: nov-2025
+            start: 2025-11-01
+            end: 2025-11-30
+          - name: feb-2026
+            start: 2026-02-01
+            end: 2026-02-28
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml2-causal-v2/${{ matrix.name }}
+      OUT: artifacts/candidate-easychart-ml2-causal-v2/${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: research_ML2
-      - name: Reconstruct and install payload
+      - name: Reconstruct causal policy source
         shell: bash
         run: |
           set -euo pipefail
@@ -29,18 +59,27 @@ jobs:
           python -m py_compile \
             research/candidate-easychart_ml2/causal_auction_policy_v2.py \
             research/candidate-easychart_ml2/run_mtf_backtest_ml2_causal_auction_v2.py
-      - name: Commit installed source
+      - name: Run one continuous four-symbol account
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add \
-            research/candidate-easychart_ml2/causal_auction_policy_v2.py \
-            research/candidate-easychart_ml2/run_mtf_backtest_ml2_causal_auction_v2.py \
-            .github/workflows/candidate-easychart-ml2-causal-auction-v2.yml
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "research: install causal auction v2 policy"
-          git push origin HEAD:research_ML2
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml2/run_mtf_backtest_ml2_causal_auction_v2.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/backtest.log"
+      - name: Preserve complete trade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml2-causal-v2-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml2-causal-v2/${{ matrix.name }}/
+          if-no-files-found: warn
+          retention-days: 30
