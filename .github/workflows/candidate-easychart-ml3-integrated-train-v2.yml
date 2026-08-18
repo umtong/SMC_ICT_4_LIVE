@@ -1,0 +1,147 @@
+name: candidate-easychart-ml3-integrated-train-v2
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3-integrated-train-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+jobs:
+  locate-run:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish corrected training locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_INTEGRATED_TRAIN_V2_RUN_ID
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_INTEGRATED_TRAIN_V2_RUN_ID
+          git commit -m "chore(research): publish corrected integrated training locator [skip ci]"
+          git push origin HEAD:research_ML3
+
+  train-and-exercise:
+    if: github.actor != 'github-actions[bot]'
+    needs: locate-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 190
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      ROOT_OUT: artifacts/candidate-easychart-ml3-integrated-training-v2
+      CACHE: .cache/candidate-easychart-ml3-integrated-training-v2
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download completed integrated period artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/periods" "$CACHE"
+          git fetch origin research_ML3
+          for attempt in $(seq 1 100); do
+            if git show origin/research_ML3:research/_run_locators/ML3_INTEGRATED_PERIODS_RUN_ID > /tmp/period_run_id 2>/dev/null; then
+              break
+            fi
+            sleep 10; git fetch origin research_ML3
+          done
+          RUN_ID=$(tr -d '[:space:]' < /tmp/period_run_id)
+          echo "$RUN_ID" > "$ROOT_OUT/period_run_id.txt"
+          for attempt in $(seq 1 180); do
+            STATUS=$(python - "$RUN_ID" <<'PY'
+          import json, os, sys, urllib.request
+          req=urllib.request.Request(f"https://api.github.com/repos/umtong/SMC_ICT_4_LIVE/actions/runs/{sys.argv[1]}",headers={"Authorization":f"Bearer {os.environ['GH_TOKEN']}","Accept":"application/vnd.github+json"})
+          with urllib.request.urlopen(req) as response: record=json.load(response)
+          print(record.get("status","unknown"),record.get("conclusion"))
+          PY
+            )
+            case "$STATUS" in
+              completed\ success) break ;;
+              completed\ *) echo "period harvest failed: $STATUS"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          python - "$RUN_ID" "$ROOT_OUT/periods" <<'PY'
+          import io,json,os,pathlib,sys,urllib.request,zipfile
+          headers={"Authorization":f"Bearer {os.environ['GH_TOKEN']}","Accept":"application/vnd.github+json"}
+          req=urllib.request.Request(f"https://api.github.com/repos/umtong/SMC_ICT_4_LIVE/actions/runs/{sys.argv[1]}/artifacts?per_page=100",headers=headers)
+          with urllib.request.urlopen(req) as response: artifacts=json.load(response).get("artifacts",[])
+          selected=[x for x in artifacts if x.get("name","").startswith("ml3-integrated-period-")]
+          if len(selected)<8: raise SystemExit(f"only {len(selected)} period artifacts")
+          root=pathlib.Path(sys.argv[2])
+          for item in selected:
+              req=urllib.request.Request(item["archive_download_url"],headers=headers)
+              with urllib.request.urlopen(req) as response: payload=response.read()
+              dest=root/item["name"]; dest.mkdir(parents=True,exist_ok=True)
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive: archive.extractall(dest)
+          PY
+
+      - name: Build correctly separated context datasets and train
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT_OUT/model"
+          mapfile -t RUN_OUTPUTS < <(find "$ROOT_OUT/periods" -type f -name decision_events.csv -printf '%h\n' | sort -u)
+          if [ "${#RUN_OUTPUTS[@]}" -lt 8 ]; then exit 1; fi
+          DATASETS=()
+          for run_output in "${RUN_OUTPUTS[@]}"; do
+            period=$(basename "$run_output")
+            python research/candidate-easychart_ml3_breakthrough/build_integrated_dataset.py \
+              --run-output "$run_output" \
+              --period-name "$period" \
+              2>&1 | tee "$run_output/build_integrated_dataset.log"
+            DATASETS+=("$run_output/integrated_dataset.csv")
+          done
+          python research/candidate-easychart_ml3_breakthrough/train_integrated_ensemble.py \
+            --datasets "${DATASETS[@]}" \
+            --output "$ROOT_OUT/model/integrated_ensemble.json" \
+            --summary "$ROOT_OUT/model/integrated_training_summary.json" \
+            --members 5 --risk-fraction 0.03 --probability-quantile 0.25 \
+            2>&1 | tee "$ROOT_OUT/model/train.log"
+
+      - name: Exercise three separated one-account windows
+        run: |
+          set -euo pipefail
+          MODEL="$ROOT_OUT/model/integrated_ensemble.json"
+          run_window() {
+            local name="$1" start="$2" end="$3" out="$ROOT_OUT/holdouts/$1"
+            mkdir -p "$out"
+            python research/candidate-easychart_ml3_breakthrough/run_mtf_backtest_integrated_ml.py \
+              --integrated-model "$MODEL" --start "$start" --end "$end" --warmup-days 30 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+              --cache "$CACHE/$name" --output "$out" --fee-profile usd_m_vip0 \
+              --entry-slippage-ticks 2 --stop-slippage-ticks 2 2>&1 | tee "$out/run.log"
+          }
+          run_window 2024-01 2024-01-15 2024-01-19
+          run_window 2025-07 2025-07-14 2025-07-18
+          run_window 2026-07 2026-07-06 2026-07-10
+          python research/candidate-easychart_ml3_breakthrough/clinic_integrated_results.py \
+            --training-root "$ROOT_OUT" --output "$ROOT_OUT/integrated_research_clinic.json" \
+            2>&1 | tee "$ROOT_OUT/clinic.log"
+
+      - name: Preserve corrected learned account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml3-integrated-training-v2-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3-integrated-training-v2/
+          if-no-files-found: warn
+          retention-days: 14
