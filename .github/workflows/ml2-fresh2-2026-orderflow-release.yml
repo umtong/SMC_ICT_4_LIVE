@@ -1,0 +1,75 @@
+name: ml2-fresh2-2026-orderflow-release
+
+on:
+  push:
+    branches: ["research_ML2"]
+    paths:
+      - "research/candidate-easychart_ml2/.fresh2_release_dispatch_v22"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build second untouched checksum-verified order-flow dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p raw fresh_dataset2
+          python - <<'PY'
+          from __future__ import annotations
+          import gzip, hashlib, json, subprocess, zipfile
+          from pathlib import Path
+          periods={
+            "apr2026fresh2":["2026-04-06","2026-04-07","2026-04-08","2026-04-09"],
+            "jun2026fresh2":["2026-06-16","2026-06-17","2026-06-18","2026-06-19"],
+            "aug2026fresh2":["2026-08-03","2026-08-04","2026-08-05","2026-08-06"],
+          }
+          symbols=["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"]
+          manifest={"source":"Binance public futures/um/daily/aggTrades","periods":periods,"files":{}}
+          def curl(url,path):subprocess.run(["curl","-fL","--retry","6","--retry-all-errors","--connect-timeout","20","--max-time","900","-o",str(path),url],check=True)
+          for period,dates in periods.items():
+            od=Path('fresh_dataset2')/period;od.mkdir(parents=True,exist_ok=True)
+            for symbol in symbols:
+              chunks=[];header=None;sources=[]
+              for date in dates:
+                fn=f'{symbol}-aggTrades-{date}.zip';base=f'https://data.binance.vision/data/futures/um/daily/aggTrades/{symbol}/{fn}';zp=Path('raw')/fn;cp=Path('raw')/(fn+'.CHECKSUM')
+                curl(base,zp);actual=hashlib.sha256(zp.read_bytes()).hexdigest();published=False
+                try:
+                  curl(base+'.CHECKSUM',cp);expected=cp.read_text().strip().split()[0];published=True
+                  if expected.lower()!=actual.lower():raise RuntimeError(f'checksum mismatch {fn}')
+                except subprocess.CalledProcessError:expected=None
+                with zipfile.ZipFile(zp) as z:
+                  members=[n for n in z.namelist() if not n.endswith('/')]
+                  if len(members)!=1:raise RuntimeError((fn,members))
+                  lines=z.read(members[0]).splitlines(keepends=True)
+                if lines:
+                  first=lines[0].lower();has_header=any(x in first for x in (b'price',b'transact',b'maker',b'qty'))
+                  if has_header:
+                    if header is None:header=lines[0];chunks.append(lines[0])
+                    chunks.extend(lines[1:])
+                  else:chunks.extend(lines)
+                sources.append({"date":date,"sha256":actual,"published_checksum":published,"zip_bytes":zp.stat().st_size});zp.unlink(missing_ok=True);cp.unlink(missing_ok=True)
+              payload=b''.join(chunks);op=od/f'{symbol}.csv.gz'
+              with gzip.open(op,'wb',compresslevel=6) as g:g.write(payload)
+              manifest['files'][f'{period}/{symbol}.csv.gz']={"sha256":hashlib.sha256(op.read_bytes()).hexdigest(),"compressed_bytes":op.stat().st_size,"uncompressed_bytes":len(payload),"sources":sources}
+          Path('fresh_dataset2/manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True))
+          PY
+          zip -0 -q -r ml2-fresh2-2026-orderflow.zip fresh_dataset2
+          sha256sum ml2-fresh2-2026-orderflow.zip > ml2-fresh2-2026-orderflow.zip.sha256
+      - name: Publish deterministic second untouched asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view ml2-fresh2-v22 >/dev/null 2>&1; then
+            gh release create ml2-fresh2-v22 --title "ML2 second untouched 2026 order-flow research data" --notes "Second disjoint set of checksum-verified Binance USDT perpetual aggTrades windows."
+          fi
+          gh release upload ml2-fresh2-v22 ml2-fresh2-2026-orderflow.zip ml2-fresh2-2026-orderflow.zip.sha256 --clobber
