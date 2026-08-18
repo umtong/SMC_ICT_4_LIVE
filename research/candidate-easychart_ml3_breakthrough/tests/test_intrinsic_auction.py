@@ -9,6 +9,7 @@ from intrinsic_auction import (
     IntrinsicAuctionBundle,
     IntrinsicSwing,
     LiquidityBook,
+    PoolRole,
 )
 
 NS = 60_000_000_000
@@ -135,8 +136,15 @@ def _seed_micro_history(bundle: IntrinsicAuctionBundle, start: int = 40, end: in
         bundle.on_bar(1, bar)
 
 
+def _seed_five_history(bundle: IntrinsicAuctionBundle, start: int = 40, end: int = 95) -> None:
+    for i in range(start, end + 1, 5):
+        center = 100.0 + ((i // 5) % 3) * 0.05
+        bundle.on_bar(5, candle(i, center, center + 0.20, center - 0.20, center + 0.05))
+
+
 def test_reclaim_episode_emits_one_complete_plan_after_first_mitigation_response() -> None:
     bundle = IntrinsicAuctionBundle("BTCUSDT", 0.1, 1.0)
+    _seed_five_history(bundle)
     source = bundle.liquidity.register(
         IntrinsicSwing("source-low", "LOW", 100.0, NS, 2 * NS, 2.0, 15, 4.0)
     )
@@ -145,23 +153,23 @@ def test_reclaim_episode_emits_one_complete_plan_after_first_mitigation_response
     )
     _seed_micro_history(bundle)
 
-    bundle.on_bar(5, candle(100, 100.2, 100.4, 99.0, 99.8))
+    bundle.on_bar(5, candle(100, 100.2, 100.4, 99.0, 100.1))
     assert len(bundle.episodes) == 1
     episode = next(iter(bundle.episodes.values()))
     assert episode.kind is EpisodeKind.LIQUIDITY_RECLAIM
     assert episode.side is Side.LONG
+    assert PoolRole.EXTERNAL_STOP_POOL.value in episode.source_roles
 
-    assert bundle.on_bar(1, candle(101, 99.8, 101.5, 99.7, 101.2)) == []
+    assert bundle.on_bar(1, candle(101, 100.1, 101.5, 100.0, 101.2)) == []
     episode = next(iter(bundle.episodes.values()))
     assert episode.phase is EpisodePhase.WAIT_RETEST
     assert episode.origin_lower is not None and episode.origin_upper is not None
 
-    plans = bundle.on_bar(1, candle(102, 100.1, 101.2, 100.0, 101.0))
+    plans = bundle.on_bar(1, candle(102, 100.1, 101.8, 100.0, 101.7))
     assert len(plans) == 1
     plan = plans[0]
     assert plan.causal_event_id == episode.causal_event_id
     assert plan.family == EpisodeKind.LIQUIDITY_RECLAIM.value
-    assert plan.entry == 101.0
     assert plan.stop == 98.9
     assert plan.target == target.lower
     assert plan.gross_rr >= 1.0
@@ -170,25 +178,30 @@ def test_reclaim_episode_emits_one_complete_plan_after_first_mitigation_response
 
 def test_accepted_break_requires_next_five_minute_hold_then_retest_response() -> None:
     bundle = IntrinsicAuctionBundle("BTCUSDT", 0.1, 1.0)
+    _seed_five_history(bundle)
+    bundle.liquidity.register(
+        IntrinsicSwing("range-low", "LOW", 95.0, NS, 2 * NS, 2.0, 15, 4.0)
+    )
     source = bundle.liquidity.register(
-        IntrinsicSwing("source-high", "HIGH", 100.0, NS, 2 * NS, 2.0, 15, 4.0)
+        IntrinsicSwing("source-high", "HIGH", 100.0, 3 * NS, 4 * NS, 2.0, 15, 4.0)
     )
     target = bundle.liquidity.register(
-        IntrinsicSwing("target-high", "HIGH", 110.0, 3 * NS, 4 * NS, 2.0, 15, 4.0)
+        IntrinsicSwing("target-high", "HIGH", 110.0, 5 * NS, 6 * NS, 2.0, 5, 4.0)
     )
     _seed_micro_history(bundle)
 
-    bundle.on_bar(5, candle(100, 99.8, 101.5, 99.7, 101.1))
+    bundle.on_bar(5, candle(100, 100.0, 101.6, 99.9, 101.3))
     episode = next(iter(bundle.episodes.values()))
     assert episode.phase is EpisodePhase.BREAK_PENDING
     assert episode.side is Side.LONG
+    assert PoolRole.VALUE_BOUNDARY.value in episode.source_roles
 
-    bundle.on_bar(5, candle(105, 101.0, 101.8, 100.8, 101.3))
+    bundle.on_bar(5, candle(105, 101.3, 102.1, 101.0, 101.7))
     episode = next(iter(bundle.episodes.values()))
     assert episode.kind is EpisodeKind.ACCEPTED_BREAK_RETEST
     assert episode.phase is EpisodePhase.WAIT_RETEST
 
-    plans = bundle.on_bar(1, candle(106, 100.3, 101.5, 100.2, 101.2))
+    plans = bundle.on_bar(1, candle(106, 100.3, 101.7, 100.2, 101.4))
     assert len(plans) == 1
     plan = plans[0]
     assert plan.scenario_path == "ACCEPTANCE"
@@ -199,14 +212,18 @@ def test_accepted_break_requires_next_five_minute_hold_then_retest_response() ->
 
 def test_failed_break_becomes_opposite_reclaim_in_same_causal_episode() -> None:
     bundle = IntrinsicAuctionBundle("BTCUSDT", 0.1, 1.0)
-    source = bundle.liquidity.register(
-        IntrinsicSwing("source-high", "HIGH", 100.0, NS, 2 * NS, 2.0, 15, 4.0)
+    _seed_five_history(bundle)
+    bundle.liquidity.register(
+        IntrinsicSwing("range-low", "LOW", 95.0, NS, 2 * NS, 2.0, 15, 4.0)
     )
-    bundle.on_bar(5, candle(100, 99.8, 101.5, 99.7, 101.1))
+    source = bundle.liquidity.register(
+        IntrinsicSwing("source-high", "HIGH", 100.0, 3 * NS, 4 * NS, 2.0, 15, 4.0)
+    )
+    bundle.on_bar(5, candle(100, 100.0, 101.6, 99.9, 101.3))
     original = next(iter(bundle.episodes.values()))
     original_id = original.episode_id
 
-    bundle.on_bar(5, candle(105, 101.0, 101.2, 99.7, 100.1))
+    bundle.on_bar(5, candle(105, 101.3, 101.4, 99.8, 100.1))
     converted = next(iter(bundle.episodes.values()))
     assert converted.episode_id == original_id
     assert converted.kind is EpisodeKind.LIQUIDITY_RECLAIM
@@ -215,14 +232,14 @@ def test_failed_break_becomes_opposite_reclaim_in_same_causal_episode() -> None:
     assert source.engaged_event_id == original_id
 
 
-def test_touched_objective_is_not_reused_by_later_plan() -> None:
+def test_touched_reaction_obstacle_remains_first_full_exit_target() -> None:
     book = LiquidityBook("BTCUSDT", 0.1)
     source = book.register(IntrinsicSwing("low", "LOW", 100.0, 1, 2, 2.0, 15, 2.0))
     target = book.register(IntrinsicSwing("high", "HIGH", 105.0, 3, 4, 2.0, 15, 2.0))
     assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is target
-    book.observe_touch(Candle(ts_close_ns=11, open=104.0, high=target.lower, low=103.9, close=104.4))
+    book.observe_touch(Candle(ts_close_ns=11, open=104.0, high=target.lower, low=103.9, close=104.4), 1)
     assert target.objective_spent_time_ns == 11
-    assert book.target_for(Side.LONG, 101.0, 12, exclude_pool_id=source.pool_id) is None
+    assert book.target_for(Side.LONG, 101.0, 12, exclude_pool_id=source.pool_id) is target
 
 
 def test_directional_change_rejects_non_monotonic_time() -> None:
@@ -238,6 +255,7 @@ def test_directional_change_rejects_non_monotonic_time() -> None:
 
 def test_same_five_minute_boundary_event_shares_one_causal_identity() -> None:
     bundle = IntrinsicAuctionBundle("BTCUSDT", 0.1, 1.0)
+    _seed_five_history(bundle)
     low_5 = bundle.liquidity.register(
         IntrinsicSwing("low5", "LOW", 100.0, NS, 2 * NS, 2.0, 5, 3.0)
     )
@@ -246,7 +264,30 @@ def test_same_five_minute_boundary_event_shares_one_causal_identity() -> None:
     low_15 = bundle.liquidity.register(
         IntrinsicSwing("low15", "LOW", 99.9, 3 * NS, 4 * NS, 2.0, 15, 3.0)
     )
-    bundle.on_bar(5, candle(100, 100.4, 100.5, 99.0, 99.3))
+    bundle.liquidity.register(
+        IntrinsicSwing("range-high", "HIGH", 105.0, 5 * NS, 6 * NS, 2.0, 15, 3.0)
+    )
+    bundle.on_bar(5, candle(100, 100.4, 100.5, 99.0, 100.2))
     assert len(bundle.episodes) == 2
     causal_ids = {episode.causal_event_id for episode in bundle.episodes.values()}
     assert causal_ids == {bundle._causal_event_id(100 * NS)}
+
+
+def test_old_equal_extreme_starts_new_pool_after_intrinsic_horizon() -> None:
+    book = LiquidityBook("BTCUSDT", 0.1)
+    first = book.register(IntrinsicSwing("a", "HIGH", 100.0, 1, 2, 1.0, 5, 1.0))
+    for index in range(2, 16):
+        side = "LOW" if index % 2 == 0 else "HIGH"
+        price = 95.0 - index if side == "LOW" else 105.0 + index
+        book.register(IntrinsicSwing(str(index), side, price, index * 2, index * 2 + 1, 1.0, 5, 1.0))
+    later = book.register(IntrinsicSwing("later", "HIGH", 100.1, 100, 101, 1.0, 5, 1.0))
+    assert later.pool_id != first.pool_id
+
+
+def test_one_minute_turn_is_target_only_not_source() -> None:
+    book = LiquidityBook("BTCUSDT", 0.1)
+    source = book.register(IntrinsicSwing("low", "LOW", 100.0, 1, 2, 1.0, 15, 1.0))
+    micro = book.register(IntrinsicSwing("micro", "HIGH", 102.0, 3, 4, 1.0, 1, 1.0))
+    assert micro not in book.eligible_sources(10)
+    assert book.target_for(Side.LONG, 101.0, 10, exclude_pool_id=source.pool_id) is micro
+

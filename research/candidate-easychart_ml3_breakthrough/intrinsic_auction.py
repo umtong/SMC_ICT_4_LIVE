@@ -59,6 +59,14 @@ ONE_EPISODE_RULE = (
     "IMPLEMENTATION_VALIDITY:ONE_BOUNDARY_INTERACTION_IS_ONE_CAUSAL_EPISODE_"
     "REGARDLESS_OF_INTERNAL_CONFIRMATION_BARS"
 )
+ACTIVE_AUCTION_MAP_RULE = (
+    "RESEARCH_HYPOTHESIS:ONLY_CURRENT_AUCTION_EDGES_RECENT_EQUAL_EXTREMA_AND_"
+    "CURRENT_HIGHER_TIMEFRAME_BOUNDARIES_MAY_START_NEW_EPISODES"
+)
+FIRST_REACTION_TARGET_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:SINGLE_EXIT_TARGETS_THE_FIRST_PREEXISTING_"
+    "REACTION_OBSTACLE_AND_NEVER_SKIPS_A_CLOSER_STRUCTURE_FOR_DISTANT_RR"
+)
 for _rule in (
     INTRINSIC_TIME_RULE,
     PUBLIC_LIQUIDITY_RULE,
@@ -67,6 +75,8 @@ for _rule in (
     FLOW_TRANSITION_RULE,
     PREEXISTING_TARGET_RULE,
     ONE_EPISODE_RULE,
+    ACTIVE_AUCTION_MAP_RULE,
+    FIRST_REACTION_TARGET_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -275,6 +285,12 @@ class AdaptiveDirectionalChange:
         return median(self.ranges) if self.ranges else self.tick_size * 2.0
 
 
+class PoolRole(str, Enum):
+    EXTERNAL_STOP_POOL = "EXTERNAL_STOP_POOL"
+    VALUE_BOUNDARY = "VALUE_BOUNDARY"
+    REACTION_OBSTACLE = "REACTION_OBSTACLE"
+
+
 @dataclass(slots=True)
 class LiquidityPool:
     pool_id: str
@@ -286,6 +302,8 @@ class LiquidityPool:
     first_event_time_ns: int
     last_event_time_ns: int
     observed_time_ns: int
+    first_sequence: int = 0
+    last_sequence: int = 0
     member_ids: list[str] = field(default_factory=list)
     member_prices: list[float] = field(default_factory=list)
     thresholds: list[float] = field(default_factory=list)
@@ -295,6 +313,8 @@ class LiquidityPool:
     objective_spent_time_ns: int | None = None
     last_touch_time_ns: int | None = None
     touch_count: int = 0
+    five_minute_touch_count: int = 0
+    last_five_minute_touch_ns: int | None = None
 
     @property
     def active(self) -> bool:
@@ -334,6 +354,16 @@ class AuctionZone:
 
 
 class LiquidityBook:
+    """Current auction objects, not an immortal catalogue of every swing.
+
+    Equal extrema are clustered only while they belong to the same recent
+    intrinsic auction.  Older same-price extrema remain separate historical
+    objects instead of accumulating hundreds of touches into a false signal.
+    """
+
+    _CLUSTER_TURN_HORIZON = {1: 20, 5: 12, 15: 8, 60: 4}
+    _TARGET_TURN_HORIZON = {1: 28, 5: 18, 15: 10, 60: 6}
+
     def __init__(self, symbol: str, tick_size: float) -> None:
         self.symbol = symbol
         self.tick_size = float(tick_size)
@@ -341,18 +371,47 @@ class LiquidityBook:
         self.by_id: dict[str, LiquidityPool] = {}
         self.zone_by_id: dict[str, AuctionZone] = {}
         self.counts: dict[str, int] = {}
+        self.sequence_by_timeframe: dict[int, int] = {}
 
     def _inc(self, key: str) -> None:
         self.counts[key] = self.counts.get(key, 0) + 1
 
+    def current_sequence(self, timeframe_minutes: int) -> int:
+        return self.sequence_by_timeframe.get(int(timeframe_minutes), 0)
+
+    def is_recent(self, pool: LiquidityPool, max_turns: int | None = None) -> bool:
+        horizon = (
+            self._TARGET_TURN_HORIZON.get(pool.timeframe_minutes, 6)
+            if max_turns is None
+            else int(max_turns)
+        )
+        return self.current_sequence(pool.timeframe_minutes) - pool.last_sequence <= horizon
+
+    def latest_pool(self, timeframe_minutes: int, side: str) -> LiquidityPool | None:
+        candidates = [
+            pool
+            for pool in self.pools
+            if pool.active
+            and pool.timeframe_minutes == int(timeframe_minutes)
+            and pool.side == side
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: (item.last_sequence, item.observed_time_ns))
+
     def register(self, swing: IntrinsicSwing) -> LiquidityPool:
+        timeframe = int(swing.timeframe_minutes)
+        sequence = self.current_sequence(timeframe) + 1
+        self.sequence_by_timeframe[timeframe] = sequence
         tolerance = max(self.tick_size * 2.0, swing.threshold * 0.20)
+        cluster_horizon = self._CLUSTER_TURN_HORIZON.get(timeframe, 6)
         candidates = [
             pool
             for pool in self.pools
             if pool.active
             and pool.side == swing.side
-            and pool.timeframe_minutes == swing.timeframe_minutes
+            and pool.timeframe_minutes == timeframe
+            and sequence - pool.last_sequence <= cluster_horizon
             and abs(pool.center - swing.price) <= tolerance
         ]
         if candidates:
@@ -367,22 +426,25 @@ class LiquidityBook:
             pool.upper = pool.center + half_width
             pool.last_event_time_ns = swing.event_time_ns
             pool.observed_time_ns = swing.observed_time_ns
-            self._inc("swing_clustered")
+            pool.last_sequence = sequence
+            self._inc("swing_clustered_current_auction")
         else:
             pool_id = (
-                f"LP:{self.symbol}:{swing.timeframe_minutes}m:{swing.side}:"
-                f"{swing.event_time_ns}"
+                f"LP:{self.symbol}:{timeframe}m:{swing.side}:"
+                f"{swing.event_time_ns}:{sequence}"
             )
             pool = LiquidityPool(
                 pool_id=pool_id,
                 side=swing.side,
-                timeframe_minutes=swing.timeframe_minutes,
+                timeframe_minutes=timeframe,
                 lower=swing.price - tolerance,
                 upper=swing.price + tolerance,
                 center=swing.price,
                 first_event_time_ns=swing.event_time_ns,
                 last_event_time_ns=swing.event_time_ns,
                 observed_time_ns=swing.observed_time_ns,
+                first_sequence=sequence,
+                last_sequence=sequence,
                 member_ids=[swing.swing_id],
                 member_prices=[swing.price],
                 thresholds=[swing.threshold],
@@ -392,10 +454,12 @@ class LiquidityBook:
             self.by_id[pool_id] = pool
             self._inc("pool_created")
         self.zone_by_id[pool.pool_id] = self.snapshot(pool)
-        # Bound memory without changing the active recent set used by a daytrade
-        # policy.  Consumed pools are discarded first.
-        if len(self.pools) > 384:
-            keep = [item for item in self.pools if item.active][-256:]
+        if len(self.pools) > 768:
+            keep = [
+                item
+                for item in self.pools
+                if item.active and self.is_recent(item, self._TARGET_TURN_HORIZON.get(item.timeframe_minutes, 6) * 2)
+            ][-512:]
             keep_ids = {item.pool_id for item in keep}
             self.pools = keep
             self.by_id = {key: value for key, value in self.by_id.items() if key in keep_ids}
@@ -424,17 +488,15 @@ class LiquidityBook:
         )
 
     def eligible_sources(self, time_ns: int) -> list[LiquidityPool]:
-        output = []
-        for pool in self.pools:
-            if not pool.active or pool.engaged_event_id is not None:
-                continue
-            if pool.observed_time_ns >= time_ns:
-                continue
-            # Higher-timeframe single extremes are public.  Five-minute levels
-            # must have at least two independent turns before becoming a source.
-            if pool.timeframe_minutes >= 15 or pool.member_count >= 2:
-                output.append(pool)
-        return output
+        return [
+            pool
+            for pool in self.pools
+            if pool.active
+            and pool.engaged_event_id is None
+            and pool.observed_time_ns < time_ns
+            and pool.timeframe_minutes in {5, 15, 60}
+            and self.is_recent(pool)
+        ]
 
     def target_for(
         self,
@@ -444,13 +506,17 @@ class LiquidityBook:
         *,
         exclude_pool_id: str,
     ) -> LiquidityPool | None:
+        # A full-position exit cannot pretend that a nearer previously touched
+        # reaction level does not exist.  Current micro/meso swings remain
+        # obstacles even after a touch; only stale or causally consumed objects
+        # disappear from the active auction map.
         candidates = [
             pool
             for pool in self.pools
             if pool.active
-            and pool.objective_spent_time_ns is None
             and pool.pool_id != exclude_pool_id
             and pool.observed_time_ns < time_ns
+            and self.is_recent(pool)
             and (
                 (side is Side.LONG and pool.side == "HIGH" and pool.lower > entry)
                 or (side is Side.SHORT and pool.side == "LOW" and pool.upper < entry)
@@ -459,20 +525,24 @@ class LiquidityBook:
         if not candidates:
             return None
         if side is Side.LONG:
-            return min(candidates, key=lambda item: (item.lower, -item.strength))
-        return max(candidates, key=lambda item: (item.upper, item.strength))
+            return min(candidates, key=lambda item: (item.lower, -item.strength, -item.last_sequence))
+        return max(candidates, key=lambda item: (item.upper, item.strength, item.last_sequence))
 
-    def observe_touch(self, bar: Candle) -> None:
+    def observe_touch(self, bar: Candle, timeframe_minutes: int) -> None:
+        timeframe = int(timeframe_minutes)
         for pool in self.pools:
             if not pool.active or pool.observed_time_ns >= bar.ts_close_ns:
                 continue
             if bar.low <= pool.upper and bar.high >= pool.lower:
-                if pool.last_touch_time_ns != bar.ts_close_ns:
-                    pool.touch_count += 1
-                    pool.last_touch_time_ns = bar.ts_close_ns
-                    if pool.objective_spent_time_ns is None:
-                        pool.objective_spent_time_ns = bar.ts_close_ns
-                        self._inc("objective_liquidity_spent")
+                pool.last_touch_time_ns = bar.ts_close_ns
+                if pool.objective_spent_time_ns is None:
+                    pool.objective_spent_time_ns = bar.ts_close_ns
+                    self._inc("reaction_obstacle_first_touch")
+                if timeframe == 5 and pool.last_five_minute_touch_ns != bar.ts_close_ns:
+                    pool.five_minute_touch_count += 1
+                    pool.touch_count = pool.five_minute_touch_count
+                    pool.last_five_minute_touch_ns = bar.ts_close_ns
+                    self._inc("five_minute_boundary_touch")
 
     def find_zone(self, zone_id: str) -> AuctionZone | None:
         pool = self.by_id.get(zone_id)
@@ -542,6 +612,9 @@ class AuctionEpisode:
     evidence_strength: float = 0.0
     terminal_reason: str | None = None
     causal_event_id: str | None = None
+    source_roles: tuple[str, ...] = ()
+    transition_strength: float = 0.0
+    break_excursion: float = 0.0
 
 
 class IntrinsicAuctionBundle:
@@ -562,6 +635,10 @@ class IntrinsicAuctionBundle:
             60: AdaptiveDirectionalChange(symbol, 60, tick_size, range_window=36, threshold_multiplier=1.20),
             15: AdaptiveDirectionalChange(symbol, 15, tick_size, range_window=48, threshold_multiplier=1.30),
             5: AdaptiveDirectionalChange(symbol, 5, tick_size, range_window=60, threshold_multiplier=1.45),
+            # One-minute turns are reaction obstacles only; they can never start
+            # a source episode.  They prevent a full-position target from
+            # skipping the first local opposing structure.
+            1: AdaptiveDirectionalChange(symbol, 1, tick_size, range_window=60, threshold_multiplier=1.55),
         }
         self.liquidity = LiquidityBook(symbol, tick_size)
         self.flow = CausalFlowAnalyzer(self.tick_size)
@@ -661,6 +738,8 @@ class IntrinsicAuctionBundle:
         *,
         extreme: float,
         delayed: bool,
+        roles: tuple[PoolRole, ...],
+        transition_strength: float,
     ) -> None:
         episode_id = self._episode_id(pool, bar.ts_close_ns, "RECLAIM")
         if pool.engaged_event_id is not None:
@@ -680,6 +759,8 @@ class IntrinsicAuctionBundle:
             sweep_extreme=extreme,
             break_extreme=extreme,
             causal_event_id=self._causal_event_id(bar.ts_close_ns),
+            source_roles=tuple(role.value for role in roles),
+            transition_strength=float(transition_strength),
         )
         self.episodes[episode_id] = episode
         self._inc("reclaim_episode_started")
@@ -696,10 +777,22 @@ class IntrinsicAuctionBundle:
             sweep_extreme=extreme,
             pool_strength=pool.strength,
             pool_members=pool.member_count,
-            rule_provenance=(AUCTION_RECLAIM_RULE, ONE_EPISODE_RULE),
+            source_roles=episode.source_roles,
+            transition_strength=episode.transition_strength,
+            rule_provenance=(AUCTION_RECLAIM_RULE, ACTIVE_AUCTION_MAP_RULE, ONE_EPISODE_RULE),
         )
 
-    def _start_break(self, pool: LiquidityPool, side: Side, bar: Candle, *, extreme: float) -> None:
+    def _start_break(
+        self,
+        pool: LiquidityPool,
+        side: Side,
+        bar: Candle,
+        *,
+        extreme: float,
+        roles: tuple[PoolRole, ...],
+        transition_strength: float,
+        break_excursion: float,
+    ) -> None:
         episode_id = self._episode_id(pool, bar.ts_close_ns, "BREAK")
         if pool.engaged_event_id is not None:
             return
@@ -719,6 +812,9 @@ class IntrinsicAuctionBundle:
             break_extreme=extreme,
             break_count=1,
             causal_event_id=self._causal_event_id(bar.ts_close_ns),
+            source_roles=tuple(role.value for role in roles),
+            transition_strength=float(transition_strength),
+            break_excursion=float(break_excursion),
         )
         self.episodes[episode_id] = episode
         self._inc("break_episode_started")
@@ -734,23 +830,206 @@ class IntrinsicAuctionBundle:
             break_extreme=extreme,
             pool_strength=pool.strength,
             pool_members=pool.member_count,
-            rule_provenance=(AUCTION_ACCEPTANCE_RULE, ONE_EPISODE_RULE),
+            source_roles=episode.source_roles,
+            transition_strength=episode.transition_strength,
+            break_excursion=episode.break_excursion,
+            rule_provenance=(AUCTION_ACCEPTANCE_RULE, ACTIVE_AUCTION_MAP_RULE, ONE_EPISODE_RULE),
         )
 
-    def _observe_new_interactions(self, bar: Candle) -> None:
+    def _current_auction_edges(self) -> tuple[LiquidityPool, LiquidityPool] | None:
+        low = self.liquidity.latest_pool(15, "LOW")
+        high = self.liquidity.latest_pool(15, "HIGH")
+        if low is None or high is None or low.center >= high.center:
+            return None
+        return low, high
+
+    def _source_roles(self, pool: LiquidityPool, bar: Candle) -> tuple[PoolRole, ...]:
+        roles: list[PoolRole] = [PoolRole.REACTION_OBSTACLE]
+        edges = self._current_auction_edges()
+        current_edge = False
+        range_width = 0.0
+        if edges is not None:
+            low_edge, high_edge = edges
+            current_edge = pool.pool_id in {low_edge.pool_id, high_edge.pool_id}
+            range_width = max(high_edge.center - low_edge.center, self.dc[15].prior_range)
+        latest_same_side = self.liquidity.latest_pool(pool.timeframe_minutes, pool.side)
+        is_latest = latest_same_side is not None and latest_same_side.pool_id == pool.pool_id
+        near_current_auction = True
+        if edges is not None:
+            low_edge, high_edge = edges
+            allowance = range_width * (0.35 if pool.timeframe_minutes <= 15 else 1.25)
+            near_current_auction = low_edge.center - allowance <= pool.center <= high_edge.center + allowance
+
+        external = (
+            (pool.timeframe_minutes == 5 and pool.member_count >= 2 and near_current_auction)
+            or (pool.timeframe_minutes == 15 and current_edge)
+            or (pool.timeframe_minutes == 60 and is_latest and near_current_auction)
+        )
+        value_boundary = (
+            (pool.timeframe_minutes == 15 and current_edge)
+            or (pool.timeframe_minutes == 60 and is_latest and near_current_auction)
+            or (
+                pool.timeframe_minutes == 5
+                and pool.member_count >= 2
+                and pool.five_minute_touch_count >= 2
+                and near_current_auction
+            )
+        )
+        if external:
+            roles.append(PoolRole.EXTERNAL_STOP_POOL)
+        if value_boundary:
+            roles.append(PoolRole.VALUE_BOUNDARY)
+        return tuple(roles)
+
+    def _prior_five_minute_bars(self, time_ns: int, count: int = 8) -> list[Candle]:
+        return [bar for bar in self.dc[5].bars if bar.ts_close_ns < time_ns][-count:]
+
+    def _five_minute_stats(self, bar: Candle) -> tuple[float, float, float, float, float]:
+        prior = self._prior_five_minute_bars(bar.ts_close_ns, 20)
+        ranges = [max(item.high - item.low, self.tick_size) for item in prior]
+        bodies = [max(abs(item.close - item.open), self.tick_size) for item in prior]
+        baseline_range = median(ranges) if ranges else max(bar.high - bar.low, self.tick_size)
+        baseline_body = median(bodies) if bodies else max(abs(bar.close - bar.open), self.tick_size)
+        price_range = max(bar.high - bar.low, self.tick_size)
         body = bar.close - bar.open
+        range_ratio = price_range / max(baseline_range, self.tick_size)
+        body_ratio = abs(body) / max(baseline_body, self.tick_size)
+        close_location = (bar.close - bar.low) / price_range
+        return body, range_ratio, body_ratio, close_location, baseline_range
+
+    def _approached_from_inside(self, pool: LiquidityPool, bar: Candle) -> bool:
+        prior = self._prior_five_minute_bars(bar.ts_close_ns, 5)
+        if len(prior) < 3:
+            return False
+        if pool.side == "LOW":
+            inside = [item.close >= pool.lower for item in prior[-4:]]
+            near = any(item.low <= pool.upper + self.dc[5].prior_range for item in prior[-3:])
+        else:
+            inside = [item.close <= pool.upper for item in prior[-4:]]
+            near = any(item.high >= pool.lower - self.dc[5].prior_range for item in prior[-3:])
+        return sum(inside) >= 3 and near
+
+    def _sweep_transition_evidence(self, pool: LiquidityPool, bar: Candle) -> tuple[bool, float]:
+        if not self._approached_from_inside(pool, bar):
+            return False, 0.0
+        body, range_ratio, body_ratio, close_location, baseline_range = self._five_minute_stats(bar)
+        price_range = max(bar.high - bar.low, self.tick_size)
+        if pool.side == "LOW":
+            depth = pool.lower - bar.low
+            reclaimed = bar.close >= pool.lower
+            wick_fraction = (min(bar.open, bar.close) - bar.low) / price_range
+            close_control = close_location >= 0.52
+        else:
+            depth = bar.high - pool.upper
+            reclaimed = bar.close <= pool.upper
+            wick_fraction = (bar.high - max(bar.open, bar.close)) / price_range
+            close_control = close_location <= 0.48
+        depth_ratio = depth / max(baseline_range, self.tick_size)
+        accepted = (
+            reclaimed
+            and 0.08 <= depth_ratio <= 2.25
+            and (wick_fraction >= 0.22 or close_control)
+            and range_ratio >= 0.75
+        )
+        strength = 0.0
+        if accepted:
+            strength = (1.0 + depth_ratio) * max(1.0, range_ratio) * max(1.0, wick_fraction * 3.0)
+        return accepted, strength
+
+    def _break_transition_evidence(self, pool: LiquidityPool, side: Side, bar: Candle) -> tuple[bool, float, float]:
+        prior = self._prior_five_minute_bars(bar.ts_close_ns, 6)
+        if len(prior) < 4 or not self._approached_from_inside(pool, bar):
+            return False, 0.0, 0.0
+        body, range_ratio, body_ratio, close_location, baseline_range = self._five_minute_stats(bar)
+        if side is Side.LONG:
+            excursion = bar.close - pool.upper
+            aligned = body > 0.0
+            controlled_close = close_location >= 0.68
+            prior_inside = sum(item.close <= pool.upper for item in prior[-5:]) >= 4
+        else:
+            excursion = pool.lower - bar.close
+            aligned = body < 0.0
+            controlled_close = close_location <= 0.32
+            prior_inside = sum(item.close >= pool.lower for item in prior[-5:]) >= 4
+        excursion_ratio = excursion / max(baseline_range, self.tick_size)
+        prior_closes = [item.close for item in prior[-5:]]
+        balance_width = max(prior_closes) - min(prior_closes)
+        locally_balanced = balance_width <= baseline_range * 3.5
+        accepted = (
+            aligned
+            and controlled_close
+            and prior_inside
+            and locally_balanced
+            and excursion_ratio >= 0.20
+            and range_ratio >= 0.90
+            and body_ratio >= 1.00
+        )
+        strength = 0.0
+        if accepted:
+            strength = (1.0 + excursion_ratio) * range_ratio * body_ratio
+        return accepted, strength, max(0.0, excursion)
+
+    def _observe_new_interactions(self, bar: Candle) -> None:
         for pool in self.liquidity.eligible_sources(bar.ts_close_ns):
+            roles = self._source_roles(pool, bar)
+            role_set = set(roles)
             buffer = max(self.tick_size, (pool.upper - pool.lower) * 0.10)
             if pool.side == "LOW" and bar.low < pool.lower - buffer:
-                if bar.close >= pool.lower:
-                    self._start_reclaim(pool, Side.LONG, bar, extreme=bar.low, delayed=False)
-                elif body < 0.0 and bar.close < pool.lower - buffer:
-                    self._start_break(pool, Side.SHORT, bar, extreme=bar.low)
+                sweep_ok, sweep_strength = self._sweep_transition_evidence(pool, bar)
+                if (
+                    PoolRole.EXTERNAL_STOP_POOL in role_set
+                    and bar.close >= pool.lower
+                    and sweep_ok
+                ):
+                    self._start_reclaim(
+                        pool,
+                        Side.LONG,
+                        bar,
+                        extreme=bar.low,
+                        delayed=False,
+                        roles=roles,
+                        transition_strength=sweep_strength,
+                    )
+                    continue
+                break_ok, break_strength, excursion = self._break_transition_evidence(pool, Side.SHORT, bar)
+                if PoolRole.VALUE_BOUNDARY in role_set and break_ok:
+                    self._start_break(
+                        pool,
+                        Side.SHORT,
+                        bar,
+                        extreme=bar.low,
+                        roles=roles,
+                        transition_strength=break_strength,
+                        break_excursion=excursion,
+                    )
             elif pool.side == "HIGH" and bar.high > pool.upper + buffer:
-                if bar.close <= pool.upper:
-                    self._start_reclaim(pool, Side.SHORT, bar, extreme=bar.high, delayed=False)
-                elif body > 0.0 and bar.close > pool.upper + buffer:
-                    self._start_break(pool, Side.LONG, bar, extreme=bar.high)
+                sweep_ok, sweep_strength = self._sweep_transition_evidence(pool, bar)
+                if (
+                    PoolRole.EXTERNAL_STOP_POOL in role_set
+                    and bar.close <= pool.upper
+                    and sweep_ok
+                ):
+                    self._start_reclaim(
+                        pool,
+                        Side.SHORT,
+                        bar,
+                        extreme=bar.high,
+                        delayed=False,
+                        roles=roles,
+                        transition_strength=sweep_strength,
+                    )
+                    continue
+                break_ok, break_strength, excursion = self._break_transition_evidence(pool, Side.LONG, bar)
+                if PoolRole.VALUE_BOUNDARY in role_set and break_ok:
+                    self._start_break(
+                        pool,
+                        Side.LONG,
+                        bar,
+                        extreme=bar.high,
+                        roles=roles,
+                        transition_strength=break_strength,
+                        break_excursion=excursion,
+                    )
 
     def _invalidate(self, episode: AuctionEpisode, time_ns: int, reason: str) -> None:
         episode.phase = EpisodePhase.INVALID
@@ -776,23 +1055,40 @@ class IntrinsicAuctionBundle:
             if bar.ts_close_ns <= episode.phase_time_ns:
                 continue
             bars_elapsed = int((bar.ts_close_ns - episode.phase_time_ns) // (5 * NS_PER_MINUTE))
+            _, range_ratio, body_ratio, close_location, baseline_range = self._five_minute_stats(bar)
             if episode.side is Side.LONG:
-                still_outside = bar.close > episode.source_upper
-                returned_inside = bar.close <= episode.source_upper
+                outside = bar.close > episode.source_upper
+                opened_outside = bar.open > episode.source_upper - self.tick_size
                 episode.break_extreme = max(episode.break_extreme, bar.high)
+                total_excursion = episode.break_extreme - episode.source_upper
+                retained = bar.close - episode.source_upper
+                controlled = close_location >= 0.48 and retained >= total_excursion * 0.25
             else:
-                still_outside = bar.close < episode.source_lower
-                returned_inside = bar.close >= episode.source_lower
+                outside = bar.close < episode.source_lower
+                opened_outside = bar.open < episode.source_lower + self.tick_size
                 episode.break_extreme = min(episode.break_extreme, bar.low)
+                total_excursion = episode.source_lower - episode.break_extreme
+                retained = episode.source_lower - bar.close
+                controlled = close_location <= 0.52 and retained >= total_excursion * 0.25
+            separated = total_excursion >= max(self.tick_size * 2.0, baseline_range * 0.45)
+            hold_accepted = (
+                outside
+                and opened_outside
+                and controlled
+                and separated
+                and range_ratio >= 0.55
+                and body_ratio >= 0.35
+            )
 
-            if still_outside:
+            if hold_accepted:
                 episode.break_count += 1
+                episode.break_excursion = max(episode.break_excursion, total_excursion)
                 episode.phase = EpisodePhase.WAIT_RETEST
                 episode.phase_time_ns = bar.ts_close_ns
                 episode.displacement_time_ns = bar.ts_close_ns
                 episode.origin_lower = episode.source_lower
                 episode.origin_upper = episode.source_upper
-                self._inc("break_accepted")
+                self._inc("break_accepted_state_transition")
                 self._audit(
                     "intrinsic_break_accepted",
                     bar.ts_close_ns,
@@ -800,18 +1096,24 @@ class IntrinsicAuctionBundle:
                     pool_id=episode.pool_id,
                     side=_side_name(episode.side),
                     break_count=episode.break_count,
-                    rule_provenance=AUCTION_ACCEPTANCE_RULE,
+                    break_excursion=episode.break_excursion,
+                    retained_excursion=retained,
+                    transition_strength=episode.transition_strength,
+                    rule_provenance=(AUCTION_ACCEPTANCE_RULE, ACTIVE_AUCTION_MAP_RULE),
                 )
-            elif returned_inside:
-                # Failed acceptance is the delayed Trap form of a sweep.  The
-                # same causal boundary remains one episode but direction flips.
+                continue
+
+            returned_inside = not outside
+            can_be_trap = PoolRole.EXTERNAL_STOP_POOL.value in episode.source_roles
+            if returned_inside and can_be_trap:
                 episode.kind = EpisodeKind.LIQUIDITY_RECLAIM
                 episode.side = Side.SHORT if episode.side is Side.LONG else Side.LONG
                 episode.phase = EpisodePhase.WAIT_DISPLACEMENT
                 episode.phase_time_ns = bar.ts_close_ns
                 episode.interaction_time_ns = bar.ts_close_ns
                 episode.sweep_extreme = episode.break_extreme
-                self._inc("break_converted_to_trap")
+                episode.transition_strength *= 1.0 + min(2.0, total_excursion / max(baseline_range, self.tick_size))
+                self._inc("failed_break_converted_to_liquidity_trap")
                 self._audit(
                     "intrinsic_break_failed_into_reclaim",
                     bar.ts_close_ns,
@@ -819,10 +1121,13 @@ class IntrinsicAuctionBundle:
                     pool_id=episode.pool_id,
                     side=_side_name(episode.side),
                     sweep_extreme=episode.sweep_extreme,
+                    source_roles=episode.source_roles,
                     rule_provenance=(AUCTION_RECLAIM_RULE, AUCTION_ACCEPTANCE_RULE),
                 )
+            elif returned_inside:
+                self._invalidate(episode, bar.ts_close_ns, "weak_break_returned_inside")
             elif bars_elapsed >= 2:
-                self._invalidate(episode, bar.ts_close_ns, "break_not_resolved")
+                self._invalidate(episode, bar.ts_close_ns, "break_failed_to_prove_acceptance")
 
     def _price_stats(self, bar: Candle) -> tuple[float, float, float, float]:
         price_range = max(bar.high - bar.low, self.tick_size)
@@ -886,7 +1191,19 @@ class IntrinsicAuctionBundle:
             observation,
             close_away=away and intended_close,
         )
-        accepted = price_displacement and (flow_initiative or absorption or body_ratio >= 1.75)
+        prior_micro = [item for item in self.one_minute if item.ts_close_ns < bar.ts_close_ns][-3:]
+        micro_break = True
+        if prior_micro:
+            micro_break = (
+                bar.close > max(item.high for item in prior_micro)
+                if episode.side is Side.LONG
+                else bar.close < min(item.low for item in prior_micro)
+            )
+        accepted = (
+            price_displacement
+            and micro_break
+            and (flow_initiative or absorption or body_ratio >= 1.75)
+        )
         strength = 0.0
         if accepted:
             strength = range_ratio * body_ratio
@@ -925,19 +1242,36 @@ class IntrinsicAuctionBundle:
         assert episode.origin_lower is not None and episode.origin_upper is not None
         body, range_ratio, body_ratio, close_location = self._price_stats(bar)
         mid = (episode.origin_lower + episode.origin_upper) / 2.0
+        prior_micro = [item for item in self.one_minute if item.ts_close_ns < bar.ts_close_ns][-3:]
         if episode.side is Side.LONG:
             aligned_body = body > 0.0
             close_away = bar.close > max(mid, episode.origin_upper - self.tick_size)
-            intended_close = close_location >= 0.56
+            intended_close = close_location >= 0.64
+            micro_break = not prior_micro or bar.close > max(item.high for item in prior_micro)
         else:
             aligned_body = body < 0.0
             close_away = bar.close < min(mid, episode.origin_lower + self.tick_size)
-            intended_close = close_location <= 0.44
-        price_response = close_away and intended_close and (aligned_body or body_ratio >= 1.25)
+            intended_close = close_location <= 0.36
+            micro_break = not prior_micro or bar.close < min(item.low for item in prior_micro)
         initiative = self._aligned_flow(episode.side, observation)
         absorption = self._adverse_absorption(episode.side, observation, close_away=close_away)
-        accepted = price_response and (initiative or absorption or (range_ratio >= 1.0 and body_ratio >= 1.5))
+        price_response = (
+            close_away
+            and intended_close
+            and range_ratio >= 0.75
+            and (
+                (aligned_body and micro_break)
+                or (absorption and body_ratio >= 0.85)
+            )
+        )
+        accepted = price_response and (
+            initiative
+            or absorption
+            or (micro_break and body_ratio >= 1.35)
+        )
         strength = range_ratio * max(1.0, body_ratio)
+        if micro_break:
+            strength *= 1.25
         if observation is not None and accepted:
             strength *= max(1.0, observation.activity_ratio)
             strength *= max(1.0, observation.delta_ratio)
@@ -1015,6 +1349,8 @@ class IntrinsicAuctionBundle:
             else AUCTION_ACCEPTANCE_RULE,
             FLOW_TRANSITION_RULE,
             PREEXISTING_TARGET_RULE,
+            ACTIVE_AUCTION_MAP_RULE,
+            FIRST_REACTION_TARGET_RULE,
             ONE_EPISODE_RULE,
             f"RESEARCH_STATE:MACRO_SIDE={getattr(self._trend_side, 'name', 'NEUTRAL')}",
             f"RESEARCH_STATE:COMMON_FACTOR_SIDE={factor_side}",
@@ -1071,6 +1407,11 @@ class IntrinsicAuctionBundle:
             plan_id=plan_id,
             pool_id=pool.pool_id,
             target_pool_id=target_pool.pool_id,
+            target_timeframe_minutes=target_pool.timeframe_minutes,
+            target_members=target_pool.member_count,
+            target_touches=target_pool.five_minute_touch_count,
+            source_roles=episode.source_roles,
+            transition_strength=episode.transition_strength,
             family=episode.kind.value,
             side=_side_name(episode.side),
             entry=entry,
@@ -1214,13 +1555,13 @@ class IntrinsicAuctionBundle:
         if timeframe_minutes == 5:
             self._advance_five_minute(bar)
             self._observe_new_interactions(bar)
-            self.liquidity.observe_touch(bar)
+            self.liquidity.observe_touch(bar, 5)
             return []
         if timeframe_minutes != 1:
             return []
 
         self.audit_one_minute.observe(bar)
-        self.liquidity.observe_touch(bar)
+        self.liquidity.observe_touch(bar, 1)
         observation = self.flow.observe(bar)
         emitted = self._advance_one_minute(bar, observation)
         price_range = max(bar.high - bar.low, self.tick_size)
@@ -1278,6 +1619,8 @@ class IntrinsicAuctionBundle:
                     AUCTION_ACCEPTANCE_RULE,
                     FLOW_TRANSITION_RULE,
                     PREEXISTING_TARGET_RULE,
+                    ACTIVE_AUCTION_MAP_RULE,
+                    FIRST_REACTION_TARGET_RULE,
                     ONE_EPISODE_RULE,
                 ),
             }
