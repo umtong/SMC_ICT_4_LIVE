@@ -633,7 +633,7 @@ class IntrinsicAuctionBundle:
                 pool_id=pool.pool_id,
                 swing_id=swing.swing_id,
                 liquidity_side=swing.side,
-                timeframe_minutes=timeframe,
+                source_timeframe_minutes=timeframe,
                 event_time_ns_source=swing.event_time_ns,
                 observed_time_ns=swing.observed_time_ns,
                 level=swing.price,
