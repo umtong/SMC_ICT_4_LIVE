@@ -1,0 +1,134 @@
+name: candidate-easychart-ml3-integrated-clinic
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3-integrated-clinic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+jobs:
+  locate-run:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish clinic run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_INTEGRATED_CLINIC_RUN_ID
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_INTEGRATED_CLINIC_RUN_ID
+          git commit -m "chore(research): publish integrated clinic locator [skip ci]"
+          git push origin HEAD:research_ML3
+
+  trade-clinic:
+    if: github.actor != 'github-actions[bot]'
+    needs: locate-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      GH_TOKEN: ${{ github.token }}
+      OUT: artifacts/candidate-easychart-ml3-integrated-clinic
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Wait for learned-account evidence and download it
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/training"
+          git fetch origin research_ML3
+          for attempt in $(seq 1 90); do
+            if git show origin/research_ML3:research/_run_locators/ML3_INTEGRATED_TRAIN_RUN_ID > /tmp/train_run_id 2>/dev/null; then
+              break
+            fi
+            sleep 10
+            git fetch origin research_ML3
+          done
+          test -s /tmp/train_run_id
+          RUN_ID=$(tr -d '[:space:]' < /tmp/train_run_id)
+          echo "$RUN_ID" > "$OUT/train_run_id.txt"
+
+          for attempt in $(seq 1 160); do
+            STATUS=$(python - "$RUN_ID" <<'PY'
+          import json, os, sys, urllib.request
+          request=urllib.request.Request(
+              f"https://api.github.com/repos/umtong/SMC_ICT_4_LIVE/actions/runs/{sys.argv[1]}",
+              headers={"Authorization":f"Bearer {os.environ['GH_TOKEN']}","Accept":"application/vnd.github+json"},
+          )
+          with urllib.request.urlopen(request) as response:
+              record=json.load(response)
+          print(record.get("status","unknown"), record.get("conclusion"))
+          PY
+            )
+            echo "training workflow $STATUS"
+            case "$STATUS" in
+              completed\ success) break ;;
+              completed\ *) echo "training workflow failed: $STATUS"; exit 1 ;;
+            esac
+            sleep 15
+          done
+
+          python - "$RUN_ID" "$OUT/training" <<'PY'
+          import io, json, os, pathlib, sys, urllib.request, zipfile
+          run_id=sys.argv[1]
+          destination=pathlib.Path(sys.argv[2])
+          headers={"Authorization":f"Bearer {os.environ['GH_TOKEN']}","Accept":"application/vnd.github+json"}
+          request=urllib.request.Request(
+              f"https://api.github.com/repos/umtong/SMC_ICT_4_LIVE/actions/runs/{run_id}/artifacts?per_page=100",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request) as response:
+              artifacts=json.load(response).get("artifacts",[])
+          selected=[item for item in artifacts if item.get("name","").startswith("ml3-integrated-training-")]
+          if len(selected)!=1:
+              raise SystemExit(f"expected one integrated training artifact, found {len(selected)}")
+          item=selected[0]
+          request=urllib.request.Request(item["archive_download_url"],headers=headers)
+          with urllib.request.urlopen(request) as response:
+              payload=response.read()
+          with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+              archive.extractall(destination)
+          PY
+
+      - name: Inspect every selected and counterfactual account decision
+        run: |
+          set -euo pipefail
+          ROOT=$(find "$OUT/training" -type f -name integrated_training_summary.json -printf '%h\n' | head -n1)
+          test -n "$ROOT"
+          TRAINING_ROOT=$(dirname "$ROOT")
+          python research/candidate-easychart_ml3_breakthrough/clinic_integrated_results.py \
+            --training-root "$TRAINING_ROOT" \
+            --output "$OUT/integrated_research_clinic.json" \
+            2>&1 | tee "$OUT/clinic.log"
+          test -s "$OUT/integrated_research_clinic.json"
+          test -s "$OUT/integrated_loss_clinic.csv"
+          test -s "$OUT/integrated_feature_outcomes.csv"
+
+      - name: Preserve clinic and complete source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml3-integrated-clinic-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3-integrated-clinic/
+          if-no-files-found: warn
+          retention-days: 14
