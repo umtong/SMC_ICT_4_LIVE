@@ -1,0 +1,137 @@
+name: candidate-easychart-ml3-latent-periods
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/candidate-easychart-ml3-latent-periods.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  locate-run:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish latent-period run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_LATENT_PERIODS_RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_LATENT_PERIODS_RUN_SHA
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_LATENT_PERIODS_RUN_ID research/_run_locators/ML3_LATENT_PERIODS_RUN_SHA
+          git commit -m "chore(research): publish latent-period locator [skip ci]"
+          git push origin HEAD:research_ML3
+
+  harvest:
+    if: github.actor != 'github-actions[bot]'
+    needs: locate-run
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - name: 2024-03
+            start: 2024-02-26
+            end: 2024-03-01
+          - name: 2024-06
+            start: 2024-06-10
+            end: 2024-06-14
+          - name: 2024-08
+            start: 2024-08-02
+            end: 2024-08-06
+          - name: 2024-11
+            start: 2024-11-04
+            end: 2024-11-08
+          - name: 2025-03
+            start: 2025-02-25
+            end: 2025-03-01
+          - name: 2025-05
+            start: 2025-05-12
+            end: 2025-05-16
+          - name: 2025-08
+            start: 2025-08-10
+            end: 2025-08-14
+          - name: 2025-11
+            start: 2025-11-10
+            end: 2025-11-14
+          - name: 2026-02
+            start: 2026-02-09
+            end: 2026-02-13
+          - name: 2026-05
+            start: 2026-05-11
+            end: 2026-05-15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml3-latent-periods/${{ matrix.name }}
+      OUT: artifacts/candidate-easychart-ml3-latent-periods/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Harvest latent direction-liquidity-control decisions
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_ml3_breakthrough/run_mtf_backtest_latent_shadow.py \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/shadow.log"
+          python research/candidate-easychart_ml3v2/harvest_ml1.py \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/harvest.log"
+          python research/candidate-easychart_ml3v3/build_ml3v3_dataset.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/build_dataset.log"
+          python research/candidate-easychart_ml3_breakthrough/build_latent_dataset.py \
+            --run-output "$OUT" \
+            --period-name '${{ matrix.name }}' \
+            2>&1 | tee "$OUT/build_latent_dataset.log"
+          python research/candidate-easychart_ml3_breakthrough/summarize_intrinsic_run.py \
+            --run-output "$OUT" \
+            2>&1 | tee "$OUT/summary.log"
+          test -s "$OUT/latent_dataset.csv"
+          test -s "$OUT/decision_events.csv"
+          test -s "$OUT/counterfactual_plans.csv"
+
+      - name: Preserve latent period paths
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml3-latent-period-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml3-latent-periods/${{ matrix.name }}/
+          if-no-files-found: warn
+          retention-days: 14
