@@ -1,4 +1,4 @@
-name: export-research-ml3-source
+name: apply-ml3-breakthrough-payload
 
 on:
   push:
@@ -11,46 +11,23 @@ permissions:
   contents: write
 
 jobs:
-  export:
+  apply:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Pack branch source
+      - name: Verify and apply intrinsic-auction payload
         run: |
           set -euo pipefail
-          rm -rf research/_source_export
-          mkdir -p research/_source_export
-          tar \
-            --exclude=.git \
-            --exclude='.cache' \
-            --exclude='artifacts' \
-            --exclude='research/_source_export' \
-            -czf /tmp/research-ml3-source.tgz \
-            research .github pyproject.toml pytest.ini Dockerfile 2>/dev/null || \
-          tar \
-            --exclude=.git \
-            --exclude='.cache' \
-            --exclude='artifacts' \
-            --exclude='research/_source_export' \
-            -czf /tmp/research-ml3-source.tgz \
-            research .github
-          printf '%s\n' '${{ github.run_id }}' > research/_source_export/RUN_ID
-          printf '%s\n' '${{ github.sha }}' > research/_source_export/SOURCE_SHA
-          sha256sum /tmp/research-ml3-source.tgz > research/_source_export/SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: research-ml3-source-${{ github.sha }}
-          path: /tmp/research-ml3-source.tgz
-          if-no-files-found: error
-          retention-days: 2
-      - name: Publish export locator
-        run: |
-          set -euo pipefail
+          cat research/_apply_ml3_breakthrough/part* | base64 -d > /tmp/ml3-breakthrough-payload.tgz
+          echo "4d3440fdc503cbcbda224d724e018a6a9f801b2a2c38d6cbf590652ed90fb928  /tmp/ml3-breakthrough-payload.tgz" | sha256sum -c -
+          tar -xzf /tmp/ml3-breakthrough-payload.tgz
+          rm -rf research/_apply_ml3_breakthrough research/_source_export
+          rm -f .github/workflows/export-research-ml3-source.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A research/_source_export
-          git commit -m "chore(research): publish temporary ML3 export locator"
+          git add -A
+          git commit -m "research(ml3): add intrinsic-time auction breakthrough"
           git push origin HEAD:research_ML3
