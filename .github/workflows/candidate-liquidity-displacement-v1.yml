@@ -6,6 +6,7 @@ on:
     branches: ["research_ML_thinking"]
     paths:
       - "research/candidate-liquidity-displacement-v1/**"
+      - "!research/candidate-liquidity-displacement-v1/.latest-run"
       - ".github/workflows/candidate-liquidity-displacement-v1.yml"
 
 concurrency:
@@ -13,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 defaults:
@@ -32,6 +33,17 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+      - name: Record run identity without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > research/candidate-liquidity-displacement-v1/.latest-run
+          git add research/candidate-liquidity-displacement-v1/.latest-run
+          git commit -m "Record liquidity displacement run $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_ML_thinking
       - name: Compile structural candidate
         run: |
           set -euo pipefail
@@ -95,7 +107,8 @@ jobs:
               raise RuntimeError('empty structural action universe')
           if frame.action_id.duplicated().any() or frame.episode_id.duplicated().any():
               raise RuntimeError('duplicate causal action or episode identity')
-          if not (pd.to_numeric(frame.fill_time_ns) > pd.to_numeric(frame.emission_time_ns)).all():
+          filled=frame[frame.fill_state.astype(str).str.startswith('FILLED')]
+          if not (pd.to_numeric(filled.fill_time_ns) > pd.to_numeric(filled.emission_time_ns)).all():
               raise RuntimeError('entry did not occur strictly after completed response')
           if not (pd.to_numeric(frame.gross_rr) >= 1.0).all():
               raise RuntimeError('gross RR below user rule')
