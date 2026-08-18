@@ -1,0 +1,114 @@
+name: candidate-liquidity-displacement-v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-liquidity-displacement-v1/**"
+      - ".github/workflows/candidate-liquidity-displacement-v1.yml"
+
+concurrency:
+  group: candidate-liquidity-displacement-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-displacement-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile structural candidate
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-liquidity-displacement-v1/liquidity_displacement.py \
+            research/candidate-liquidity-displacement-v1/run_research.py
+          python - <<'PY'
+          from liquidity_displacement import POLICY, MAX_EVENT_TO_DISPLACEMENT, MAX_ZONE_RETURN_MINUTES
+          assert "FIRST_RETURN" in POLICY
+          assert MAX_EVENT_TO_DISPLACEMENT > 0 and MAX_ZONE_RETURN_MINUTES > 0
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-displacement-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-liquidity-displacement-v1/${{ matrix.period }}
+      OUT: artifacts/candidate-liquidity-displacement-v1/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest causal first-return actions
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-liquidity-displacement-v1/run_research.py \
+            --start "$START" --end "$END" --warmup-days 20 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - name: Verify action identity and timing
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT'])
+          frame=pd.read_csv(out/'liquidity_displacement_actions.csv')
+          if frame.empty:
+              raise RuntimeError('empty structural action universe')
+          if frame.action_id.duplicated().any() or frame.episode_id.duplicated().any():
+              raise RuntimeError('duplicate causal action or episode identity')
+          if not (pd.to_numeric(frame.fill_time_ns) > pd.to_numeric(frame.emission_time_ns)).all():
+              raise RuntimeError('entry did not occur strictly after completed response')
+          if not (pd.to_numeric(frame.gross_rr) >= 1.0).all():
+              raise RuntimeError('gross RR below user rule')
+          if not frame.symbol.isin(['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']).all():
+              raise RuntimeError('unexpected symbol')
+          print(frame.groupby(['event_type','origin_kind','response_kind']).outcome.value_counts())
+          PY
+      - name: Preserve structural action universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-displacement-v1-${{ matrix.period }}
+          path: artifacts/candidate-liquidity-displacement-v1/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
