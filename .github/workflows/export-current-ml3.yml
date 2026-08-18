@@ -1,0 +1,51 @@
+name: export-current-ml3
+
+on:
+  push:
+    branches: ["research_ML3"]
+    paths:
+      - ".github/workflows/export-current-ml3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish locator and pack current branch source
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_CURRENT_EXPORT_RUN_ID
+          printf '%s\n' '${{ github.sha }}' > research/_run_locators/ML3_CURRENT_EXPORT_SHA
+          tar \
+            --exclude=.git \
+            --exclude='.cache' \
+            --exclude='artifacts' \
+            --exclude='research/_run_locators' \
+            -czf /tmp/research-ml3-current.tgz \
+            research .github pyproject.toml pytest.ini Dockerfile 2>/dev/null || \
+          tar \
+            --exclude=.git \
+            --exclude='.cache' \
+            --exclude='artifacts' \
+            --exclude='research/_run_locators' \
+            -czf /tmp/research-ml3-current.tgz \
+            research .github
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_CURRENT_EXPORT_RUN_ID research/_run_locators/ML3_CURRENT_EXPORT_SHA
+          git commit -m "chore(research): publish current ML3 export locator [skip ci]"
+          git push origin HEAD:research_ML3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-ml3-current-${{ github.sha }}
+          path: /tmp/research-ml3-current.tgz
+          if-no-files-found: error
+          retention-days: 2
