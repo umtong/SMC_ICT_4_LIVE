@@ -11,16 +11,34 @@ permissions:
   contents: write
 
 jobs:
+  locate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_V2_APPLY_RUN_ID
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_V2_APPLY_RUN_ID
+          git commit -m "chore(research): publish ML3 v2 apply locator [skip ci]"
+          git push origin HEAD:research_ML3
+
   apply:
+    needs: locate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
       - name: Apply and validate active-auction-map payload
-        env:
-          PYTHONPATH: research/candidate-easychart_ml3_breakthrough:research/candidate-easychart_ml3v3:research/candidate-easychart_ml3v2:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
         run: |
           set -euo pipefail
           cat research/_apply_ml3_v2/part* | base64 --decode > /tmp/ml3-v2.tgz
@@ -44,7 +62,7 @@ jobs:
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A research/candidate-easychart_ml3_breakthrough research/_apply_ml3_v2
+          git add -A research
           git commit -m "research(ml3): replace immortal swing pools with active auction map"
           git pull --rebase origin research_ML3
           git push origin HEAD:research_ML3
