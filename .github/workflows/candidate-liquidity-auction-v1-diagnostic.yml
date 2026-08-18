@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 defaults:
@@ -21,6 +21,27 @@ defaults:
     shell: bash
 
 jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Record run identity without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p research/candidate-liquidity-auction-v1
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > research/candidate-liquidity-auction-v1/.latest-run
+          git add research/candidate-liquidity-auction-v1/.latest-run
+          git commit -m "Record liquidity auction diagnostic run $GITHUB_RUN_ID" || true
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin HEAD:"$GITHUB_REF_NAME"
+
   core-check:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
