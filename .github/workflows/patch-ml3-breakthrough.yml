@@ -11,7 +11,25 @@ permissions:
   contents: write
 
 jobs:
+  locate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish patch run locator
+        run: |
+          set -euo pipefail
+          mkdir -p research/_run_locators
+          printf '%s\n' '${{ github.run_id }}' > research/_run_locators/ML3_PATCH_RUN_ID
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/_run_locators/ML3_PATCH_RUN_ID
+          git commit -m "chore(research): publish ML3 patch run locator [skip ci]"
+          git push origin HEAD:research_ML3
+
   patch:
+    needs: locate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
