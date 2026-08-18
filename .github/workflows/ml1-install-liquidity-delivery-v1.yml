@@ -1,0 +1,41 @@
+name: ml1-install-liquidity-delivery-v1
+
+on:
+  push:
+    branches: ["research_ML1"]
+    paths:
+      - ".github/workflows/ml1-install-liquidity-delivery-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_ML1
+          fetch-depth: 0
+      - name: Install direction-first liquidity-delivery source atomically
+        run: |
+          bundle='research/candidate-easychart_ml1/.liquidity_delivery_v1_bundle'
+          cat "$bundle"/chunk_*.b64 > /tmp/liquidity-delivery-v1.b64
+          base64 -d /tmp/liquidity-delivery-v1.b64 > /tmp/liquidity-delivery-v1.tar.gz
+          tar -xzf /tmp/liquidity-delivery-v1.tar.gz -C .
+          python -m py_compile research/candidate-easychart_ml1/liquidity_delivery_study_v1.py
+          python -m py_compile research/candidate-easychart_ml1/liquidity_delivery_fit_v1.py
+          printf 'dispatch-liquidity-delivery-v1-1\n' > research/candidate-easychart_ml1/.liquidity_delivery_v1_dispatch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r "$bundle"
+          git rm .github/workflows/ml1-install-liquidity-delivery-v1.yml
+          git add research/candidate-easychart_ml1/liquidity_delivery_study_v1.py \
+                  research/candidate-easychart_ml1/liquidity_delivery_fit_v1.py \
+                  research/candidate-easychart_ml1/.liquidity_delivery_v1_dispatch \
+                  .github/workflows/ml1-liquidity-delivery-v1.yml \
+                  .github/workflows/ml1-liquidity-delivery-v1-result-collector.yml
+          git commit -m 'research(ml1): install direction-first liquidity-delivery system'
+          git pull --rebase origin research_ML1
+          git push origin HEAD:research_ML1
