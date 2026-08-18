@@ -49,6 +49,7 @@ class DynamicBoundary:
     normalized_slope: float
     quality: float
     anchor_count: int
+    historical_span_minutes: int
     channel_quality: float
     channel_width_at_observation: float
     first_penetration_index: int | None
@@ -194,6 +195,7 @@ def _fit(points: Sequence[tuple[int, int, float, str]], data: pd.DataFrame) -> D
         normalized_slope=normalized_slope,
         quality=quality,
         anchor_count=len(points),
+        historical_span_minutes=span_minutes,
         channel_quality=0.0,
         channel_width_at_observation=0.0,
         first_penetration_index=None,
@@ -241,6 +243,15 @@ def _attach_channels(
     models: Sequence[DynamicBoundary],
     data: pd.DataFrame,
 ) -> list[DynamicBoundary]:
+    """Attach only information observable when both fitted edges first coexist.
+
+    ``active_until_index`` reconstructs when a historical online line was replaced by a
+    later confirmed anchor.  It may be used to decide whether both lines coexisted at an
+    observation, but never to reward how long they survive in the future.  The earlier
+    implementation used future overlap duration in channel quality; that leaked the
+    next anchor time into decision features.  Quality now depends only on anchor history,
+    residuals, width and slope agreement already known at the joint observation.
+    """
     output: list[DynamicBoundary] = []
     for model in models:
         candidates = [
@@ -256,6 +267,9 @@ def _attach_channels(
         best_width = 0.0
         for other in candidates:
             observation = max(model.observed_index, other.observed_index)
+            # Both models must actually have been active at the joint observation.
+            if observation > model.active_until_index or observation > other.active_until_index:
+                continue
             width = abs(model.value_at(observation) - other.value_at(observation))
             atr = max(_atr_price(data, observation), EPS)
             if width < 0.50 * atr:
@@ -263,15 +277,17 @@ def _attach_channels(
             horizon = max(60, 4 * model.timeframe_minutes)
             slope_gap = abs(model.slope_per_minute - other.slope_per_minute) * horizon
             parallel = math.exp(-slope_gap / max(width, atr))
-            overlap_start = max(model.observed_index, other.observed_index)
-            overlap_end = min(model.active_until_index, other.active_until_index)
-            overlap_quality = min(
+            history_quality = min(
                 1.0,
-                max(0, overlap_end - overlap_start)
-                / max(120.0, 2.0 * model.timeframe_minutes),
+                min(model.historical_span_minutes, other.historical_span_minutes)
+                / max(240.0, 4.0 * model.timeframe_minutes),
             )
+            width_quality = 1.0 - math.exp(-width / max(atr, EPS))
             channel_quality = (
-                min(model.quality, other.quality) * parallel * overlap_quality
+                min(model.quality, other.quality)
+                * parallel
+                * history_quality
+                * width_quality
             )
             if channel_quality > best_quality:
                 best_quality, best_width = channel_quality, width
