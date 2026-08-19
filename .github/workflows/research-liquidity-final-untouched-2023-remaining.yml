@@ -1,0 +1,88 @@
+name: Research liquidity final untouched 2023 remaining windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v3"]
+    paths:
+      - ".github/workflows/research-liquidity-final-untouched-2023-remaining.yml"
+      - "research/candidate-liquidity-auction-v3/.dispatch-final-untouched-2023-remaining"
+
+concurrency:
+  group: research-liquidity-final-untouched-2023-remaining
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record frozen V15 untouched 2023 remaining run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-liquidity-final-untouched-2023-remaining
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-final-untouched-2023-remaining
+          git commit -m "Record frozen V15 untouched 2023 remaining $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {period: final-untouched-2023-jan-a, start: 2023-01-09, end: 2023-01-14}
+          - {period: final-untouched-2023-jan-b, start: 2023-01-23, end: 2023-01-31}
+          - {period: final-untouched-2023-feb, start: 2023-02-09, end: 2023-02-14}
+          - {period: final-untouched-2023-apr-a, start: 2023-04-09, end: 2023-04-14}
+          - {period: final-untouched-2023-apr-b, start: 2023-04-23, end: 2023-04-30}
+          - {period: final-untouched-2023-may-a, start: 2023-05-09, end: 2023-05-14}
+          - {period: final-untouched-2023-may-b, start: 2023-05-31, end: 2023-05-31}
+          - {period: final-untouched-2023-jul-a, start: 2023-07-09, end: 2023-07-14}
+          - {period: final-untouched-2023-jul-b, start: 2023-07-23, end: 2023-07-31}
+          - {period: final-untouched-2023-aug-a, start: 2023-08-09, end: 2023-08-14}
+          - {period: final-untouched-2023-aug-b, start: 2023-08-31, end: 2023-08-31}
+          - {period: final-untouched-2023-oct-a, start: 2023-10-09, end: 2023-10-14}
+          - {period: final-untouched-2023-oct-b, start: 2023-10-23, end: 2023-10-31}
+          - {period: final-untouched-2023-nov, start: 2023-11-09, end: 2023-11-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export untouched exact one-minute price and aggressor flow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-cache "final2023remaining/${{ matrix.period }}"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --before-days 3 \
+            --after-days 1 \
+            --cache /tmp/binance-cache \
+            --output "final2023remaining/${{ matrix.period }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-${{ matrix.period }}
+          path: final2023remaining/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
