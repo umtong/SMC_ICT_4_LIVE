@@ -1,0 +1,132 @@
+name: Research liquidity auction v4 semantic control transfer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v4"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v4-control-transfer.yml"
+
+concurrency:
+  group: research-liquidity-auction-v4-semantic-control-transfer
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-may, start: 2023-05-01, end: 2023-05-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2023-nov, start: 2023-11-01, end: 2023-11-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: eval-2022-mar, start: 2022-03-01, end: 2022-03-08}
+          - {period: eval-2022-jun, start: 2022-06-01, end: 2022-06-08}
+          - {period: eval-2022-sep, start: 2022-09-01, end: 2022-09-08}
+          - {period: eval-2022-dec, start: 2022-12-01, end: 2022-12-08}
+          - {period: eval-2026-jun, start: 2026-06-01, end: 2026-06-08}
+          - {period: eval-2026-jul, start: 2026-07-01, end: 2026-07-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/liquidity-auction-v4-control/${{ matrix.period }}
+      OUT: artifacts/liquidity-auction-v4-control/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest semantic liquidity states and immutable causal plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-auction-system-v4/run_research.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Preserve exact price-volume path
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --before-days 3 \
+            --after-days 14 \
+            --cache "$CACHE" \
+            --output "$OUT/chart"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-auction-v4-control-${{ matrix.period }}
+          path: artifacts/liquidity-auction-v4-control/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  barrier-control-transfer:
+    needs: harvest
+    if: always() && needs.harvest.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v4:research/candidate-liquidity-auction-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v4-control-*
+          path: downloaded
+          merge-multiple: false
+      - name: Install existing general ML components used by the direction policy
+        run: |
+          set -euo pipefail
+          uv pip install scikit-learn==1.8.0
+      - name: Execute durable control transfer with TP and SL barriers only
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-liquidity-auction-v4/barrier_quality_control_transfer.py \
+            --root downloaded \
+            --output result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v4-semantic-control-transfer-result
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
