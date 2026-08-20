@@ -13,6 +13,27 @@ import departure_first_return_harvest as core
 
 
 @dataclass(frozen=True, slots=True)
+class BarrierLabel:
+    fill_state: str
+    outcome: str
+    fill_index: int | None
+    fill_time_ns: int | None
+    resolution_index: int | None
+    resolution_time_ns: int | None
+    order_terminal_index: int
+    order_terminal_time_ns: int
+    entry_wait_minutes: float | None
+    holding_minutes: float | None
+    actual_entry: float | None
+    actual_target_net_r: float | None
+    actual_stop_net_r: float | None
+    actual_gross_rr: float | None
+    net_r: float | None
+    mfe_r: float | None
+    mae_r: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DepartureCandidate:
     confirmation_index: int
     departure_index: int
@@ -54,6 +75,10 @@ def departure_candidates(data, source, tick):
     return output[:1]
 
 
+# Preserve the economic policy while fixing the incomplete positional constructor
+# used on unfilled-order paths in the core module.  The omitted last field is MAE,
+# which is undefined before entry and therefore correctly defaults to None.
+core.BarrierLabel = BarrierLabel
 core.DepartureCandidate = DepartureCandidate
 core._departure_candidates = departure_candidates
 
