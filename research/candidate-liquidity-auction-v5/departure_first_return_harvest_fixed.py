@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pandas as pd
+
 import coherent_policy as policy
 import hierarchical_liquidity_bpr as hl
 import departure_first_return_harvest as core
@@ -54,6 +56,37 @@ def departure_candidates(data, source, tick):
 
 core.DepartureCandidate = DepartureCandidate
 core._departure_candidates = departure_candidates
+
+_BASE_GENERATE = core.generate_symbol
+_BASE_RUN = core.run_research
+_DECISION_END_NS: int | None = None
+
+
+def generate_symbol(symbol, data, levels, metadata, trading_start):
+    frame, counts = _BASE_GENERATE(symbol, data, levels, metadata, trading_start)
+    if _DECISION_END_NS is not None and not frame.empty:
+        frame = frame[pd.to_numeric(frame.order_time_ns, errors="coerce") < _DECISION_END_NS].copy()
+        counts = dict(counts)
+        counts["plans"] = int(len(frame))
+        counts["states_after_decision_window_filter"] = int(frame.state_id.nunique())
+    return frame, counts
+
+
+def run_research(*, start, end, warmup_days, symbols, cache, output):
+    global _DECISION_END_NS
+    _DECISION_END_NS = int(pd.Timestamp(end, tz="UTC").value)
+    return _BASE_RUN(
+        start=start,
+        end=end,
+        warmup_days=warmup_days,
+        symbols=symbols,
+        cache=cache,
+        output=output,
+    )
+
+
+core.generate_symbol = generate_symbol
+core.run_research = run_research
 
 if __name__ == "__main__":
     core.main()
