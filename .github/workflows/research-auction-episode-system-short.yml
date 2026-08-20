@@ -21,7 +21,32 @@ defaults:
     shell: bash
 
 jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_auction_episode_system
+      - run: |
+          set -euo pipefail
+          DEST=research_results/auction_episode_system/workflow_status
+          mkdir -p "$DEST"
+          cat > "$DEST/status.json" <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "head_sha": "${{ github.sha }}",
+            "status": "RUNNING",
+            "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST/status.json"
+          git commit -m "Track auction episode diagnostic ${{ github.run_id }} [skip ci]"
+          git push origin HEAD:research_auction_episode_system
+
   harvest:
+    needs: announce
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -114,10 +139,19 @@ jobs:
               cp "artifacts/auction-episode/result/$file" "$DEST/$file"
             fi
           done
+          STATUS=research_results/auction_episode_system/workflow_status/status.json
+          cat > "$STATUS" <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "head_sha": "${{ github.sha }}",
+            "status": "COMPLETED",
+            "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add "$DEST"
+          git add "$DEST" "$STATUS"
           if ! git diff --cached --quiet; then
             git commit -m "Record auction episode short diagnostic [skip ci]"
             git push origin HEAD:research_auction_episode_system
