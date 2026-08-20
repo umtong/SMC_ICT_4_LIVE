@@ -116,7 +116,22 @@ def value(row: pd.Series, *names: str, default: float = 0.0) -> float:
 
 
 def atr_array(data: pd.DataFrame) -> np.ndarray:
-    return dc._atr(data)
+    """Causal prior-only ATR median without backward-filling from future bars."""
+    previous = data.close.shift(1)
+    true_range = pd.concat(
+        [
+            data.high - data.low,
+            (data.high - previous).abs(),
+            (data.low - previous).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    rolling = true_range.rolling(90, min_periods=30).median().shift(1)
+    expanding = true_range.expanding(min_periods=1).median().shift(1)
+    causal = rolling.fillna(expanding)
+    if len(causal):
+        causal.iloc[0] = max(float(true_range.iloc[0]), EPS)
+    return causal.ffill().fillna(EPS).to_numpy(float)
 
 
 def control_features(
