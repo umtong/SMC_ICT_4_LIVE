@@ -1,0 +1,65 @@
+name: Route liquidity auction v6 medium with pending replacement
+
+on:
+  workflow_run:
+    workflows: ["Research liquidity auction v6 economic medium continuous"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  route:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v6
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v6
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v6-economic-medium-dev-*
+          path: /tmp/development
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v6-economic-medium-fresh-*
+          path: /tmp/fresh
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          set -euo pipefail
+          mkdir -p /tmp/result
+          python research/candidate-liquidity-auction-v6/sequential_commitment_router_replacement_continuous_exec.py \
+            --development-root /tmp/development \
+            --fresh-root /tmp/fresh \
+            --output /tmp/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v6-economic-medium-replacement-result
+          path: /tmp/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          rm -rf research_results/liquidity_auction_v6/economic_medium_replacement
+          mkdir -p research_results/liquidity_auction_v6/economic_medium_replacement
+          cp /tmp/result/summary.json research_results/liquidity_auction_v6/economic_medium_replacement/summary.json
+          cp /tmp/result/RESULT.md research_results/liquidity_auction_v6/economic_medium_replacement/RESULT.md
+          cp /tmp/result/development_oof_trades.csv research_results/liquidity_auction_v6/economic_medium_replacement/development_oof_trades.csv
+          cp /tmp/result/fresh_trades.csv research_results/liquidity_auction_v6/economic_medium_replacement/continuous_trades.csv
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research_results/liquidity_auction_v6/economic_medium_replacement
+          git commit -m "Record medium continuous pending replacement result" || exit 0
+          git push origin HEAD:research_liquidity_auction_v6
