@@ -26,6 +26,32 @@ from world_model_common import (
 )
 
 
+def _complete_no_order_row(row: dict[str, Any], signal: EpisodeSignal, data: pd.DataFrame) -> dict[str, Any]:
+    """Keep the common action schema even when every episode is correctly rejected."""
+    row.update(
+        {
+            "fill_state": "NO_ORDER",
+            "outcome": "NO_TRADE",
+            "fill_index": None,
+            "fill_time_ns": None,
+            "resolution_index": None,
+            "resolution_time_ns": None,
+            "order_terminal_index": int(signal.decision_index),
+            "order_terminal_time_ns": int(data.index[signal.decision_index].value),
+            "entry_wait_minutes": None,
+            "holding_minutes": None,
+            "actual_entry": None,
+            "actual_target_net_r": None,
+            "actual_stop_net_r": None,
+            "actual_gross_rr": None,
+            "net_r": None,
+            "mfe_r": None,
+            "mae_r": None,
+        }
+    )
+    return row
+
+
 def generate_symbol(
     symbol: str,
     data: pd.DataFrame,
@@ -101,7 +127,13 @@ def generate_symbol(
             tick,
         )
         if plan is None:
-            records.append(no_plan_record(symbol, signal, data, reason, atr))
+            records.append(
+                _complete_no_order_row(
+                    no_plan_record(symbol, signal, data, reason, atr),
+                    signal,
+                    data,
+                )
+            )
         else:
             records.append(plan)
             plan_count += 1
