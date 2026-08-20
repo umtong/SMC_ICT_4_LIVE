@@ -46,6 +46,8 @@ def semantic_source_events(
         lower, upper = sorted((lower, upper))
         level_id = str(getattr(level, "level_id", stable(side, observed, lower, upper)))
         meta = metadata.get(level_id)
+        if meta is not None and hasattr(meta, "direction_source") and not bool(meta.direction_source):
+            continue
         output.append(
             SourceEvent(
                 source_id=f"SEM:{level_id}",
@@ -148,6 +150,8 @@ def _semantic_destinations(
         lower, upper = sorted((lower, upper))
         level_id = str(getattr(level, "level_id", stable(side, observed, lower, upper)))
         meta = metadata.get(level_id)
+        if meta is not None and hasattr(meta, "direction_source") and not bool(meta.direction_source):
+            continue
         output.append(
             Destination(
                 destination_id=f"SEMDEST:{level_id}",
