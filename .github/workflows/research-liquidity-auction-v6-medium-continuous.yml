@@ -1,0 +1,111 @@
+name: Research liquidity auction v6 medium continuous
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v6"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v6-medium-continuous.yml"
+      - "research/candidate-liquidity-auction-v6/sequential_commitment_router_continuous.py"
+
+concurrency:
+  group: research-liquidity-auction-v6-medium-continuous
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {role: dev, period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: fresh, period: fresh-2025-cont-01, start: 2025-03-01, end: 2025-03-08}
+          - {role: fresh, period: fresh-2025-cont-02, start: 2025-03-08, end: 2025-03-15}
+          - {role: fresh, period: fresh-2025-cont-03, start: 2025-03-15, end: 2025-03-22}
+          - {role: fresh, period: fresh-2025-cont-04, start: 2025-03-22, end: 2025-03-29}
+          - {role: fresh, period: fresh-2025-cont-05, start: 2025-03-29, end: 2025-04-05}
+          - {role: fresh, period: fresh-2025-cont-06, start: 2025-04-05, end: 2025-04-12}
+          - {role: fresh, period: fresh-2025-cont-07, start: 2025-04-12, end: 2025-04-19}
+          - {role: fresh, period: fresh-2025-cont-08, start: 2025-04-19, end: 2025-04-26}
+          - {role: fresh, period: fresh-2025-cont-09, start: 2025-04-26, end: 2025-05-01}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/v6-medium/${{ matrix.period }}
+      OUT: artifacts/v6-medium/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v6
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-liquidity-auction-v6/sequential_commitment_harvest_rich.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v6-medium-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/v6-medium/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v6
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v6
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v6-medium-dev-*
+          path: artifacts/v6-medium/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v6-medium-fresh-*
+          path: artifacts/v6-medium/fresh
+      - run: |
+          set -euo pipefail
+          mkdir -p artifacts/v6-medium/result
+          python research/candidate-liquidity-auction-v6/sequential_commitment_router_continuous.py \
+            --development-root artifacts/v6-medium/development \
+            --fresh-root artifacts/v6-medium/fresh \
+            --output artifacts/v6-medium/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v6-medium-continuous-result
+          path: artifacts/v6-medium/result/**
+          if-no-files-found: error
+          retention-days: 30
