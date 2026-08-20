@@ -178,7 +178,7 @@ def _semantic_destinations(
 def _dc_fresh(data: pd.DataFrame, node: Any, decision: int, atr: np.ndarray) -> bool:
     if int(node.observed_index) >= decision:
         return False
-    part = data.iloc[int(node.observed_index) + 1 : decision]
+    part = data.iloc[int(node.observed_index) + 1 : decision + 1]
     if part.empty:
         return True
     buffer = max(0.04 * float(atr[int(node.observed_index)]), EPS)
@@ -221,7 +221,7 @@ def _previous_day(data: pd.DataFrame, decision: int, side: str) -> Destination |
     now = data.index[decision]
     day = now.normalize()
     previous = data[(data.index >= day - pd.Timedelta(days=1)) & (data.index < day)]
-    current = data[(data.index >= day) & (data.index < now)]
+    current = data[(data.index >= day) & (data.index <= now)]
     if len(previous) < 120:
         return None
     if side == "HIGH":
