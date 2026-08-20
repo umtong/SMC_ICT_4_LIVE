@@ -112,21 +112,28 @@ def merge_source_events(
             groups.append([event])
     output: list[SourceEvent] = []
     for group in groups:
-        owner = max(group, key=lambda item: (item.strength, item.scale, -item.observed_index))
-        weights = np.asarray([max(item.strength, EPS) for item in group])
+        # A merged source may not borrow a component which became observable only
+        # after the source interaction. Use the latest near-synchronous penetration
+        # as the common event clock, then keep only components already public at it.
+        interaction = max(item.interaction_index for item in group)
+        causal = [item for item in group if item.observed_index < interaction]
+        if not causal:
+            continue
+        owner = max(causal, key=lambda item: (item.strength, item.scale, -item.observed_index))
+        weights = np.asarray([max(item.strength, EPS) for item in causal])
         output.append(
             SourceEvent(
-                source_id="SRC:" + stable(*(item.source_id for item in group)),
+                source_id="SRC:" + stable(*(item.source_id for item in causal)),
                 side=owner.side,
-                lower=min(item.lower for item in group),
-                upper=max(item.upper for item in group),
-                price=float(np.average([item.price for item in group], weights=weights)),
-                observed_index=max(item.observed_index for item in group),
-                interaction_index=min(item.interaction_index for item in group),
-                scale=max(item.scale for item in group),
-                strength=float(sum(item.strength for item in group)),
-                kind="+".join(sorted({item.kind for item in group})),
-                confluence_count=len(group),
+                lower=min(item.lower for item in causal),
+                upper=max(item.upper for item in causal),
+                price=float(np.average([item.price for item in causal], weights=weights)),
+                observed_index=max(item.observed_index for item in causal),
+                interaction_index=interaction,
+                scale=max(item.scale for item in causal),
+                strength=float(sum(item.strength for item in causal)),
+                kind="+".join(sorted({item.kind for item in causal})),
+                confluence_count=len(causal),
             )
         )
     return sorted(output, key=lambda item: (item.interaction_index, item.side, -item.strength))
@@ -140,7 +147,7 @@ def _semantic_destinations(
         observed = int(getattr(level, "observed_index_1m", 0))
         first = getattr(level, "first_penetration_index", None)
         side = str(getattr(level, "side", ""))
-        if observed >= decision or (first is not None and int(first) < decision) or side not in {"HIGH", "LOW"}:
+        if observed >= decision or (first is not None and int(first) <= decision) or side not in {"HIGH", "LOW"}:
             continue
         scale = max(finite(getattr(level, "timeframe_minutes", 1.0)), 1.0)
         if scale < 30.0 and finite(getattr(level, "defense_count", 0.0)) < 2.0:
