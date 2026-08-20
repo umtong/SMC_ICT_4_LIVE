@@ -1,0 +1,124 @@
+name: Research unified auction episode system short diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_auction_episode_system"]
+    paths:
+      - ".github/workflows/research-auction-episode-system-short.yml"
+      - "research/candidate-auction-episode-system/**"
+
+concurrency:
+  group: research-auction-episode-system-short
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: dev, period: dev-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/auction-episode/${{ matrix.period }}
+      OUT: artifacts/auction-episode/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_auction_episode_system
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-auction-episode-system/auction_episode_harvest.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auction-episode-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/auction-episode/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_auction_episode_system
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: auction-episode-dev-*
+          path: artifacts/auction-episode/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: auction-episode-fresh-*
+          path: artifacts/auction-episode/fresh
+      - run: |
+          set -euo pipefail
+          mkdir -p artifacts/auction-episode/result
+          python research/candidate-auction-episode-system/auction_episode_policy.py \
+            --development-root artifacts/auction-episode/development \
+            --fresh-root artifacts/auction-episode/fresh \
+            --output artifacts/auction-episode/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auction-episode-system-result
+          path: artifacts/auction-episode/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          DEST=research_results/auction_episode_system/short_diagnostic
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp artifacts/auction-episode/result/summary.json "$DEST/"
+          for file in \
+            fresh_orders.csv fresh_trades.csv fresh_decisions.csv \
+            fresh_loss_clinic.csv fresh_no_trade_clinic.csv \
+            development_loss_clinic.csv development_no_trade_clinic.csv; do
+            if [ -f "artifacts/auction-episode/result/$file" ]; then
+              cp "artifacts/auction-episode/result/$file" "$DEST/$file"
+            fi
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record auction episode short diagnostic [skip ci]"
+            git push origin HEAD:research_auction_episode_system
+          fi
