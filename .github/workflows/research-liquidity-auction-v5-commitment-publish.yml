@@ -1,0 +1,46 @@
+name: Publish liquidity auction v5 commitment result
+
+on:
+  workflow_run:
+    workflows: ["Research liquidity auction v5 commitment first return"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: liquidity-auction-v5-commitment-result
+          path: /tmp/commitment-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Preserve latest commitment result
+        run: |
+          set -euo pipefail
+          rm -rf research/candidate-liquidity-auction-v5/latest_commitment_result
+          mkdir -p research/candidate-liquidity-auction-v5/latest_commitment_result
+          cp /tmp/commitment-result/summary.json research/candidate-liquidity-auction-v5/latest_commitment_result/summary.json
+          cp /tmp/commitment-result/RESULT.md research/candidate-liquidity-auction-v5/latest_commitment_result/RESULT.md
+          cp /tmp/commitment-result/development_oof_trades.csv research/candidate-liquidity-auction-v5/latest_commitment_result/development_oof_trades.csv
+          cp /tmp/commitment-result/fresh_trades.csv research/candidate-liquidity-auction-v5/latest_commitment_result/calibration_trades.csv
+          printf '{"source_run_id":%s,"source_sha":"%s","published_at":"%s"}\n' \
+            "${{ github.event.workflow_run.id }}" "${{ github.event.workflow_run.head_sha }}" "$(date -u +%FT%TZ)" \
+            > research/candidate-liquidity-auction-v5/latest_commitment_result/run.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-liquidity-auction-v5/latest_commitment_result
+          git commit -m "Record latest v5 commitment first-return result" || exit 0
+          git push origin HEAD:research_liquidity_auction_v5
