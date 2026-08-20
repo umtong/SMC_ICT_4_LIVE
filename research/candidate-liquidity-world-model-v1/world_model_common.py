@@ -172,8 +172,8 @@ def control_features(
         "control_activity_ratio": activity,
         "control_effort_result": move / max(atr_price, EPS) / max(0.08, activity * (abs(flow) + 0.08)),
         "common_factor_signed": direction * value(row, "common_return_5m", "factor_return"),
-        "common_breadth_signed": direction * value(row, "common_breadth", "breadth"),
-        "relative_return_signed": direction * value(row, "relative_return_5m", "residual_return"),
+        "common_breadth_signed": direction * value(row, "common_breadth_5m", "common_breadth", "breadth"),
+        "relative_return_signed": direction * value(row, "residual_return_5m", "relative_return_5m", "residual_return"),
         "oi_log_change": value(row, "metric_oi_log_change_1", "oi_log_change_1"),
         "basis_change_signed_bps": direction * value(row, "basis_change_3m_bps", "basis_change_bps"),
     }
