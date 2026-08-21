@@ -7,9 +7,14 @@ on:
     paths:
       - ".github/workflows/research-liquidity-episode-policy-short.yml"
       - "research/candidate-liquidity-episode-policy-v1/**"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/research-liquidity-episode-policy-short.yml"
+      - "research/candidate-liquidity-episode-policy-v1/**"
 
 concurrency:
-  group: research-liquidity-episode-policy-short
+  group: research-liquidity-episode-policy-short-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -178,7 +183,7 @@ jobs:
           retention-days: 30
 
       - name: Publish compact diagnostic result on branch
-        if: always()
+        if: ${{ always() && github.event_name != 'pull_request' }}
         run: |
           set -euo pipefail
           destination=research_results/liquidity_episode_policy_v1/latest
@@ -198,7 +203,7 @@ jobs:
           git commit -m "Record restored episode-policy short diagnosis" || exit 0
           git push origin HEAD:research_liquidity_episode_policy
 
-      - name: Fail workflow after publishing real failure
+      - name: Fail workflow after preserving real failure
         if: always()
         run: |
           test "${{ needs.harvest.result }}" = "success"
