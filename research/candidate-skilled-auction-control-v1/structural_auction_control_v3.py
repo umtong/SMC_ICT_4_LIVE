@@ -32,7 +32,7 @@ class ResponseObservation:
     relative_volume: float
 
 
-def _bar_number(bar: Candle, *names: str) -> float:
+def _bar_number(bar: Any, *names: str) -> float:
     for name in names:
         value = _number(getattr(bar, name, math.nan))
         if math.isfinite(value):
@@ -60,8 +60,8 @@ def _side_sign(plan: V5TradePlan) -> int:
         return 1
     if any(token in side for token in ("SELL", "SHORT", "BEAR", "DOWN")):
         return -1
-    entry = _bar_number(plan, "entry_price", "entry", "limit_price")  # type: ignore[arg-type]
-    target = _bar_number(plan, "target_price", "target", "take_profit_price")  # type: ignore[arg-type]
+    entry = _bar_number(plan, "entry_price", "entry", "limit_price")
+    target = _bar_number(plan, "target_price", "target", "take_profit_price")
     if math.isfinite(entry) and math.isfinite(target) and target != entry:
         return 1 if target > entry else -1
     return 0
@@ -90,7 +90,12 @@ class StructuralAuctionControlV3Bundle(_Base):
         bars = list(self._bars[1])
         if sign == 0 or len(bars) < 4:
             return None
-        observed_time = int(_number(getattr(plan, "observed_time_ns", _bar_time(bars[-1))))
+        observed_time = int(
+            _number(
+                getattr(plan, "observed_time_ns", _bar_time(bars[-1])),
+                float(_bar_time(bars[-1])),
+            )
+        )
         causal = [bar for bar in bars if _bar_time(bar) <= observed_time]
         if len(causal) < 4:
             return None
@@ -122,9 +127,9 @@ class StructuralAuctionControlV3Bundle(_Base):
             else 0.0
         )
 
-        volume = _bar_number(latest, "volume", "base_volume", "quote_volume")
+        volume = _bar_number(latest, "quote_volume", "volume", "base_volume")
         historical_volumes = [
-            _bar_number(bar, "volume", "base_volume", "quote_volume")
+            _bar_number(bar, "quote_volume", "volume", "base_volume")
             for bar in causal[-24:-1]
         ]
         historical_volumes = [value for value in historical_volumes if math.isfinite(value) and value > 0]
@@ -133,12 +138,13 @@ class StructuralAuctionControlV3Bundle(_Base):
 
         buy_volume = _bar_number(
             latest,
+            "taker_buy_quote_volume",
             "taker_buy_base_volume",
             "taker_buy_volume",
             "buy_volume",
             "aggressive_buy_volume",
         )
-        total_volume = _bar_number(latest, "volume", "base_volume")
+        total_volume = _bar_number(latest, "quote_volume", "volume", "base_volume")
         if math.isfinite(buy_volume) and math.isfinite(total_volume) and total_volume > 0:
             directional_flow = sign * (2.0 * buy_volume / total_volume - 1.0)
         else:
