@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -46,6 +47,11 @@ def check_causal_direction() -> None:
     short = build_directional_snapshot(bars, decision, "SHORT", 1.0)
     assert first.trend_alignment == -short.trend_alignment
 
+    expanded = bars.copy()
+    expanded.loc[expanded.index[decision - 60 : decision + 1], "quote_volume"] *= 4.0
+    active = build_directional_snapshot(expanded, decision, "LONG", 1.0)
+    assert active.activity_ratio > 3.5, "volume expansion was silently capped at one"
+
 
 def check_risk_and_lifecycle() -> None:
     sizing = size_three_percent_risk(
@@ -72,9 +78,12 @@ def _ns(timestamp: str) -> int:
 
 def check_market_event_and_account_router() -> None:
     rows = [
+        # Same causal event, same minute: ETH wins causal arbitration.
         dict(symbol="BTCUSDT", side="LONG", family="FAILED_AUCTION_REVERSAL", episode_id="a", interaction_time_ns=_ns("2025-01-01 00:00"), order_time_ns=_ns("2025-01-01 00:03"), order_terminal_time_ns=_ns("2025-01-01 00:12"), resolution_time_ns=_ns("2025-01-01 00:08"), opportunity_score=1.1, gross_rr=1.4, route_strength=2.0, mechanism_coherence=0.7, outcome="TARGET_FIRST", net_r=1.2, entry=100.0, stop=99.0, holding_minutes=5),
         dict(symbol="ETHUSDT", side="LONG", family="FAILED_AUCTION_REVERSAL", episode_id="b", interaction_time_ns=_ns("2025-01-01 00:02"), order_time_ns=_ns("2025-01-01 00:03"), order_terminal_time_ns=_ns("2025-01-01 00:10"), resolution_time_ns=_ns("2025-01-01 00:07"), opportunity_score=1.5, gross_rr=1.6, route_strength=2.0, mechanism_coherence=0.9, outcome="TARGET_FIRST", net_r=1.4, entry=200.0, stop=198.0, holding_minutes=4),
+        # Later observation of the same broad event cannot inflate trades.
         dict(symbol="SOLUSDT", side="LONG", family="INITIATIVE_MITIGATION_CONTINUATION", episode_id="c", interaction_time_ns=_ns("2025-01-01 00:05"), order_time_ns=_ns("2025-01-01 00:06"), order_terminal_time_ns=_ns("2025-01-01 00:09"), resolution_time_ns=_ns("2025-01-01 00:09"), opportunity_score=2.0, gross_rr=2.0, route_strength=2.0, mechanism_coherence=1.0, outcome="TARGET_FIRST", net_r=1.8, entry=50.0, stop=49.0, holding_minutes=3),
+        # Independent event after the account is free.
         dict(symbol="XRPUSDT", side="SHORT", family="ACCEPTED_AUCTION_CONTINUATION", episode_id="d", interaction_time_ns=_ns("2025-01-01 00:20"), order_time_ns=_ns("2025-01-01 00:22"), order_terminal_time_ns=_ns("2025-01-01 00:30"), resolution_time_ns=_ns("2025-01-01 00:27"), opportunity_score=1.2, gross_rr=1.3, route_strength=2.0, mechanism_coherence=0.8, outcome="STOP_FIRST", net_r=-1.0, entry=10.0, stop=10.2, holding_minutes=5),
     ]
     frame = pd.DataFrame(rows)
@@ -98,6 +107,8 @@ def check_source_contract() -> None:
     assert "sklearn" not in combined
     assert "class_weight" not in combined
     assert "force_time" not in combined.lower()
+    assert "right_low <= left_high" in policy
+    assert "right_high >= left_low" in policy
     assert "gross_rr < 1.0" in policy
     assert "one_plan" in policy.lower()
 
