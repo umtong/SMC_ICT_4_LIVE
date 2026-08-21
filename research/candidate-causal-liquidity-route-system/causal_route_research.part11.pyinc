@@ -1,0 +1,211 @@
+            "side": decision.side,
+            "confirmation_index": decision.confirmation_index,
+            "confirmation_time_ns": int(data.index[decision.confirmation_index].value),
+            "event_extreme": decision.event_extreme,
+            "zone_lower": decision.zone_lower,
+            "zone_upper": decision.zone_upper,
+            "location_kind": decision.location_kind,
+            "event_strength": decision.event_strength,
+            "event_value_migration_atr": decision.event_value_migration_atr,
+            "event_last_bar_flow_signed": decision.event_last_bar_flow_signed,
+            "event_consecutive_outside_closes": decision.consecutive_outside_closes,
+        }
+    )
+    response = _first_defended_return(data, source, decision, tick)
+    if response is None:
+        proxy = float(data.iloc[decision.confirmation_index].close)
+        provisional = decision.event_extreme if decision.branch == "FAILED_AUCTION_REVERSAL" else (source.lower if decision.side == "LONG" else source.upper)
+        mfe, mae = _counterfactual_path(data, decision.confirmation_index, decision.side, proxy, float(provisional))
+        diagnostic.update({"reason": "NO_FINAL_FLOW_CONTROL_ON_DEFENDED_RETURN", "counterfactual_mfe_r": mfe, "counterfactual_mae_r": mae})
+        return None, diagnostic
+    stop = _structural_stop(data, source, decision, response, tick)
+    entry_limit = _defended_limit_price(decision, decision.side, tick)
+    valid_stop = stop < entry_limit if decision.side == "LONG" else stop > entry_limit
+    if not valid_stop:
+        diagnostic["reason"] = "INVALID_DEFENDED_LIMIT_STOP_GEOMETRY"
+        return None, diagnostic
+    target, reason = _select_target(data, levels, metadata, response.response_index, entry_limit, stop, decision.side, tick)
+    if target is None:
+        mfe, mae = _counterfactual_path(data, response.response_index, decision.side, entry_limit, stop)
+        diagnostic.update(
+            {
+                "reason": reason,
+                "response_index": response.response_index,
+                "response_time_ns": int(data.index[response.response_index].value),
+                "entry_limit": entry_limit,
+                "counterfactual_mfe_r": mfe,
+                "counterfactual_mae_r": mae,
+            }
+        )
+        return None, diagnostic
+    label, fill_reason = _label_limit_trade(data, response, decision.side, entry_limit, stop, target.price, tick)
+    if label is None:
+        diagnostic.update(
+            {
+                "reason": fill_reason,
+                "response_index": response.response_index,
+                "response_time_ns": int(data.index[response.response_index].value),
+                "entry_limit": entry_limit,
+                "stop": stop,
+                "target": target.price,
+            }
+        )
+        return None, diagnostic
+    structure = context._active_structure_features(data, levels, response.response_index)
+    vote = _finite(structure.get("structure_multiscale_trend_vote"), 0.0)
+    score = _plan_score(source, decision, response, target, vote)
+    episode_id = f"CLR2:{symbol}:{int(data.index[source.interaction_index].value)}:{_stable(source.source_id)}"
+    plan = {
+        "episode_id": episode_id,
+        "symbol": symbol,
+        "side": decision.side,
+        "family": decision.branch,
+        "source_id": source.source_id,
+        "source_kind": source.source_kind,
+        "source_side": source.side,
+        "source_price": source.price,
+        "source_lower": source.lower,
+        "source_upper": source.upper,
+        "source_timeframe_minutes": source.timeframe_minutes,
+        "source_semantic_weight": source.semantic_weight,
+        "source_confluence_weight": source.confluence_weight,
+        "source_confluence_count": source.confluence_count,
+        "source_confluence_kinds": source.confluence_kinds,
+        "source_confluence_timeframes": source.confluence_timeframes,
+        "source_strength_ratio": source.strength_ratio,
+        "source_defense_count": source.defense_count,
+        "source_accumulated": source.accumulated,
+        "line_slope_atr_per_hour": source.line_slope_atr_per_hour,
+        "interaction_index": source.interaction_index,
+        "interaction_time_ns": int(data.index[source.interaction_index].value),
+        "confirmation_index": decision.confirmation_index,
+        "confirmation_time_ns": int(data.index[decision.confirmation_index].value),
+        "departure_index": response.departure_index,
+        "departure_time_ns": int(data.index[response.departure_index].value),
+        "touch_index": response.touch_index,
+        "touch_time_ns": int(data.index[response.touch_index].value),
+        "response_index": response.response_index,
+        "response_time_ns": int(data.index[response.response_index].value),
+        "location_kind": decision.location_kind,
+        "zone_lower": decision.zone_lower,
+        "zone_upper": decision.zone_upper,
+        "event_extreme": decision.event_extreme,
+        "event_strength": decision.event_strength,
+        "event_outside_close_ratio": decision.outside_close_ratio,
+        "event_outside_volume_ratio": decision.outside_volume_ratio,
+        "event_path_efficiency": decision.event_path_efficiency,
+        "event_activity_ratio": decision.event_activity_ratio,
+        "event_flow_signed": decision.event_flow_signed,
+        "event_last_bar_flow_signed": decision.event_last_bar_flow_signed,
+        "event_volume_clock": decision.event_volume_clock,
+        "event_consecutive_outside_closes": decision.consecutive_outside_closes,
+        "event_value_migration_atr": decision.event_value_migration_atr,
+        "event_vwap": decision.event_vwap,
+        "event_penetration_atr": decision.penetration_atr,
+        "response_kind": response.response_kind,
+        "response_strength": response.response_strength,
+        "response_flow_signed": response.response_flow_signed,
+        "response_activity_ratio": response.response_activity_ratio,
+        "response_body_atr": response.response_body_atr,
+        "response_delay_minutes": response.response_delay_minutes,
+        "entry_limit": entry_limit,
+        "target_level_id": target.level_id,
+        "target_kind": target.kind,
+        "target_structure_price": target.structure_price,
+        "target_zone_lower": target.zone_lower,
+        "target_zone_upper": target.zone_upper,
+        "target_timeframe_minutes": target.timeframe_minutes,
+        "target_semantic_weight": target.semantic_weight,
+        "route_clarity": target.route_clarity,
+        "route_barrier_count": target.barrier_count,
+        "route_strongest_barrier_ratio": target.strongest_barrier_ratio,
+        "route_volume_congestion": target.volume_congestion,
+        "structure_multiscale_trend_vote": vote,
+        "arbitration_score": score,
+        **asdict(label),
+    }
+    diagnostic.update({"reason": "TRADE_PLAN", "episode_id": episode_id, "entry_limit": entry_limit})
+    return plan, diagnostic
+
+
+def _account_route(plans: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    if plans.empty:
+        return plans.copy(), pd.DataFrame(), {
+            "trades": 0, "wins": 0, "win_rate": 0.0, "average_net_r": 0.0,
+            "payoff_ratio": 0.0, "profit_factor": 0.0, "nav_final": 1.0, "max_drawdown": 0.0,
+        }
+    resolved = plans[plans.net_r.notna() & plans.resolution_time_ns.notna()].copy()
+    resolved = resolved.sort_values(["entry_time_ns", "arbitration_score", "episode_id"], ascending=[True, False, True])
+    selected: list[pd.Series] = []
+    skipped: list[dict[str, Any]] = []
+    flat_after_ns = -1
+    while not resolved.empty:
+        eligible = resolved[(resolved.order_time_ns >= flat_after_ns) & (resolved.entry_time_ns >= flat_after_ns)].copy()
+        ineligible = resolved.drop(index=eligible.index)
+        for _, row in ineligible.iterrows():
+            item = row.to_dict()
+            item["account_skip_reason"] = "ORDER_CREATED_DURING_OR_CANCELED_BY_PRIOR_POSITION"
+            skipped.append(item)
+        if eligible.empty:
+            break
+        first_fill = int(eligible.entry_time_ns.min())
+        simultaneous = eligible[eligible.entry_time_ns == first_fill].sort_values(
+            ["arbitration_score", "gross_rr", "episode_id"], ascending=[False, False, True]
+        )
+        winner = simultaneous.iloc[0]
+        selected.append(winner)
+        fill_ns = int(winner.entry_time_ns)
+        resolution_ns = int(winner.resolution_time_ns)
+        canceled = eligible[
+            (eligible.index != winner.name)
+            & (eligible.order_time_ns <= fill_ns)
+        ]
+        for _, row in canceled.iterrows():
+            item = row.to_dict()
+            item["account_skip_reason"] = "PENDING_ORDER_CANCELED_WHEN_OTHER_ROUTE_FILLED"
+            skipped.append(item)
+        later = eligible.drop(index=[winner.name, *canceled.index.tolist()])
+        during = later[later.order_time_ns < resolution_ns]
+        for _, row in during.iterrows():
+            item = row.to_dict()
+            item["account_skip_reason"] = "ORDER_CREATED_WHILE_GLOBAL_POSITION_OPEN"
+            skipped.append(item)
+        resolved = later.drop(index=during.index)
+        flat_after_ns = resolution_ns
+    trades = pd.DataFrame([row.to_dict() for row in selected])
+    nav, peak, max_drawdown = 1.0, 1.0, 0.0
+    if not trades.empty:
+        trades = trades.sort_values("entry_time_ns").reset_index(drop=True)
+        before, after, drawdowns = [], [], []
+        for value in pd.to_numeric(trades.net_r, errors="coerce").fillna(0.0):
+            before.append(nav)
+            nav *= max(EPS, 1.0 + RISK_FRACTION * float(value))
+            peak = max(peak, nav)
+            drawdown = nav / peak - 1.0
+            max_drawdown = min(max_drawdown, drawdown)
+            after.append(nav)
+            drawdowns.append(drawdown)
+        trades["nav_before"], trades["nav_after"], trades["drawdown"] = before, after, drawdowns
+    values = pd.to_numeric(trades.get("net_r", pd.Series(dtype=float)), errors="coerce").dropna()
+    wins, losses = values[values > 0.0], values[values < 0.0]
+    metrics = {
+        "trades": int(len(values)),
+        "wins": int((values > 0.0).sum()),
+        "losses": int((values < 0.0).sum()),
+        "win_rate": float((values > 0.0).mean()) if len(values) else 0.0,
+        "average_net_r": float(values.mean()) if len(values) else 0.0,
+        "average_win_r": float(wins.mean()) if len(wins) else 0.0,
+        "average_loss_r": float(losses.mean()) if len(losses) else 0.0,
+        "payoff_ratio": float(wins.mean() / abs(losses.mean())) if len(wins) and len(losses) else 0.0,
+        "profit_factor": float(wins.sum() / abs(losses.sum())) if len(wins) and len(losses) else (float("inf") if len(wins) else 0.0),
+        "nav_final": float(nav),
+        "max_drawdown": float(max_drawdown),
+        "median_holding_minutes": float(pd.to_numeric(trades.holding_minutes, errors="coerce").median()) if not trades.empty else 0.0,
+        "median_fill_delay_minutes": float(pd.to_numeric(trades.fill_delay_minutes, errors="coerce").median()) if not trades.empty else 0.0,
+        "mean_gross_rr": float(pd.to_numeric(trades.gross_rr, errors="coerce").mean()) if not trades.empty else 0.0,
+    }
+    return trades, pd.DataFrame(skipped), metrics
+
+
+if __name__ == "__main__":
+    main()
