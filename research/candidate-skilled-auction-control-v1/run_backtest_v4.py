@@ -1,46 +1,52 @@
 #!/usr/bin/env python3
-"""Execute structural auction control v4 through the inherited v1 harness."""
+"""Execute structural auction control v4 in the existing continuous account."""
 from __future__ import annotations
 
-import sys
+import json
 from pathlib import Path
-from types import ModuleType
+import sys
 
-HERE = Path(__file__).resolve().parent
-for path in (
-    HERE,
-    HERE.parent / "candidate-easychart_re1",
-    HERE.parent / "candidate-easychart-v5",
-    HERE.parent / "candidate-easychart-v3",
-):
-    value = str(path)
-    if value not in sys.path:
-        sys.path.insert(0, value)
-
+import run_mtf_backtest_re1_flow as _flow
 from structural_auction_control_v4 import StructuralAuctionControlV4Bundle
-import skilled_auction_control_v1 as v1_policy
-
-v1_policy.SkilledAuctionControlV1Bundle = StructuralAuctionControlV4Bundle
-v1_policy.MultiScaleScenarioBundle = StructuralAuctionControlV4Bundle
-
-import run_backtest as inherited
 
 
-def main() -> None:
-    direct = getattr(inherited, "main", None)
-    if callable(direct):
-        direct()
-        return
-    preferred = getattr(inherited, "runner", None)
-    if isinstance(preferred, ModuleType) and callable(getattr(preferred, "main", None)):
-        preferred.main()
-        return
-    for value in vars(inherited).values():
-        if isinstance(value, ModuleType) and callable(getattr(value, "main", None)):
-            value.main()
-            return
-    raise RuntimeError("the inherited v1 backtest entrypoint exposes no callable main")
+# Reuse the proven flow-data, strategy, execution, fee and continuous-account
+# harness.  Replace only the decision bundle before invoking its real runner.
+_flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV4Bundle
+
+
+def _rewrite(output: Path) -> None:
+    _flow._rewrite_metadata(output)
+    metadata = {
+        "candidate": "candidate-structural-auction-control-v4",
+        "decision_policy": (
+            "public structure lifecycle -> completed price-volume response -> "
+            "non-synthetic structural stop and first causal destination"
+        ),
+        "mechanism_owners": [
+            "CHANNEL_ACCEPTANCE",
+            "CHANNEL_REJECTION",
+            "CHANNEL_FAILURE",
+            "TRENDLINE_ACCEPTANCE",
+            "TRENDLINE_REJECTION",
+            "CHANNEL_BOUNCE",
+            "TRENDLINE_BOUNCE",
+        ],
+    }
+    for name in ("metrics.json", "run.json"):
+        path = output / name
+        if not path.exists():
+            continue
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.update(metadata)
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":
-    main()
+    destination = _flow._output_path(sys.argv)
+    _flow._runner.main()
+    if destination is not None:
+        _rewrite(destination)
