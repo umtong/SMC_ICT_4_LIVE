@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Candidate 1a overlay for the inherited auction-episode harvester.
 
-This module deliberately reuses the v3-v7/episode implementation.  It only repairs the
-interface drift between the v6 generator and the v4 semantic-liquidity ledger, then
-executes the complete inherited causal episode pipeline.
+This module deliberately reuses the v3-v7/episode implementation.  It repairs the
+small interface drift created while the v4 semantic ledger, v5 first-return engine and
+v6 sequential episode state were developed on separate branches, then executes the
+complete inherited causal episode pipeline.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import Any
 import auction_episode_harvest as episode
 
 core = episode.core
+narrative = core.core
 _original_direction_sources = core.direction_sources
 
 
@@ -30,10 +32,16 @@ def _direction_sources_compat(
     ]
 
 
-# v6 introduced this optional threshold after v5/v4 had already fixed the semantic
-# source set.  A zero default preserves the v4 semantics instead of inventing a new
-# filter, while the compatibility wrapper keeps future nonzero settings meaningful.
-core.MINIMUM_SOURCE_TIMEFRAME = int(getattr(core, "MINIMUM_SOURCE_TIMEFRAME", 0))
+# v6 calls helpers through the v5 module, while the helpers still live in the coherent
+# narrative module nested at v5.core.  Expose the original implementations rather than
+# copying or replacing their logic.
+core.MINIMUM_SOURCE_TIMEFRAME = int(
+    getattr(core, "MINIMUM_SOURCE_TIMEFRAME", narrative.MINIMUM_SOURCE_TIMEFRAME)
+)
+core.MAX_RESPONSE_BARS = int(
+    getattr(core, "MAX_RESPONSE_BARS", narrative.MAX_RESPONSE_BARS)
+)
+core._atr_price = getattr(core, "_atr_price", narrative._atr_price)
 core.direction_sources = _direction_sources_compat
 
 
