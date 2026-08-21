@@ -1,53 +1,91 @@
 # Candidate Liquidity Episode Policy V1
 
-This directory restores the research unit that was missing from the repository.
+This branch is the repository-resident restoration of
+`research/candidate-liquidity-episode-policy-v1`. It is intentionally usable
+without any chat attachment or local-only artifact.
 
-It continues from `candidate-liquidity-world-model-v1`; it does not restart the
-liquidity-auction work from zero and it does not preserve the old policy as a
-benchmark. Reused components are limited to point-in-time market preparation,
-semantic/directional-change liquidity, destination-first plan geometry, fee and
-slippage assumptions, and the one-plan episode contract.
-
-## Trading grammar
+## Restored trading grammar
 
 ```text
 public liquidity and market structure
 -> causal interaction episode
--> completed price-volume control evidence
--> one first-return location
+-> completed price/volume control evidence
+-> one first-return entry origin
 -> one structural invalidation
--> one fresh opposing destination
+-> one pre-existing opposing destination
 -> one pending order
+-> one global account slot
 ```
 
-The three current mechanisms share that grammar:
+The shared four-symbol policy represents three mechanisms:
 
 - failed-auction reversal after a sweep and reclaim;
 - accepted-auction continuation after outside acceptance and a held retest;
 - initiative-mitigation continuation inside a still-live larger auction leg.
 
-OB and FVG are entry-origin tools, not standalone strategies. Trend lines,
-channels and swing structure define public liquidity and direction context.
-Fakeout/trap is the interaction event. Price response, activity, signed flow,
-cross-market breadth and relative return are control evidence.
+OB and FVG are entry-origin geometry, not standalone signals. Swing structure,
+trend lines and channel boundaries are public liquidity and route context.
+Fakeout/trap is the interaction episode. Price response, activity, signed flow,
+cross-market breadth, relative return, basis and open-interest state are causal
+control evidence.
 
-## What is structurally different from the old lattice
+## Structural contracts
 
-- one causal episode can create at most one plan;
-- the destination is selected before reward/risk is calculated;
-- no proximal/midpoint x fixed-RR plan expansion;
-- no hindsight best-plan label;
-- no post-fill time exit;
-- an unfilled order may die only with the original entry opportunity;
-- BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT share one pending/position slot.
+- BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT use the same policy.
+- One causal episode may create at most one executable plan.
+- The opposing destination is selected before reward/risk is calculated.
+- Synthetic `CAUSAL_DEPARTURE_BAND` entries are rejected.
+- A filled position exits only through its declared TP or SL.
+- An unfilled order dies only with its original causal opportunity.
+- Model labels enter training only after their fill/cancel or TP/SL result was
+  observable.
+- No heuristic probability fallback may trade when mature history is
+  insufficient.
+- All symbols share one pending/position slot and one continuous account path.
 
-`episode_policy.py` enriches the existing destination-first episode generator
-with causal decision-time market context. `route_episode_policy.py` estimates
-fill and target-before-stop probabilities using only chronologically earlier
-development windows. The account decision is positive expected log growth at
-the fixed 3% risk, not a separate scorecard.
+## Restoration provenance
 
-The short workflow is diagnostic. It deliberately uses separated one-week
-windows and labels the result as non-continuous. A long continuous run is only
-worth the compute after the actual trades and missed opportunities show that
-the market logic is coherent.
+The branch was created from `research_liquidity_episode_policy`. The base
+router file had disappeared from the tip even though
+`route_episode_policy_causal.py` still imported it. The exact historical blob
+was restored:
+
+- historical commit:
+  `8ec7bbc6c6f29b0bae5b2d386106056ca8697d4e`
+- restored `route_episode_policy.py` blob:
+  `92459a08e98a634ec0a096ec1d567c78abdff7a9`
+
+No replacement router was invented for the restoration.
+
+## Reproduction
+
+The pinned workflow is:
+
+```text
+.github/workflows/candidate-liquidity-episode-policy-v1.yml
+```
+
+On every source push to this branch it:
+
+1. checks out the exact triggering SHA;
+2. runs in the pinned research-container digest;
+3. installs the pinned strict-router dependency;
+4. compiles and imports the entire restored policy;
+5. runs a network-free chronological-model and global-account self-check;
+6. harvests a fixed public-data smoke interval for all four symbols;
+7. commits compact source-bound evidence to
+   `research_results/candidate_liquidity_episode_policy_v1/latest`.
+
+Full artifacts remain attached to the GitHub Actions run. The compact committed
+record contains only JSON summaries and source identity, not a substitute result.
+
+Exact local/container commands and the meaning of each evidence file are in
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+
+## Important evidence boundary
+
+A successful reproduction workflow proves that the repository contains an
+executable causal policy, strict router and real-data harvest path at that SHA.
+It does **not** by itself prove long-horizon after-cost alpha or months of live
+paper stability. Those claims require their own committed continuous-account
+and shadow records generated by the same frozen source.

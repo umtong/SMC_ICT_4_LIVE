@@ -1,0 +1,200 @@
+name: Candidate liquidity episode policy v1 reproduction
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_real_smoke:
+        description: "Run the four-symbol real-data smoke harvest"
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches: ["candidate-liquidity-episode-policy-v1"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-policy-v1.yml"
+      - "research/candidate-liquidity-episode-policy-v1/**"
+      - "research/candidate-liquidity-world-model-v1/**"
+      - "research/candidate-liquidity-auction-v2/dynamic_boundaries.py"
+      - "research/candidate-liquidity-auction-v5/**"
+
+concurrency:
+  group: candidate-liquidity-episode-policy-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-liquidity-episode-policy-v1
+  CACHE: .cache/candidate-liquidity-episode-policy-v1
+  ARTIFACTS: artifacts/candidate-liquidity-episode-policy-v1
+  PYTHONUNBUFFERED: "1"
+  PYTHONPATH: research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+
+jobs:
+  deterministic-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install exact router dependency
+        run: |
+          set -euo pipefail
+          uv pip install \
+            --python "$VIRTUAL_ENV/bin/python" \
+            --requirement "$CANDIDATE/runtime-requirements.txt"
+
+      - name: Verify restored source and deterministic account contract
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS/contract"
+          python "$CANDIDATE/reproduce.py" verify \
+            --output "$ARTIFACTS/contract" \
+            2>&1 | tee "$ARTIFACTS/contract/verify.log"
+          python "$CANDIDATE/self_check_reproduction.py" \
+            --output "$ARTIFACTS/contract/self_check.json" \
+            2>&1 | tee "$ARTIFACTS/contract/self_check.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-liquidity-episode-policy-v1-contract
+          path: artifacts/candidate-liquidity-episode-policy-v1/contract/**
+          if-no-files-found: error
+          retention-days: 30
+
+  real-data-smoke:
+    needs: deterministic-contract
+    if: ${{ github.event_name == 'push' || inputs.run_real_smoke }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install exact router dependency
+        run: |
+          set -euo pipefail
+          uv pip install \
+            --python "$VIRTUAL_ENV/bin/python" \
+            --requirement "$CANDIDATE/runtime-requirements.txt"
+
+      - name: Harvest four-symbol causal episodes on fixed public data
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ARTIFACTS/smoke/dev-2025-feb"
+          python "$CANDIDATE/reproduce.py" harvest \
+            --start 2025-02-01 --end 2025-02-04 --warmup-days 75 \
+            --period dev-2025-feb \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ARTIFACTS/smoke/dev-2025-feb" \
+            2>&1 | tee "$ARTIFACTS/smoke/harvest.log"
+
+      - name: Verify real-data artifacts and source identity
+        run: |
+          set -euo pipefail
+          python "$CANDIDATE/reproduce.py" inspect \
+            --root "$ARTIFACTS/smoke" \
+            --output "$ARTIFACTS/smoke/inspection.json"
+          test -f "$ARTIFACTS/smoke/dev-2025-feb/departure_actions.csv.gz"
+          test -f "$ARTIFACTS/smoke/dev-2025-feb/summary.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-liquidity-episode-policy-v1-real-smoke
+          path: artifacts/candidate-liquidity-episode-policy-v1/smoke/**
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-reproduction-record:
+    needs: [deterministic-contract, real-data-smoke]
+    if: ${{ always() && github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Prepare download directory
+        run: mkdir -p .reproduction-download
+
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.deterministic-contract.result == 'success' }}
+        with:
+          name: candidate-liquidity-episode-policy-v1-contract
+          path: .reproduction-download/contract
+
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.real-data-smoke.result == 'success' }}
+        with:
+          name: candidate-liquidity-episode-policy-v1-real-smoke
+          path: .reproduction-download/smoke
+
+      - name: Commit compact, durable reproduction record to this branch
+        run: |
+          set -euo pipefail
+          destination=research_results/candidate_liquidity_episode_policy_v1/latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+
+          find .reproduction-download -type f \( \
+            -name 'verify.json' -o \
+            -name 'self_check.json' -o \
+            -name 'inspection.json' -o \
+            -name 'summary.json' \
+          \) -print0 | while IFS= read -r -d '' file; do
+            relative=${file#.reproduction-download/}
+            mkdir -p "$destination/$(dirname "$relative")"
+            cp "$file" "$destination/$relative"
+          done
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          out = Path("research_results/candidate_liquidity_episode_policy_v1/latest")
+          payload = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "source_branch": os.environ["GITHUB_REF_NAME"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "deterministic_contract_job": "${{ needs.deterministic-contract.result }}",
+              "real_data_smoke_job": "${{ needs.real-data-smoke.result }}",
+              "record_is_compact_not_full_artifact": True,
+          }
+          (out / "run.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record candidate episode-policy reproduction" || exit 0
+          git push origin HEAD:candidate-liquidity-episode-policy-v1
+
+      - name: Preserve failure as workflow failure
+        if: always()
+        run: |
+          test "${{ needs.deterministic-contract.result }}" = "success"
+          test "${{ needs.real-data-smoke.result }}" = "success"
