@@ -9,7 +9,7 @@ on:
       - ".dispatch-structural-auction-control-source-snapshot"
 
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research_structural_auction_control
+          fetch-depth: 0
       - name: Package complete relevant source
         run: |
           set -euo pipefail
@@ -45,3 +46,20 @@ jobs:
           path: /tmp/structural-auction-control-source.tar.gz
           retention-days: 7
           if-no-files-found: error
+      - name: Record snapshot run identity
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research_structural_auction_control
+            git reset --hard origin/research_structural_auction_control
+            printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+              > .latest-structural-auction-control-source-snapshot
+            git add .latest-structural-auction-control-source-snapshot
+            git commit -m "Record structural source snapshot $GITHUB_RUN_ID" || exit 0
+            if git push origin HEAD:research_structural_auction_control; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
