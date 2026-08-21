@@ -1,0 +1,73 @@
+name: Research causal liquidity route executable smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_causal_liquidity_route_system"]
+    paths:
+      - ".github/workflows/research-causal-liquidity-route-smoke.yml"
+      - "research/candidate-causal-liquidity-route-system/**"
+
+concurrency:
+  group: research-causal-liquidity-route-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-causal-liquidity-route-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_causal_liquidity_route_system
+      - name: Compile fragments and run one-day BTC executable smoke
+        run: |
+          set +e
+          mkdir -p .cache/causal-route-smoke artifacts/causal-route-smoke
+          python research/candidate-causal-liquidity-route-system/causal_route_research.py --help \
+            > artifacts/causal-route-smoke/help.log 2>&1
+          help_status=$?
+          if [ "$help_status" -eq 0 ]; then
+            python research/candidate-causal-liquidity-route-system/causal_route_research.py \
+              --start 2025-08-18 --end 2025-08-19 --role dev --warmup-days 21 \
+              --symbols BTCUSDT \
+              --cache .cache/causal-route-smoke \
+              --output artifacts/causal-route-smoke/result \
+              > artifacts/causal-route-smoke/run.log 2>&1
+            run_status=$?
+          else
+            run_status=97
+          fi
+          mkdir -p research_results/causal_liquidity_route_system/executable_smoke
+          cp artifacts/causal-route-smoke/help.log research_results/causal_liquidity_route_system/executable_smoke/help.log || true
+          cp artifacts/causal-route-smoke/run.log research_results/causal_liquidity_route_system/executable_smoke/run.log || true
+          cp artifacts/causal-route-smoke/result/summary.json research_results/causal_liquidity_route_system/executable_smoke/summary.json || true
+          printf '{"help_status":%s,"run_status":%s,"head_sha":"%s"}\n' \
+            "$help_status" "$run_status" "$GITHUB_SHA" \
+            > research_results/causal_liquidity_route_system/executable_smoke/status.json
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research_results/causal_liquidity_route_system/executable_smoke
+          if ! git diff --cached --quiet; then
+            git commit -m "Record causal route executable smoke [skip ci]"
+            git push origin HEAD:research_causal_liquidity_route_system
+          fi
+          exit "$run_status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: causal-liquidity-route-executable-smoke
+          path: artifacts/causal-route-smoke/**
+          if-no-files-found: warn
+          retention-days: 14
