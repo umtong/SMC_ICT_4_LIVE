@@ -1,0 +1,74 @@
+name: Directional liquidity policy v2 fast diagnosis
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["research_directional_liquidity_policy_v2"]
+    paths:
+      - ".github/directional-liquidity-policy-v2-smoke-trigger"
+      - ".github/workflows/research-directional-liquidity-policy-v2-smoke.yml"
+
+concurrency:
+  group: research-directional-liquidity-policy-v2-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-directional-liquidity-policy-v2
+  PYTHONPATH: research/candidate-directional-liquidity-policy-v2:research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/directional-liquidity-policy-v2-smoke
+      OUT: artifacts/directional-liquidity-policy-v2-smoke/dev-2025-feb
+      RESULT: artifacts/directional-liquidity-policy-v2-smoke/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_directional_liquidity_policy_v2
+      - name: Structural self-check
+        run: python "$CANDIDATE/self_check.py"
+      - name: Harvest one short four-market diagnostic
+        run: |
+          set -o pipefail
+          mkdir -p "$CACHE" "$OUT" "$RESULT"
+          python "$CANDIDATE/episode_policy_exec.py" \
+            --start 2025-02-01 --end 2025-02-04 --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" \
+            2>&1 | tee "$OUT/harvest.log"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("artifacts/directional-liquidity-policy-v2-smoke/dev-2025-feb/summary.json")
+          data = json.loads(path.read_text())
+          data.update({"period":"dev-2025-feb-smoke","role":"dev","source_sha":"${{ github.sha }}"})
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
+          PY
+      - name: Route actual global-slot account
+        run: |
+          set -o pipefail
+          python "$CANDIDATE/route_directional_policy_causal.py" \
+            --root artifacts/directional-liquidity-policy-v2-smoke \
+            --output "$RESULT" 2>&1 | tee "$RESULT/route.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: directional-liquidity-policy-v2-fast-diagnosis
+          path: artifacts/directional-liquidity-policy-v2-smoke/**
+          if-no-files-found: error
+          retention-days: 30
