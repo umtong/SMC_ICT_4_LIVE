@@ -1,0 +1,130 @@
+name: Research liquidity world model short diagnosis
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_world_model"]
+    paths:
+      - ".github/workflows/research-liquidity-world-model-short.yml"
+      - "research/candidate-liquidity-world-model-v1/**"
+
+concurrency:
+  group: research-liquidity-world-model-short
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/liquidity-world-model/${{ matrix.period }}
+      OUT: artifacts/liquidity-world-model/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      PERIOD: ${{ matrix.period }}
+      ROLE: ${{ matrix.role }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_world_model
+      - name: Harvest one-plan causal episodes
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-liquidity-world-model-v1/world_model_exec.py \
+            --start "$START" --end "$END" --warmup-days 75 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["OUT"]) / "summary.json"
+          data = json.loads(path.read_text())
+          data["period"] = os.environ["PERIOD"]
+          data["role"] = os.environ["ROLE"]
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
+          PY
+      - name: Preserve exact price-volume path
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "$PERIOD" --start "$START" --end "$END" \
+            --cache "$CACHE" --output "$OUT/chart"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-world-model-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/liquidity-world-model/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-world-model-v1
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_world_model
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-world-model-*
+          path: artifacts/liquidity-world-model/universe
+      - name: Route one continuous four-market account
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/liquidity-world-model/result
+          python research/candidate-liquidity-world-model-v1/route_world_model.py \
+            --root artifacts/liquidity-world-model/universe \
+            --output artifacts/liquidity-world-model/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-world-model-short-result
+          path: artifacts/liquidity-world-model/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish compact research result on branch
+        run: |
+          set -euo pipefail
+          destination=research_results/liquidity_world_model_v1/latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp artifacts/liquidity-world-model/result/summary.json "$destination/summary.json"
+          cp artifacts/liquidity-world-model/result/selected_orders.csv "$destination/selected_orders.csv"
+          cp artifacts/liquidity-world-model/result/closed_trades.csv "$destination/closed_trades.csv"
+          cp artifacts/liquidity-world-model/result/largest_missed_no_trade_episodes.csv "$destination/largest_missed_no_trade_episodes.csv"
+          printf '{"source_sha":"%s","published_at":"%s"}\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "$destination/run.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record liquidity world-model short diagnosis" || exit 0
+          git push origin HEAD:research_liquidity_world_model

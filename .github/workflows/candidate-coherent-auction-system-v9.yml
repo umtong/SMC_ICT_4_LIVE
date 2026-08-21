@@ -1,0 +1,100 @@
+name: candidate-coherent-auction-system-v9
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-auction-system-v9/.dispatch"
+
+concurrency:
+  group: candidate-coherent-auction-system-v9
+  cancel-in-progress: true
+permissions:
+  actions: read
+  contents: write
+  packages: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  consensus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 520
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v9:research/candidate-coherent-auction-system-v6:research/candidate-coherent-auction-system-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-liquidity-policy-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-coherent-auction-system-v7/.latest-run').read_text())['run_id'])
+          PY
+          )
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          DONE=0
+          for _ in $(seq 1 1000); do
+            PAYLOAD=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+            STATUS=$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$PAYLOAD");CONCLUSION=$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion"))' <<<"$PAYLOAD")
+            if [ "$STATUS" = completed ]; then [ "$CONCLUSION" = success ] || { echo "v7 failed $CONCLUSION" >&2;exit 1; };DONE=1;break;fi
+            sleep 30
+          done
+          [ "$DONE" = 1 ] || { echo 'v7 timeout' >&2;exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: coherent-auction-v7-*
+          path: downloaded
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          name: coherent-auction-system-v7-research
+          path: model-download
+      - name: Run reliability-shrunk positive-EV consensus and audit
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-coherent-auction-system-v9/balanced_consensus.py
+          MODEL_RESULT=$(dirname "$(find model-download -name scored_action_universe.csv -print -quit)");[ -n "$MODEL_RESULT" ] || { echo 'v7 result missing' >&2;exit 1; }
+          mkdir -p result audit cases cache
+          python research/candidate-coherent-auction-system-v9/balanced_consensus.py --root downloaded --model-result "$MODEL_RESULT" --output result
+          python research/candidate-coherent-auction-system-v4/audit_v4.py --root downloaded --result result --output audit
+      - name: Render every filled balanced-consensus trade
+        run: |
+          set -euo pipefail
+          COUNT=$(python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          print(sum(len(pd.read_csv(Path('result')/name)) for name in ('development_oof_account_trades.csv','evaluation_account_trades.csv') if (Path('result')/name).exists()))
+          PY
+          )
+          if [ "$COUNT" -gt 0 ]; then python research/candidate-coherent-liquidity-policy-v1/render_selected.py --result result --cache cache --output cases; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coherent-auction-system-v9-research
+          path: |
+            result/**
+            audit/**
+            cases/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve compact v9 evidence
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]";git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-coherent-auction-system-v9/LATEST_RESULT.json;cp audit/audit_summary.json research/candidate-coherent-auction-system-v9/LATEST_AUDIT.json
+          git add research/candidate-coherent-auction-system-v9/LATEST_RESULT.json research/candidate-coherent-auction-system-v9/LATEST_AUDIT.json;git commit -m "Preserve coherent auction v9 research $GITHUB_RUN_ID" || exit 0;git pull --rebase origin research_ML_thinking;git push origin HEAD:research_ML_thinking

@@ -1,0 +1,174 @@
+name: candidate-directional-liquidity-policy-v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-directional-liquidity-policy-v1/**"
+      - "!research/candidate-directional-liquidity-policy-v1/.latest-run"
+      - ".github/workflows/candidate-directional-liquidity-policy-v1.yml"
+
+concurrency:
+  group: candidate-directional-liquidity-policy-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run identity without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > research/candidate-directional-liquidity-policy-v1/.latest-run
+          git add research/candidate-directional-liquidity-policy-v1/.latest-run
+          git commit -m "Record directional liquidity run $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_ML_thinking
+
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-directional-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unified direction-liquidity policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-directional-liquidity-policy-v1/directional_liquidity.py \
+            research/candidate-directional-liquidity-policy-v1/run_research.py \
+            research/candidate-directional-liquidity-policy-v1/train_policy.py
+          python - <<'PY'
+          from directional_liquidity import POLICY, TARGET_PIVOT_SPANS
+          from train_policy import RISK_FRACTION, MODEL_SEEDS
+          assert POLICY.startswith('DIRECTIONAL_LIQUIDITY_NARRATIVE:')
+          assert 5 in TARGET_PIVOT_SPANS and 15 in TARGET_PIVOT_SPANS and 60 in TARGET_PIVOT_SPANS
+          assert abs(RISK_FRACTION-0.03) < 1e-12
+          assert len(MODEL_SEEDS) >= 3
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-directional-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-directional-liquidity-policy-v1/${{ matrix.period }}
+      OUT: artifacts/candidate-directional-liquidity-policy-v1/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build causal routes and executable first-return plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-directional-liquidity-policy-v1/run_research.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - name: Verify causal identity and immutable geometry
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT'])
+          routes=pd.read_csv(out/'routes.csv')
+          actions=pd.read_csv(out/'actions.csv')
+          if routes.empty or actions.empty:
+              raise RuntimeError(f'empty route/action universe routes={len(routes)} actions={len(actions)}')
+          if routes.route_id.duplicated().any() or actions.action_id.duplicated().any():
+              raise RuntimeError('duplicate causal identity')
+          if not actions.episode_id.isin(routes.route_id).all():
+              raise RuntimeError('action without owning directional route')
+          if not (pd.to_numeric(actions.gross_rr) >= 1.0).all():
+              raise RuntimeError('gross RR below user rule')
+          if not (pd.to_numeric(actions.emission_time_ns) > pd.to_numeric(actions.interaction_time_ns)).all():
+              raise RuntimeError('entry decision did not follow liquidity interaction')
+          forbidden=[c for c in actions.columns if c.startswith(('route_','liquidity_','structure_','entry_')) and any(t in c.lower() for t in ('outcome','resolution','mfe','mae','holding','fill_time'))]
+          if forbidden:
+              raise RuntimeError(f'future fields entered causal feature namespace: {forbidden}')
+          print({'routes':len(routes),'actions':len(actions),'event_kinds':routes.event_kind.value_counts().to_dict()})
+          PY
+      - name: Preserve causal route and action universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: directional-liquidity-v1-${{ matrix.period }}
+          path: artifacts/candidate-directional-liquidity-policy-v1/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  learn-and-account:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-directional-liquidity-policy-v1
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: directional-liquidity-v1-dev-*
+          path: artifacts/directional-liquidity-input
+          merge-multiple: false
+      - name: Learn blocked directional and entry evidence and execute one account
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/directional-liquidity-policy
+          python research/candidate-directional-liquidity-policy-v1/train_policy.py \
+            --input-root artifacts/directional-liquidity-input \
+            --output artifacts/directional-liquidity-policy
+      - name: Preserve policy, scored actions and account ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: directional-liquidity-policy-v1
+          path: artifacts/directional-liquidity-policy/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6

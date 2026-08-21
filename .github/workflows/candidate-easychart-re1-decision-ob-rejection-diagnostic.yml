@@ -1,0 +1,51 @@
+name: candidate-easychart-re1-decision-ob-rejection-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.decision_ob_rejection_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-decision-ob-rejection-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: dev-february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {period: dev-february-2026, start: 2026-02-01, end: 2026-02-14}
+          - {period: guard-may-2024, start: 2024-05-01, end: 2024-05-14}
+          - {period: guard-november-2025, start: 2025-11-01, end: 2025-11-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/decision-ob-rejection/${{ matrix.period }}
+      OUT: artifacts/decision-ob-rejection/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile rejection-only decision-OB candidate
+        run: python -m py_compile research/candidate-easychart_re1/easychart_re1_decision_ob_rejection.py research/candidate-easychart_re1/run_mtf_backtest_re1_decision_ob_rejection.py research/candidate-easychart_re1/execution_re1_flow.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_decision_ob_rejection import EasyChartRE1DecisionOBRejectionBundle
+          b = EasyChartRE1DecisionOBRejectionBundle("BTCUSDT", 0.1, 1.0)
+          d = b.diagnostics["flow_validated_decision_ob_rejection_only"]
+          assert d["executable_paths"] == ("REJECTION",)
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_decision_ob_rejection.py --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 14 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decision-ob-rejection-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/decision-ob-rejection/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30

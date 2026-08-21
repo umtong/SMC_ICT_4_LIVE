@@ -1,0 +1,58 @@
+name: candidate-easychart-re1-venue-safe-smoke
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/execution_re1_venue_safe.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_decision_area_venue_safe.py"
+      - ".github/workflows/candidate-easychart-re1-venue-safe-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-venue-safe-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: dev-smoke, start: 2024-02-01, end: 2024-02-07}
+          - {period: random-smoke, start: 2025-06-09, end: 2025-06-15}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/re1-venue-safe/${{ matrix.period }}
+      OUT: artifacts/re1-venue-safe/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile transport
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/execution_re1_venue_safe.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_decision_area_venue_safe.py
+      - name: Run replacement lifecycle in BacktestEngine
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_decision_area_venue_safe.py \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: re1-venue-safe-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/re1-venue-safe/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90

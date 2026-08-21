@@ -1,0 +1,76 @@
+name: candidate-easychart-re1-efficient-pullback-final-research
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.efficient_pullback_final_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-efficient-pullback-final-research
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  research:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024-guard, start: 2024-05-01, end: 2024-05-14, warmup: 14, timeout: 90}
+          - {period: february-2025-short, start: 2025-02-01, end: 2025-02-10, warmup: 14, timeout: 90}
+          - {period: live-examples-2025-short, start: 2025-08-10, end: 2025-08-20, warmup: 14, timeout: 90}
+          - {period: november-2025-guard, start: 2025-11-01, end: 2025-11-14, warmup: 14, timeout: 90}
+          - {period: february-2026-guard, start: 2026-02-01, end: 2026-02-14, warmup: 14, timeout: 90}
+          - {period: fresh-medium-2024-q1, start: 2024-02-01, end: 2024-04-30, warmup: 30, timeout: 180}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-efficient-pullback-final/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-efficient-pullback-final/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the actual integrated strategy
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_efficient_pullback.py \
+            research/candidate-easychart_re1/easychart_re1_efficient_pullback_v2.py \
+            research/candidate-easychart_re1/easychart_re1_efficient_pullback_final.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_efficient_pullback_final.py
+      - name: Construct all four symbol policies
+        run: |
+          python - <<'PY'
+          from easychart_re1_efficient_pullback_final import EasyChartRE1EfficientPullbackFinalBundle
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartRE1EfficientPullbackFinalBundle(symbol, tick)
+              assert bundle.efficient_pullback.micro_objectives.pivot_spans == (6,)
+              assert bundle.efficient_pullback.minimum_gross_rr == 1.0
+          PY
+      - name: Run one four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_efficient_pullback_final.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days "${{ matrix.warmup }}" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve the trades and continuous account path
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-efficient-pullback-final-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-efficient-pullback-final/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,118 @@
+# v5 refined fresh first-return research run
+name: Research liquidity auction v5 fresh first-return
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v5"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v5-fresh.yml"
+
+concurrency:
+  group: research-liquidity-auction-v5-fresh
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: fresh-2021-jan, start: 2021-01-10, end: 2021-01-17}
+          - {period: fresh-2021-apr, start: 2021-04-10, end: 2021-04-17}
+          - {period: fresh-2021-jul, start: 2021-07-10, end: 2021-07-17}
+          - {period: fresh-2021-oct, start: 2021-10-10, end: 2021-10-17}
+          - {period: fresh-2022-jan, start: 2022-01-10, end: 2022-01-17}
+          - {period: fresh-2022-apr, start: 2022-04-10, end: 2022-04-17}
+          - {period: fresh-2022-jul, start: 2022-07-10, end: 2022-07-17}
+          - {period: fresh-2022-oct, start: 2022-10-10, end: 2022-10-17}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/v5/${{ matrix.period }}
+      OUT: artifacts/v5/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v5
+      - name: Harvest semantic liquidity episodes
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-auction-system-v4/run_research.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - name: Preserve exact price and volume path
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" --start "$START" --end "$END" \
+            --cache "$CACHE" --output "$OUT/chart"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-auction-v5-${{ matrix.period }}
+          path: artifacts/v5/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  integrate:
+    needs: harvest
+    if: always() && needs.harvest.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v5
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v5-fresh-*
+          path: downloaded
+          merge-multiple: false
+      - name: Execute refined causal first-return account policy
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-liquidity-auction-v5/refined_first_return_policy.py \
+            --root downloaded --output result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v5-fresh-result
+          path: result/**
+          if-no-files-found: error
+          retention-days: 60
+      - name: Preserve compact result on branch
+        run: |
+          set -euo pipefail
+          cp result/summary.json research/candidate-liquidity-auction-v5/LATEST_RESULT.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-liquidity-auction-v5/LATEST_RESULT.json
+          git commit -m "Preserve liquidity-auction v5 fresh result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_liquidity_auction_v5
+          git push origin HEAD:research_liquidity_auction_v5

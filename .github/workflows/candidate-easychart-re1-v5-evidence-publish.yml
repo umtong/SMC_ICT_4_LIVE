@@ -1,0 +1,248 @@
+name: candidate-easychart-re1-v5-evidence-publish
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.v5_evidence_publish_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-v5-evidence-publish
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: research/candidate-easychart_re1
+      DIAGNOSTIC_WORKFLOW: candidate-easychart-re1-auction-router-v5-diagnostic.yml
+      MEDIUM_WORKFLOW: candidate-easychart-re1-auction-router-v5-medium.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Wait for strategy evidence and download artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .evidence-v5
+          mkdir -p .evidence-v5/diagnostic .evidence-v5/medium
+          for spec in "$DIAGNOSTIC_WORKFLOW:diagnostic" "$MEDIUM_WORKFLOW:medium"; do
+            workflow="${spec%%:*}"
+            destination="${spec##*:}"
+            run_id=""
+            for attempt in $(seq 1 180); do
+              row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion --jq '.[0] // {}')"
+              run_id="$(python -c 'import json,sys; print(json.load(sys.stdin).get("databaseId", ""))' <<<"$row")"
+              status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$row")"
+              conclusion="$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion", ""))' <<<"$row")"
+              if [[ "$status" == "completed" ]]; then
+                if [[ "$conclusion" != "success" ]]; then
+                  echo "$workflow completed with $conclusion" >&2
+                  exit 1
+                fi
+                break
+              fi
+              sleep 30
+            done
+            if [[ -z "$run_id" ]]; then
+              echo "No run found for $workflow" >&2
+              exit 1
+            fi
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --dir ".evidence-v5/$destination"
+          done
+
+      - name: Build one trade-level evidence record
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json, math, re
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import pandas as pd
+
+          root=Path('.evidence-v5')
+          out=Path('research/candidate-easychart_re1/evidence')
+          out.mkdir(parents=True,exist_ok=True)
+          period_days={
+              'may-2024-guard':14,
+              'february-2025-short':10,
+              'live-examples-2025-short':11,
+              'november-2025-guard':14,
+              'february-2026-guard':14,
+              'medium-2024-autumn':91,
+          }
+          def norm(x): return re.sub(r'[^a-z0-9]+','_',str(x).lower()).strip('_')
+          def pick(df, names, numeric=False):
+              candidates=[]
+              for c in df.columns:
+                  nc=norm(c)
+                  for n in names:
+                      nn=norm(n)
+                      if nc==nn or nn in nc:
+                          if numeric and pd.to_numeric(df[c],errors='coerce').notna().sum()==0: continue
+                          candidates.append((0 if nc==nn else 1,len(nc),c));break
+              return min(candidates,default=(9,999,None))[2]
+          def parse_time(s):
+              if pd.api.types.is_numeric_dtype(s):
+                  x=pd.to_numeric(s,errors='coerce'); med=x.dropna().abs().median()
+                  unit='ns' if med and med>1e17 else 'ms' if med and med>1e11 else 's'
+                  return pd.to_datetime(x,unit=unit,utc=True,errors='coerce')
+              return pd.to_datetime(s,utc=True,errors='coerce')
+          def flatten(o,p=''):
+              r={}
+              if isinstance(o,dict):
+                  for k,v in o.items():r.update(flatten(v,f'{p}.{k}' if p else str(k)))
+              elif isinstance(o,list):
+                  for i,v in enumerate(o):r.update(flatten(v,f'{p}[{i}]'))
+              else:r[p]=o
+              return r
+          def metric(flat, needles):
+              hits=[]
+              for k,v in flat.items():
+                  if isinstance(v,bool) or not isinstance(v,(int,float)):continue
+                  for n in needles:
+                      if norm(n) in norm(k):hits.append((len(norm(k)),float(v)));break
+              return min(hits,default=(0,None))[1]
+          rows=[]; trade_frames=[]; raw_metrics=[]
+          for mpath in root.rglob('metrics.json'):
+              metrics=json.loads(mpath.read_text())
+              raw_metrics.append({'path':str(mpath),'metrics':metrics})
+              text=str(mpath).lower()
+              period=next((p for p in period_days if p in text),None)
+              days=period_days.get(period)
+              candidates=list(mpath.parent.glob('trade_audit.csv'))+list(mpath.parent.rglob('trade_audit.csv'))
+              df=pd.read_csv(candidates[0]) if candidates else pd.DataFrame()
+              n=len(df)
+              flat=flatten(metrics)
+              metric_n=metric(flat,['completed_trades','closed_trades','trade_count','total_trades'])
+              if n==0 and metric_n is not None:n=int(metric_n)
+              rr_col=pick(df,['gross_rr','planned_rr','plan_rr','reward_risk'],True) if len(df) else None
+              r_col=pick(df,['realized_r','net_r','r_multiple','pnl_r','result_r'],True) if len(df) else None
+              pnl_col=pick(df,['net_pnl','realized_pnl','pnl'],True) if len(df) else None
+              outcome_col=pick(df,['outcome','exit_reason','result']) if len(df) else None
+              entry_col=pick(df,['entry_time_ns','entry_time','entry_ts']) if len(df) else None
+              exit_col=pick(df,['exit_time_ns','exit_time','exit_ts']) if len(df) else None
+              family_col=pick(df,['family','scenario_family','scale_name']) if len(df) else None
+              side_col=pick(df,['side','direction']) if len(df) else None
+              work=pd.DataFrame(index=df.index)
+              if len(df):
+                  if rr_col:work['planned_rr']=pd.to_numeric(df[rr_col],errors='coerce')
+                  if r_col:work['r']=pd.to_numeric(df[r_col],errors='coerce')
+                  if pnl_col:work['pnl']=pd.to_numeric(df[pnl_col],errors='coerce')
+                  if outcome_col:work['outcome']=df[outcome_col].astype(str)
+                  if family_col:work['family']=df[family_col].astype(str)
+                  if side_col:work['side']=df[side_col].astype(str)
+                  if entry_col and exit_col:
+                      work['hold_minutes']=(parse_time(df[exit_col])-parse_time(df[entry_col])).dt.total_seconds()/60
+                  if 'outcome' in work:
+                      o=work.outcome.str.upper()
+                      work['win']=o.str.contains('TP|TARGET|WIN|PROFIT')
+                      unknown=~o.str.contains('TP|TARGET|WIN|PROFIT|SL|STOP|LOSS')
+                      if 'r' in work:work.loc[unknown,'win']=work.loc[unknown,'r']>0
+                      elif 'pnl' in work:work.loc[unknown,'win']=work.loc[unknown,'pnl']>0
+                  elif 'r' in work:work['win']=work.r>0
+                  elif 'pnl' in work:work['win']=work.pnl>0
+                  work['period']=period
+                  trade_frames.append(work)
+              wr=float(work.win.mean()) if 'win' in work and len(work) else metric(flat,['win_rate','winning_percentage'])
+              if wr is not None and 1<wr<=100:wr/=100
+              avg_r=float(work.r.mean()) if 'r' in work and work.r.notna().any() else metric(flat,['expectancy_r','average_r','mean_r'])
+              total_r=float(work.r.sum()) if 'r' in work and work.r.notna().any() else metric(flat,['total_r','sum_r'])
+              avg_rr=float(work.planned_rr.mean()) if 'planned_rr' in work and work.planned_rr.notna().any() else metric(flat,['average_gross_rr','average_planned_rr','avg_gross_rr'])
+              median_rr=float(work.planned_rr.median()) if 'planned_rr' in work and work.planned_rr.notna().any() else None
+              median_hold=float(work.hold_minutes.median()) if 'hold_minutes' in work and work.hold_minutes.notna().any() else metric(flat,['median_hold_minutes','median_holding_minutes'])
+              initial=metric(flat,['initial_nav','starting_balance','initial_balance','starting_equity'])
+              final=metric(flat,['final_nav','ending_balance','final_balance','ending_equity'])
+              net_return=(final/initial-1) if final and initial and initial>0 else metric(flat,['net_return','total_return'])
+              if net_return is not None and 1<net_return<=100:net_return/=100
+              max_dd=metric(flat,['max_drawdown','maximum_drawdown'])
+              if max_dd is not None and 1<max_dd<=100:max_dd/=100
+              rows.append({'period':period,'days':days,'trades':n,'trades_per_day':n/days if days else None,'win_rate':wr,'average_r':avg_r,'total_r':total_r,'average_planned_rr':avg_rr,'median_planned_rr':median_rr,'median_hold_minutes':median_hold,'initial_nav':initial,'final_nav':final,'net_return':net_return,'max_drawdown':max_dd,'metrics_path':str(mpath),'trade_audit_rows':len(df),'reported_trade_count':metric_n})
+          frame=pd.DataFrame(rows).sort_values('period')
+          frame.to_csv(out/'auction_router_v5_periods.csv',index=False)
+          all_trades=pd.concat(trade_frames,ignore_index=True) if trade_frames else pd.DataFrame()
+          all_trades.to_csv(out/'auction_router_v5_trades.csv',index=False)
+          medium=frame[frame.period=='medium-2024-autumn']
+          diag=frame[frame.period!='medium-2024-autumn']
+          strict=False; promotion=False; reasons=[]
+          if len(medium)==1:
+              m=medium.iloc[0]
+              strict=bool((m.trades_per_day or 0)>=1.0 and (m.win_rate or 0)>=0.70 and (m.average_r is None or m.average_r>0) and (m.net_return is None or m.net_return>0) and (m.median_planned_rr is None or 1.0<=m.median_planned_rr<=2.5) and (m.median_hold_minutes is None or 20<=m.median_hold_minutes<=360) and (m.max_drawdown is None or m.max_drawdown<0.30))
+              promotion=bool((m.trades_per_day or 0)>=0.75 and (m.win_rate or 0)>=0.65 and (m.average_r is None or m.average_r>0) and (m.net_return is None or m.net_return>0) and (m.max_drawdown is None or m.max_drawdown<0.35))
+              if (m.trades_per_day or 0)<1:reasons.append('MEDIUM_FREQUENCY_BELOW_ONE_PER_DAY')
+              if (m.win_rate or 0)<0.70:reasons.append('MEDIUM_WIN_RATE_BELOW_70_PERCENT')
+              if m.average_r is not None and m.average_r<=0:reasons.append('MEDIUM_NONPOSITIVE_EXPECTANCY_R')
+              if m.net_return is not None and m.net_return<=0:reasons.append('MEDIUM_NONPOSITIVE_NAV_RETURN')
+          else:
+              reasons.append('MEDIUM_EVIDENCE_MISSING_OR_DUPLICATE')
+          if len(diag):
+              weighted=(diag.win_rate.fillna(0)*diag.trades.fillna(0)).sum()/max(diag.trades.fillna(0).sum(),1)
+              positive=int(((diag.total_r.fillna(0)>0)|(diag.net_return.fillna(0)>0)).sum())
+              diagnostic_robust=bool(weighted>=0.65 and positive>=max(1,len(diag)-1))
+              if not diagnostic_robust:reasons.append('DIAGNOSTIC_REGIME_ROBUSTNESS_NOT_ESTABLISHED')
+          else:
+              weighted=None;positive=0;diagnostic_robust=False;reasons.append('DIAGNOSTIC_EVIDENCE_MISSING')
+          ready=bool(strict and diagnostic_robust)
+          record={'generated_at':datetime.now(timezone.utc).isoformat(),'candidate':'candidate-easychart_re1_auction_router_v5','periods':rows,'diagnostic_weighted_win_rate':weighted,'diagnostic_positive_periods':positive,'diagnostic_robust':diagnostic_robust,'medium_promotion_profile':promotion,'strict_target_profile':strict,'ready_for_long_continuous_and_paper':ready,'blockers':[] if ready else reasons,'raw_metrics':raw_metrics}
+          (out/'auction_router_v5_evidence.json').write_text(json.dumps(record,indent=2,ensure_ascii=False,default=str)+'\n')
+          lines=['# EasyChart RE1 auction-router v5 evidence','',f"Ready for long continuous and paper: **{ready}**",'',frame.to_markdown(index=False),'',f"Diagnostic weighted win rate: {weighted}",f"Diagnostic positive periods: {positive}/{len(diag)}",'', 'Blockers: '+(', '.join(record['blockers']) if record['blockers'] else 'none')]
+          (out/'auction_router_v5_evidence.md').write_text('\n'.join(lines)+'\n')
+          if ready:
+              (out/'AUCTION_ROUTER_V5_READY').write_text('ready\n')
+          else:
+              (out/'AUCTION_ROUTER_V5_NOT_READY').write_text('\n'.join(reasons)+'\n')
+          PY
+
+      - name: Create production alias only when evidence is ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f research/candidate-easychart_re1/evidence/AUCTION_ROUTER_V5_READY ]]; then
+            cat > research/candidate-easychart_re1/easychart_re1_bot.py <<'PY'
+          """Production-candidate alias selected by v5 short/medium evidence."""
+          from easychart_re1_auction_router_v5 import EasyChartRE1AuctionRouterV5Bundle
+          from easychart_re1_local_auction_continuation import EasyChartRE1LocalAuctionStrategy
+
+          EasyChartRE1BotBundle = EasyChartRE1AuctionRouterV5Bundle
+          EasyChartRE1BotStrategy = EasyChartRE1LocalAuctionStrategy
+          MultiScaleScenarioBundle = EasyChartRE1BotBundle
+          StrategyClass = EasyChartRE1BotStrategy
+          PY
+            cat > research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py <<'PY'
+          #!/usr/bin/env python3
+          """Run the evidence-selected EasyChart RE1 production candidate."""
+          import runpy
+          if __name__ == "__main__":
+              runpy.run_module("run_mtf_backtest_re1_auction_router_v5", run_name="__main__")
+          PY
+          fi
+
+      - name: Commit evidence and optional production alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart_re1/evidence
+          if [[ -f research/candidate-easychart_re1/easychart_re1_bot.py ]]; then
+            git add research/candidate-easychart_re1/easychart_re1_bot.py research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py
+          fi
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research: publish v5 trade-level evidence and handoff state"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"

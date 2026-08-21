@@ -1,0 +1,86 @@
+name: candidate-easychart-re1-immediate-flow-ob-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.immediate_flow_ob_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-immediate-flow-ob-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: february-2025-short
+            start: 2025-02-01
+            end: 2025-02-10
+          - period: live-examples-2025-short
+            start: 2025-08-10
+            end: 2025-08-20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-immediate-flow-ob/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-immediate-flow-ob/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile immediate contextual flow-OB candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_flow.py \
+            research/candidate-easychart_re1/mtf_data_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow_ob.py \
+            research/candidate-easychart_re1/easychart_re1_flow_ob_sweep_responsibility.py \
+            research/candidate-easychart_re1/easychart_re1_flow_ob_responsibility.py \
+            research/candidate-easychart_re1/easychart_re1_immediate_flow_ob.py \
+            research/candidate-easychart_re1/execution_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_immediate_flow_ob.py
+      - name: Construction smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from easychart_re1_immediate_flow_ob import EasyChartRE1ImmediateFlowOBBundle
+          bundle = EasyChartRE1ImmediateFlowOBBundle("BTCUSDT", 0.1, 1.0)
+          assert "immediate_flow_ob" in bundle._audit_offsets
+          assert bundle.immediate_flow_ob.scale_name == "IMMEDIATE_FLOW_OB"
+          PY
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_immediate_flow_ob.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-immediate-flow-ob-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-immediate-flow-ob/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30

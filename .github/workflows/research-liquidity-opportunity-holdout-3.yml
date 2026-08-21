@@ -1,0 +1,93 @@
+name: Research liquidity opportunity final untouched windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v3"]
+    paths:
+      - ".github/workflows/research-liquidity-opportunity-holdout-3.yml"
+      - "research/candidate-liquidity-auction-v3/.dispatch-opportunity-holdout-3"
+
+concurrency:
+  group: research-liquidity-opportunity-holdout-3
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record final untouched-window run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-liquidity-opportunity-holdout-3
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-opportunity-holdout-3
+          git commit -m "Record final untouched opportunity run $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {period: holdout3-2022-jan-15, start: 2022-01-15, end: 2022-01-22}
+          - {period: holdout3-2022-apr-15, start: 2022-04-15, end: 2022-04-22}
+          - {period: holdout3-2022-jul-15, start: 2022-07-15, end: 2022-07-22}
+          - {period: holdout3-2022-oct-15, start: 2022-10-15, end: 2022-10-22}
+          - {period: holdout3-2023-jan-15, start: 2023-01-15, end: 2023-01-22}
+          - {period: holdout3-2023-apr-15, start: 2023-04-15, end: 2023-04-22}
+          - {period: holdout3-2023-jul-15, start: 2023-07-15, end: 2023-07-22}
+          - {period: holdout3-2023-oct-15, start: 2023-10-15, end: 2023-10-22}
+          - {period: holdout3-2024-jan-15, start: 2024-01-15, end: 2024-01-22}
+          - {period: holdout3-2024-apr-15, start: 2024-04-15, end: 2024-04-22}
+          - {period: holdout3-2024-jul-15, start: 2024-07-15, end: 2024-07-22}
+          - {period: holdout3-2024-oct-15, start: 2024-10-15, end: 2024-10-22}
+          - {period: holdout3-2025-jan-15, start: 2025-01-15, end: 2025-01-22}
+          - {period: holdout3-2025-apr-15, start: 2025-04-15, end: 2025-04-22}
+          - {period: holdout3-2025-jul-15, start: 2025-07-15, end: 2025-07-22}
+          - {period: holdout3-2025-oct-15, start: 2025-10-15, end: 2025-10-22}
+          - {period: holdout3-2026-jan-15, start: 2026-01-15, end: 2026-01-22}
+          - {period: holdout3-2026-apr-15, start: 2026-04-15, end: 2026-04-22}
+          - {period: holdout3-2026-jul-15, start: 2026-07-15, end: 2026-07-22}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export final untouched exact one-minute price and aggressor flow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-cache "holdout3/${{ matrix.period }}"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --before-days 3 \
+            --after-days 2 \
+            --cache /tmp/binance-cache \
+            --output "holdout3/${{ matrix.period }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-opportunity-${{ matrix.period }}
+          path: holdout3/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

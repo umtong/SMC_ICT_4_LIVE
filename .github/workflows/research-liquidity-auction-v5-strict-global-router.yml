@@ -1,0 +1,104 @@
+name: Research liquidity auction v5 strict global router
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v5"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v5-strict-global-router.yml"
+      - "research/candidate-liquidity-auction-v5/strict_causal_global_router.py"
+
+concurrency:
+  group: research-liquidity-auction-v5-strict-global-router
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v5
+      - name: Find and wait for latest fresh causal run
+        id: fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.request
+          repo=os.environ['REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          path='research-liquidity-auction-v5-fresh-causal-departures.yml'
+          url=f'https://api.github.com/repos/{repo}/actions/workflows/{path}/runs?branch=research_liquidity_auction_v5&per_page=5'
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','User-Agent':'v5-router'}
+          run=None
+          for _ in range(90):
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  runs=json.load(response).get('workflow_runs',[])
+              if runs:
+                  run=runs[0]
+                  if run.get('status')=='completed':
+                      break
+              time.sleep(20)
+          if run is None:
+              raise SystemExit('fresh workflow run not found')
+          print(json.dumps({'id':run['id'],'status':run['status'],'conclusion':run.get('conclusion')},indent=2))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"run_id={run['id']}\n")
+          PY
+      - name: Download strict causal development artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 32357119384
+          pattern: liquidity-auction-v5-departure-*
+          path: artifacts/v5-strict-development
+      - name: Download fresh strict causal artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.fresh.outputs.run_id }}
+          pattern: liquidity-auction-v5-fresh-departure-*
+          path: artifacts/v5-strict-fresh
+      - name: Train on development and route the fresh account
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/v5-strict-result
+          python research/candidate-liquidity-auction-v5/strict_causal_global_router.py \
+            --development-root artifacts/v5-strict-development \
+            --fresh-root artifacts/v5-strict-fresh \
+            --output artifacts/v5-strict-result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v5-strict-global-result
+          path: artifacts/v5-strict-result/**
+          retention-days: 30
+      - name: Record result on research branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p research/candidate-liquidity-auction-v5/results
+          cp artifacts/v5-strict-result/RESULT.md research/candidate-liquidity-auction-v5/results/STRICT_CAUSAL_RESULT.md
+          cp artifacts/v5-strict-result/summary.json research/candidate-liquidity-auction-v5/results/strict_causal_summary.json
+          git add research/candidate-liquidity-auction-v5/results
+          git commit -m "Record v5 strict causal global result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_liquidity_auction_v5
+          git push origin HEAD:research_liquidity_auction_v5

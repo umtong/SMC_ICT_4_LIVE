@@ -1,0 +1,203 @@
+name: candidate-coherent-auction-system-v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-auction-system-v4/**"
+      - "!research/candidate-coherent-auction-system-v4/.latest-run"
+      - "!research/candidate-coherent-auction-system-v4/LATEST_*.json"
+      - ".github/workflows/candidate-coherent-auction-system-v4.yml"
+
+concurrency:
+  group: candidate-coherent-auction-system-v4
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run identity
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > research/candidate-coherent-auction-system-v4/.latest-run
+          git add research/candidate-coherent-auction-system-v4/.latest-run
+          git commit -m "Record coherent auction v4 run $GITHUB_RUN_ID" || true
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking
+
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile coherent v4 policy and research tools
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-coherent-auction-system-v4/semantic_liquidity_v4.py \
+            research/candidate-coherent-auction-system-v4/coherent_system_v4.py \
+            research/candidate-coherent-auction-system-v4/run_research.py \
+            research/candidate-coherent-auction-system-v4/train_select_v4.py \
+            research/candidate-coherent-auction-system-v4/audit_v4.py \
+            research/candidate-coherent-liquidity-policy-v1/render_selected.py
+          python - <<'PY'
+          from coherent_system_v4 import POLICY, MAX_HOLD_MINUTES, LIMIT_EXPIRY_MINUTES
+          from train_select_v4 import RISK_FRACTION
+          assert 'SEMANTIC_LIQUIDITY_DIRECTION' in POLICY
+          assert MAX_HOLD_MINUTES == 360 and LIMIT_EXPIRY_MINUTES > 0
+          assert abs(RISK_FRACTION - 0.03) < 1e-12
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-may, start: 2023-05-01, end: 2023-05-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2023-nov, start: 2023-11-01, end: 2023-11-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: eval-2026-feb, start: 2026-02-01, end: 2026-02-08}
+          - {period: eval-2026-may, start: 2026-05-01, end: 2026-05-08}
+          - {period: eval-2026-aug, start: 2026-08-01, end: 2026-08-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-coherent-auction-system-v4/${{ matrix.period }}
+      OUT: artifacts/candidate-coherent-auction-system-v4/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest semantic event and executable action variants
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-auction-system-v4/run_research.py --start "$START" --end "$END" --warmup-days 45 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT"
+          if [ ! -s "$OUT/coherent_actions.csv" ]; then printf 'action_id\n' > "$OUT/coherent_actions.csv"; fi
+          if [ ! -s "$OUT/destination_states.csv" ]; then printf 'state_id\n' > "$OUT/destination_states.csv"; fi
+      - name: Verify causal action and account-R contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT']);actions=pd.read_csv(out/'coherent_actions.csv')
+          if actions.empty:
+              print({'actions':0});raise SystemExit(0)
+          if actions.action_id.duplicated().any():raise RuntimeError('duplicate action identity')
+          if not pd.to_numeric(actions.gross_rr,errors='coerce').ge(1.0).all():raise RuntimeError('planned gross RR below one')
+          if not (pd.to_numeric(actions.planned_account_stop_r,errors='coerce')+1.0).abs().lt(1e-12).all():raise RuntimeError('planned stop not -1 account R')
+          filled=actions[actions.fill_state.astype(str).str.startswith('FILLED')]
+          if not filled.empty and not (pd.to_numeric(filled.actual_stop_net_r,errors='coerce')+1.0).abs().lt(1e-9).all():raise RuntimeError('actual stop not -1 account R')
+          if not actions.entry_geometry.isin(['CONFIRMED_MARKET','ZONE_PROXIMAL_LIMIT','ZONE_MID_LIMIT']).all():raise RuntimeError('unexpected entry geometry')
+          if not (pd.to_numeric(actions.order_terminal_time_ns,errors='coerce').dropna()>=pd.to_numeric(actions.emission_time_ns,errors='coerce').loc[actions.order_terminal_time_ns.notna()]).all():raise RuntimeError('order terminal before emission')
+          print(actions.groupby(['narrative_branch','entry_geometry','stop_geometry','objective_kind']).outcome.value_counts())
+          PY
+      - name: Preserve v4 action universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-auction-v4-${{ matrix.period }}
+          path: artifacts/candidate-coherent-auction-system-v4/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  learn-audit-render:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-auction-system-v4:research/candidate-coherent-liquidity-policy-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all period universes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coherent-auction-v4-*
+          path: downloaded
+          merge-multiple: false
+      - name: Learn destination, fill and action; audit every causal choice
+        run: |
+          set -euo pipefail
+          mkdir -p result audit cases cache
+          python research/candidate-coherent-auction-system-v4/train_select_v4.py --root downloaded --output result
+          python research/candidate-coherent-auction-system-v4/audit_v4.py --root downloaded --result result --output audit
+      - name: Render every filled account trade
+        run: |
+          set -euo pipefail
+          COUNT=$(python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          total=0
+          for name in ('development_oof_account_trades.csv','evaluation_account_trades.csv'):
+              path=Path('result')/name
+              if path.exists():total+=len(pd.read_csv(path))
+          print(total)
+          PY
+          )
+          if [ "$COUNT" -gt 0 ]; then python research/candidate-coherent-liquidity-policy-v1/render_selected.py --result result --cache cache --output cases; fi
+      - name: Preserve unified result, audit and every selected trade chart
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-auction-system-v4-research
+          path: |
+            result/**
+            audit/**
+            cases/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve compact evidence on branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-coherent-auction-system-v4/LATEST_RESULT.json
+          cp audit/audit_summary.json research/candidate-coherent-auction-system-v4/LATEST_AUDIT.json
+          git add research/candidate-coherent-auction-system-v4/LATEST_RESULT.json research/candidate-coherent-auction-system-v4/LATEST_AUDIT.json
+          git commit -m "Preserve coherent auction v4 research $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking

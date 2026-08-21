@@ -1,0 +1,74 @@
+name: candidate-easychart-re1-delivery-balance-system-v4-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.delivery_balance_system_v4_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-delivery-balance-system-v4-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024-guard, start: 2024-05-01, end: 2024-05-14}
+          - {period: february-2025-short, start: 2025-02-01, end: 2025-02-10}
+          - {period: february-2026-guard, start: 2026-02-01, end: 2026-02-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-delivery-balance-system-v4/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-delivery-balance-system-v4/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidate
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v2.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v3.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v4.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_draw_v4_fixed.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_continuation.py \
+            research/candidate-easychart_re1/easychart_re1_mature_balance.py \
+            research/candidate-easychart_re1/easychart_re1_mature_balance_v2.py \
+            research/candidate-easychart_re1/easychart_re1_delivery_balance_system_v4.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v4.py
+      - name: Construction smoke
+        run: |
+          python - <<'PY'
+          from easychart_re1_delivery_balance_system_v4 import EasyChartRE1DeliveryBalanceSystemV4Bundle
+          for symbol, tick in (("BTCUSDT", 0.1), ("ETHUSDT", 0.01), ("SOLUSDT", 0.001), ("XRPUSDT", 0.0001)):
+              bundle = EasyChartRE1DeliveryBalanceSystemV4Bundle(symbol, tick)
+              assert bundle.delivery_draw.TRIGGER_MINUTES == 1
+              assert "flow_impact_delivery" in bundle.delivery_draw.diagnostics
+              assert "delivery_continuation_geometry" in bundle.delivery_continuation.diagnostics
+              assert "single_use_balance_levels" in bundle.mature_balance.diagnostics
+              assert bundle.delivery_continuation.minimum_gross_rr == 1.0
+              assert bundle.mature_balance.minimum_gross_rr == 1.0
+          PY
+      - name: Run four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_delivery_balance_system_v4.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-delivery-balance-system-v4-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-delivery-balance-system-v4/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30

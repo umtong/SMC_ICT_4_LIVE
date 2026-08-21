@@ -1,0 +1,119 @@
+name: candidate-auction-event-v2-harvest
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-auction-event-v2/.dispatch"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-auction-event-v2-harvest
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and check auction event policy v2
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-auction-event-v2/event_episode_harvest.py \
+            research/candidate-auction-event-v2/metrics_state.py \
+            research/candidate-auction-event-v2/run_event_episode_harvest.py \
+            research/candidate-auction-event-v2/self_check_event_v2.py
+          python research/candidate-auction-event-v2/self_check_event_v2.py
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-auction-event-v2/${{ matrix.period }}
+      OUT: artifacts/candidate-auction-event-v2/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest causal auction episodes and immutable actions
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-auction-event-v2/run_event_episode_harvest.py \
+            --start "$START" \
+            --end "$END" \
+            --warmup-days 20 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Verify causal event and action integrity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path(os.environ["OUT"])
+          events = pd.read_csv(out / "events.csv.gz")
+          actions = pd.read_csv(out / "actions.csv.gz")
+          if events.empty or actions.empty:
+              raise RuntimeError("empty event-action universe")
+          if events["event_id"].duplicated().any() or actions["action_id"].duplicated().any():
+              raise RuntimeError("duplicate causal identity")
+          if not set(actions["event_id"]).issubset(set(events["event_id"])):
+              raise RuntimeError("action without causal event")
+          if not (pd.to_numeric(actions["entry_time_ns"]) > pd.to_numeric(actions["decision_time_ns"])).all():
+              raise RuntimeError("entry was not strictly after decision")
+          if not (pd.to_numeric(actions["resolution_time_ns"]) >= pd.to_numeric(actions["entry_time_ns"])).all():
+              raise RuntimeError("resolution precedes entry")
+          if not actions["symbol"].isin(["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]).all():
+              raise RuntimeError("unexpected symbol")
+          if not events["style"].isin(["RECLAIM", "ACCEPTED_BREAK"]).all():
+              raise RuntimeError("unexpected event style")
+          print({"events": len(events), "actions": len(actions), "features": len(events.columns) - 8})
+          PY
+      - name: Preserve auction event universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auction-event-v2-${{ matrix.period }}
+          path: artifacts/candidate-auction-event-v2/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6

@@ -1,0 +1,76 @@
+name: candidate-easychart-re1-derivatives-data-smoke
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.derivatives_data_smoke_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-derivatives-data-smoke, cancel-in-progress: true}
+permissions: {contents: read, packages: read}
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3:research/candidate-easychart-v2
+      CACHE: .cache/candidate-easychart-re1-derivatives-smoke
+      OUT: artifacts/candidate-easychart-re1-derivatives-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile derivatives ingestion
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_derivatives.py \
+            research/candidate-easychart_re1/counterfactual_derivatives_features.py \
+            research/candidate-easychart_re1/augment_counterfactual_derivatives.py
+      - name: Download and verify native Binance derivatives state
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python - <<'PY'
+          from datetime import date
+          import json
+          import os
+          from pathlib import Path
+          from data_re1_derivatives import load_range_derivatives
+
+          cache = Path(os.environ["CACHE"])
+          out = Path(os.environ["OUT"])
+          summary = {}
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              data = load_range_derivatives(
+                  symbol,
+                  date(2025, 1, 31),
+                  date(2025, 2, 2),
+                  cache,
+              )
+              assert len(data.metrics) >= 810, (symbol, len(data.metrics))
+              assert not data.metrics["create_time"].duplicated().any()
+              assert not data.funding["calc_time"].duplicated().any()
+              data.metrics.head(20).to_csv(out / f"{symbol}_metrics_sample.csv", index=False)
+              data.funding.head(20).to_csv(out / f"{symbol}_funding_sample.csv", index=False)
+              summary[symbol] = {
+                  "metric_rows": len(data.metrics),
+                  "metric_start": str(data.metrics["create_time"].min()),
+                  "metric_end": str(data.metrics["create_time"].max()),
+                  "funding_rows": len(data.funding),
+                  "funding_start": str(data.funding["calc_time"].min()),
+                  "funding_end": str(data.funding["calc_time"].max()),
+                  "metric_columns": list(data.metrics.columns),
+                  "funding_columns": list(data.funding.columns),
+              }
+          (out / "derivatives_data_smoke.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+      - name: Preserve verified samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-derivatives-data-smoke-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-derivatives-smoke/**
+          if-no-files-found: warn
+          retention-days: 30
