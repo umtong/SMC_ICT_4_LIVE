@@ -1,4 +1,4 @@
-# Structural Auction Control v1
+# Structural Auction Control
 
 This branch is a structural replacement for the liquidity-auction plan lattices and the two-owner channel-only prototype. It preserves the causal EasyChart geometry and NautilusTrader account/execution layer, but changes the actual decision policy.
 
@@ -14,18 +14,15 @@ The critical change is that a failed apparent acceptance is no longer thrown awa
 
 ## Price and volume are one event
 
-A visual reclaim or footprint response cannot produce a plan by itself. Completed Binance one-minute quote volume and taker-buy quote volume must show one of two mechanisms inside that same episode:
+A visual reclaim or footprint response cannot produce a plan by itself. On the completed first-return decision bar, meaningful aggressive flow must attack against the intended trade while price refuses to move through structural invalidation and closes back in control. This is direct passive absorption: effort points one way, but the auction result points the other way.
 
-- aligned aggressor initiative carries price into control after confirmation; or
-- aggressive flow against the trade is absorbed while price reclaims/holds and recovers beyond the adverse excursion.
-
-This is effort-versus-result interpretation, not an optimized volume threshold or a global volume filter.
+Pure aligned initiative is deliberately not treated as equivalent confirmation. In the existing causal first-return evidence it commonly arrived after price had already departed the source and behaved as late chase rather than a high-quality entry. The absorption relation uses causal rolling activity and delta baselines, not an optimized global volume threshold.
 
 ## Geometry and execution
 
 - Direction/context: inherited causal 60m BOS plus 60m structure/OB/FVG reversal area; 15m local direction blocks repeated-defense fades against active local initiative.
 - Context structure: causal wick-pivot trend lines, parallel channels, repeated horizontal defense, major swing liquidity.
-- Entry: first event-local OB/FVG response or exact accepted-break retest after state and flow confirmation.
+- Entry: first event-local OB/FVG response or exact accepted-break retest after state and absorption confirmation.
 - Stop: complete interaction extreme, trigger invalidation, latest confirmed 5m counter swing, and completed retest extreme as applicable.
 - Target: nearest still-fresh causal 5m/15m obstacle, exact channel objective, or first extension midline.
 - Trade contract: one full position, pre-entry stop/target, gross RR at least 1R, no partials, no clock exit, no stop/target movement.
