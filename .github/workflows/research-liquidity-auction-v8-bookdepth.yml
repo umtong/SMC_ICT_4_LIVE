@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 jobs:
@@ -55,3 +55,64 @@ jobs:
           path: artifacts/v8-bookdepth/${{ matrix.period.name }}/${{ matrix.symbol }}/**
           if-no-files-found: error
           retention-days: 30
+
+  merge:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v8
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v8-bookdepth-*
+          path: /tmp/v8-bookdepth
+          merge-multiple: false
+      - name: Merge the causal feature panel
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/v8-bookdepth/panel research_results/liquidity_auction_v8/bookdepth
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path('/tmp/v8-bookdepth')
+          frames, metadata = [], []
+          for path in sorted(root.rglob('bookdepth_features.csv.gz')):
+              frame = pd.read_csv(path)
+              frame['artifact'] = path.parent.name
+              frames.append(frame)
+              meta = path.with_name('metadata.json')
+              if meta.exists():
+                  metadata.append(json.loads(meta.read_text()))
+          if len(frames) != 12:
+              raise SystemExit(f'expected 12 feature artifacts, found {len(frames)}')
+          panel = pd.concat(frames, ignore_index=True)
+          panel.to_csv('artifacts/v8-bookdepth/panel/panel.csv.gz', index=False, compression='gzip')
+          summary = {
+              'run_id': int('${{ github.run_id }}'),
+              'head_sha': '${{ github.sha }}',
+              'rows': int(len(panel)),
+              'artifacts': int(len(frames)),
+              'symbols': sorted(panel.symbol.dropna().unique().tolist()),
+              'metadata': metadata,
+          }
+          Path('artifacts/v8-bookdepth/panel/summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          Path('research_results/liquidity_auction_v8/bookdepth/summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v8-bookdepth-panel
+          path: artifacts/v8-bookdepth/panel/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish run pointer
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research_results/liquidity_auction_v8/bookdepth/summary.json
+          git commit -m "Record v8 aggregate-depth run metadata" || exit 0
+          git push origin HEAD:research_liquidity_auction_v8
