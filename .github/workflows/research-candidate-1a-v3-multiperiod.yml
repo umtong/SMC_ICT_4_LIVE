@@ -1,0 +1,125 @@
+name: Candidate 1a bounded two-sided auction v3 multiperiod
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_1a"]
+    paths:
+      - ".github/workflows/research-candidate-1a-v3-multiperiod.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_1a}
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_1a/v3_multiperiod_status
+          mkdir -p "$DEST"
+          printf '{"run_id":"%s","head_sha":"%s","status":"RUNNING","started_at":"%s"}\n' \
+            '${{ github.run_id }}' '${{ github.sha }}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEST/status.json"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST/status.json"
+          git commit -m "Track candidate 1a v3 multiperiod ${{ github.run_id }} [skip ci]"
+          git push origin HEAD:research_candidate_1a
+
+  harvest:
+    needs: announce
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        include:
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: dev, period: dev-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+          - {role: fresh, period: fresh-2026-jun, start: 2026-06-01, end: 2026-06-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1a:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      ROLE: ${{ matrix.role }}
+      PERIOD: ${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_1a}
+      - run: |
+          set -euo pipefail
+          python research/candidate-1a/two_sided_source_auction_harvest_v3.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache ".cache/candidate-1a-v3/$PERIOD" \
+            --output "artifacts/candidate-1a-v3/$ROLE/$PERIOD"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-1a-v3-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-1a-v3/${{ matrix.role }}/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1a
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_1a}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-1a-v3-dev-*
+          path: artifacts/candidate-1a-v3/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-1a-v3-fresh-*
+          path: artifacts/candidate-1a-v3/fresh
+      - run: |
+          set -euo pipefail
+          python research/candidate-1a/v3_account.py --root artifacts/candidate-1a-v3/development --output artifacts/candidate-1a-v3/result/development
+          python research/candidate-1a/v3_account.py --root artifacts/candidate-1a-v3/fresh --output artifacts/candidate-1a-v3/result/fresh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-1a-v3-account-result
+          path: artifacts/candidate-1a-v3/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_1a/v3_multiperiod
+          rm -rf "$DEST"
+          mkdir -p "$DEST/development" "$DEST/fresh"
+          cp artifacts/candidate-1a-v3/result/development/{summary.json,orders.csv,trades.csv} "$DEST/development/"
+          cp artifacts/candidate-1a-v3/result/fresh/{summary.json,orders.csv,trades.csv} "$DEST/fresh/"
+          STATUS=research_results/candidate_1a/v3_multiperiod_status/status.json
+          printf '{"run_id":"%s","head_sha":"%s","status":"COMPLETED","completed_at":"%s"}\n' \
+            '${{ github.run_id }}' '${{ github.sha }}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST" "$STATUS"
+          git commit -m "Record bounded candidate 1a v3 multiperiod [skip ci]"
+          git push origin HEAD:research_candidate_1a
