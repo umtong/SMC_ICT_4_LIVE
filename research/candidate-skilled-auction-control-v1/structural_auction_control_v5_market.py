@@ -1,16 +1,17 @@
 """Market-aware integration layer for structural auction control v5.
 
 The event-time journey is still the only decision policy.  This adapter gives it
-two responsibilities that belong at integration rather than inside individual
-pattern sensors:
+three integration responsibilities:
 
 * propagate the completed BTC/ETH-led four-market control state to every sensor
   which understands common initiative;
 * namespace raw plan identities by sensor, because independent causal engines
-  legitimately start their own local counters at the same value.
+  legitimately start their own local counters at the same value;
+* keep a lower-scale sensor from receiving a sixty-minute bar it does not own,
+  while its parent bundle still receives that bar for macro context.
 
-No market-factor state creates a trade.  It may only prevent a local sensor from
-fighting a live common shock.  No ranking score or outcome information is added.
+No market-factor state creates a trade. It may only prevent a local sensor from
+fighting a live common shock. No ranking score or outcome information is added.
 """
 from __future__ import annotations
 
@@ -27,9 +28,36 @@ from structural_auction_control_v5 import (
 )
 
 
+class OwnedTimeframeProxy:
+    """Expose one sensor unchanged, but only on its declared causal clocks."""
+
+    def __init__(self, sensor: Any, timeframes: frozenset[int]) -> None:
+        self.sensor = sensor
+        self.timeframes = timeframes
+
+    def on_bar(self, timeframe_minutes: int, bar: Any):  # type: ignore[no-untyped-def]
+        if timeframe_minutes not in self.timeframes:
+            return []
+        return self.sensor.on_bar(timeframe_minutes, bar)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.sensor, name)
+
+
 class StructuralAuctionControlV5MarketBundle(_Base):
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
+        # The horizontal flip family is a 15m/5m/1m owner. Its enclosing complete
+        # policy still consumes 60m bars for macro direction; forwarding that same
+        # bar into the nested family was an implementation error, not a market
+        # decision. Make the responsibility explicit rather than catching errors.
+        for source_name, sensor in self.sources:
+            family = getattr(sensor, "horizontal_flip_response", None)
+            if family is not None and not isinstance(family, OwnedTimeframeProxy):
+                sensor.horizontal_flip_response = OwnedTimeframeProxy(
+                    family,
+                    frozenset({1, 5, 15}),
+                )
         self._journey_by_source_plan: dict[tuple[str, str], JourneyEvidence] = {}
         self._namespaced_source_plans: dict[tuple[str, str], str] = {}
         self._market_factor_state: Any | None = None
