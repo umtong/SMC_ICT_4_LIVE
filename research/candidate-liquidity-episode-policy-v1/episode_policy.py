@@ -13,7 +13,7 @@ from typing import Any, Sequence
 import pandas as pd
 
 import world_model_policy as base_policy
-from episode_policy_features import enrich_episode_frame
+from episode_policy_features import FEATURE_COLUMNS, enrich_episode_frame
 
 try:
     import dynamic_boundaries
@@ -61,7 +61,22 @@ def generate_symbol(
         combined_metadata,
         trading_start,
     )
-    enriched = enrich_episode_frame(frame, data)
+    has_orders = (
+        frame.get("order_exists", pd.Series(False, index=frame.index))
+        .astype(str)
+        .str.lower()
+        .isin({"true", "1", "yes"})
+        .any()
+    )
+    if has_orders:
+        enriched = enrich_episode_frame(frame, data)
+    else:
+        enriched = frame.copy()
+        for column in FEATURE_COLUMNS:
+            if column not in enriched:
+                enriched[column] = 0.0
+        enriched["episode_policy_version"] = "liquidity-episode-policy-v1"
+
     counts = dict(counts)
     counts["episode_policy_rows"] = int(len(enriched))
     counts["episode_policy_orders"] = int(
