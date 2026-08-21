@@ -1,4 +1,4 @@
-name: Research candidate 1a one-day smoke
+name: Research candidate 1a control-transfer smoke
 
 on:
   workflow_dispatch:
@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/research-candidate-1a-smoke.yml"
       - "research/candidate-1a/causal_auction_harvest.py"
+      - "research/candidate-1a/control_transfer_harvest.py"
 
 concurrency:
   group: research-candidate-1a-smoke
@@ -29,7 +30,7 @@ jobs:
           ref: research_candidate_1a
       - run: |
           set -euo pipefail
-          DEST=research_results/candidate_1a/smoke
+          DEST=research_results/candidate_1a/control_transfer_smoke
           mkdir -p "$DEST"
           cat > "$DEST/status.json" <<EOF
           {
@@ -42,7 +43,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST/status.json"
-          git commit -m "Track candidate 1a smoke ${{ github.run_id }} [skip ci]"
+          git commit -m "Track candidate 1a control-transfer smoke ${{ github.run_id }} [skip ci]"
           git push origin HEAD:research_candidate_1a
 
   smoke:
@@ -61,21 +62,21 @@ jobs:
           ref: research_candidate_1a
       - run: |
           set -euo pipefail
-          python research/candidate-1a/causal_auction_harvest.py \
+          python research/candidate-1a/control_transfer_harvest.py \
             --start 2025-08-01 --end 2025-08-02 --warmup-days 3 \
-            --symbols BTCUSDT --cache .cache/candidate-1a-smoke \
-            --output artifacts/candidate-1a-smoke
+            --symbols BTCUSDT --cache .cache/candidate-1a-control-smoke \
+            --output artifacts/candidate-1a-control-smoke
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-1a-smoke
-          path: artifacts/candidate-1a-smoke/**
+          name: candidate-1a-control-smoke
+          path: artifacts/candidate-1a-control-smoke/**
           if-no-files-found: error
           retention-days: 7
       - run: |
           set -euo pipefail
-          DEST=research_results/candidate_1a/smoke
+          DEST=research_results/candidate_1a/control_transfer_smoke
           mkdir -p "$DEST"
-          cp artifacts/candidate-1a-smoke/summary.json "$DEST/summary.json"
+          cp artifacts/candidate-1a-control-smoke/summary.json "$DEST/summary.json"
           cat > "$DEST/status.json" <<EOF
           {
             "run_id": "${{ github.run_id }}",
@@ -88,5 +89,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST"
-          git commit -m "Record candidate 1a smoke [skip ci]"
+          git commit -m "Record candidate 1a control-transfer smoke [skip ci]"
           git push origin HEAD:research_candidate_1a
