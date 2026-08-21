@@ -1,0 +1,57 @@
+name: Research liquidity auction v8 aggregate-depth control
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v8"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v8-bookdepth.yml"
+      - "research/candidate-liquidity-auction-v8/bookdepth_feature_harvest.py"
+
+concurrency:
+  group: research-liquidity-auction-v8-bookdepth
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {name: dev-2024-feb, start: 2024-02-01, end: 2024-02-09}
+          - {name: dev-2025-feb, start: 2025-02-01, end: 2025-02-09}
+          - {name: eval-2026-jun, start: 2026-06-01, end: 2026-06-09}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/v8-bookdepth/${{ matrix.period.name }}/${{ matrix.symbol }}
+      OUT: artifacts/v8-bookdepth/${{ matrix.period.name }}/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v8
+      - name: Harvest causal aggregate-depth state
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v8/bookdepth_feature_harvest.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v8-bookdepth-${{ matrix.period.name }}-${{ matrix.symbol }}
+          path: artifacts/v8-bookdepth/${{ matrix.period.name }}/${{ matrix.symbol }}/**
+          if-no-files-found: error
+          retention-days: 30
