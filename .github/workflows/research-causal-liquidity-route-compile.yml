@@ -1,0 +1,53 @@
+name: Research causal liquidity route v2 compile probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_causal_liquidity_route_system"]
+    paths:
+      - ".github/workflows/research-causal-liquidity-route-compile.yml"
+      - "research/candidate-causal-liquidity-route-system/causal_route_research.py"
+      - "research/candidate-causal-liquidity-route-system/causal_route_research.part*.pyinc"
+
+concurrency:
+  group: research-causal-liquidity-route-compile
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-causal-liquidity-route-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_causal_liquidity_route_system
+          fetch-depth: 0
+      - name: Compile full overlaid source
+        run: |
+          set +e
+          DEST=research_results/causal_liquidity_route_system/compile_v2
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          python research/candidate-causal-liquidity-route-system/causal_route_research.py --help \
+            > "$DEST/run.log" 2>&1
+          status=$?
+          printf '{"status":%s,"head_sha":"%s"}\n' "$status" "$GITHUB_SHA" > "$DEST/status.json"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record causal route v2 compile probe [skip ci]"
+            git pull --rebase origin research_causal_liquidity_route_system
+            git push origin HEAD:research_causal_liquidity_route_system
+          fi
+          exit "$status"
