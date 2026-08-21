@@ -1,0 +1,215 @@
+        closes = segment.close.to_numpy(float)
+        state = _segment_flow_state(segment, cont_sign, baseline, cont_boundary)
+        progress_cont = cont_sign * (close - float(source.price)) / atr
+        efficiency_cont = _path_efficiency(closes, cont_sign)
+        outside_ratio = float(np.mean(outside_flags)) if outside_flags else 0.0
+        consecutive = _tail_true(outside_flags)
+        body_cont = cont_sign * float(row.close - row.open) / atr
+        value_migration = cont_sign * (state["vwap"] - cont_boundary) / atr
+        initiative_cont = state["flow"] > 0.02 and state["last_flow"] > 0.0
+        absorption_cont = (
+            state["flow"] <= 0.02
+            and state["last_flow"] > 0.03
+            and body_cont > 0.16
+            and state["activity"] >= 1.08
+        )
+        acceptance = (
+            consecutive >= 2
+            and outside
+            and progress_cont >= 0.22
+            and value_migration > 0.0
+            and state["outside_volume_ratio"] >= 0.50
+            and (efficiency_cont >= 0.24 or body_cont >= 0.16)
+            and (initiative_cont or absorption_cont)
+        )
+        penetration = abs(float(extreme) - float(source.price)) / atr
+        if acceptance:
+            gap = _directional_gap(data, interaction, index, continuation_side, tick)
+            ob = _last_opposite_order_block(data, max(0, interaction - 8), index, continuation_side, tick)
+            lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
+            strength = (
+                max(0.0, progress_cont)
+                + max(0.0, efficiency_cont)
+                + max(0.0, value_migration)
+                + state["outside_volume_ratio"]
+                + min(state["activity"], 3.0) / 3.0
+                + min(max(state["volume_clock"], 0.0), 8.0) / 8.0
+            )
+            return AuctionDecision(
+                branch="ACCEPTED_AUCTION_CONTINUATION",
+                side=continuation_side,
+                interaction_index=interaction,
+                confirmation_index=index,
+                event_extreme=float(extreme),
+                zone_lower=lower,
+                zone_upper=upper,
+                location_kind=location,
+                event_strength=float(strength),
+                outside_close_ratio=float(outside_ratio),
+                outside_volume_ratio=float(state["outside_volume_ratio"]),
+                event_path_efficiency=float(efficiency_cont),
+                event_activity_ratio=float(state["activity"]),
+                event_flow_signed=float(state["flow"]),
+                event_volume_clock=float(state["volume_clock"]),
+                consecutive_outside_closes=int(consecutive),
+                event_value_migration_atr=float(value_migration),
+                event_vwap=float(state["vwap"]),
+                event_last_bar_flow_signed=float(state["last_flow"]),
+                penetration_atr=float(penetration),
+            )
+        if reclaimed_once and reclaimed and index > interaction and penetration >= max(0.04, 2.0 * tick / atr):
+            rev_boundary = float(source.lower if source.side == "HIGH" else source.upper)
+            rev_state = _segment_flow_state(segment, rev_sign, baseline, rev_boundary)
+            progress_rev = rev_sign * (close - extreme) / atr
+            efficiency_rev = _path_efficiency(closes, rev_sign)
+            body_rev = rev_sign * float(row.close - row.open) / atr
+            prior = data.iloc[index - 1]
+            local_control = close > float(prior.high) if reversal_side == "LONG" else close < float(prior.low)
+            initiative_rev = rev_state["flow"] > 0.02 and rev_state["last_flow"] > 0.0
+            absorption_rev = (
+                rev_state["flow"] <= 0.02
+                and rev_state["last_flow"] > 0.03
+                and body_rev > 0.14
+                and rev_state["activity"] >= 1.08
+            )
+            failure = (
+                progress_rev >= 0.28
+                and (efficiency_rev >= 0.20 or body_rev >= 0.14)
+                and local_control
+                and (initiative_rev or absorption_rev)
+            )
+            if failure:
+                gap = _directional_gap(data, interaction, index, reversal_side, tick)
+                ob = _last_opposite_order_block(data, interaction, index, reversal_side, tick)
+                lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
+                strength = (
+                    max(0.0, progress_rev)
+                    + max(0.0, efficiency_rev)
+                    + min(rev_state["activity"], 3.0) / 3.0
+                    + min(max(rev_state["volume_clock"], 0.0), 8.0) / 8.0
+                    + min(penetration, 2.0) / 2.0
+                )
+                return AuctionDecision(
+                    branch="FAILED_AUCTION_REVERSAL",
+                    side=reversal_side,
+                    interaction_index=interaction,
+                    confirmation_index=index,
+                    event_extreme=float(extreme),
+                    zone_lower=lower,
+                    zone_upper=upper,
+                    location_kind=location,
+                    event_strength=float(strength),
+                    outside_close_ratio=float(outside_ratio),
+                    outside_volume_ratio=float(rev_state["outside_volume_ratio"]),
+                    event_path_efficiency=float(efficiency_rev),
+                    event_activity_ratio=float(rev_state["activity"]),
+                    event_flow_signed=float(rev_state["flow"]),
+                    event_volume_clock=float(rev_state["volume_clock"]),
+                    consecutive_outside_closes=int(consecutive),
+                    event_value_migration_atr=float(rev_sign * (rev_state["vwap"] - rev_boundary) / atr),
+                    event_vwap=float(rev_state["vwap"]),
+                    event_last_bar_flow_signed=float(rev_state["last_flow"]),
+                    penetration_atr=float(penetration),
+                )
+    return None
+
+
+def _first_defended_return(data: pd.DataFrame, source: SourceEvent, decision: AuctionDecision, tick: float) -> Response | None:
+    side, sign = decision.side, _sign(decision.side)
+    atr = _atr_price(data, decision.confirmation_index)
+    departure: int | None = None
+    start = decision.confirmation_index
+    for index in range(start, min(len(data) - 2, start + max(20, min(90, source.timeframe_minutes))) + 1):
+        close = float(data.iloc[index].close)
+        away = close > decision.zone_upper + max(tick, 0.04 * atr) if side == "LONG" else close < decision.zone_lower - max(tick, 0.04 * atr)
+        if away:
+            departure = index
+            break
+    if departure is None:
+        return None
+    if decision.branch == "FAILED_AUCTION_REVERSAL":
+        hard_invalidation = float(decision.event_extreme)
+    else:
+        hard_invalidation = float(source.lower if side == "LONG" else source.upper)
+    touch: int | None = None
+    retest_extreme: float | None = None
+    response_end = min(len(data) - 2, departure + max(45, min(240, 2 * source.timeframe_minutes)))
+    baseline = _activity_baseline(data, departure)
+    for index in range(departure + 1, response_end + 1):
+        row = data.iloc[index]
+        hard_broken = float(row.low) <= hard_invalidation if side == "LONG" else float(row.high) >= hard_invalidation
+        if hard_broken:
+            return None
+        if decision.branch == "ACCEPTED_AUCTION_CONTINUATION":
+            full_reentry = float(row.close) < source.lower if side == "LONG" else float(row.close) > source.upper
+            if full_reentry:
+                return None
+        overlaps = float(row.low) <= decision.zone_upper and float(row.high) >= decision.zone_lower
+        if touch is None:
+            if not overlaps:
+                continue
+            touch = index
+            retest_extreme = float(row.low if side == "LONG" else row.high)
+        else:
+            retest_extreme = min(float(retest_extreme), float(row.low)) if side == "LONG" else max(float(retest_extreme), float(row.high))
+        spent = float(row.close) < decision.zone_lower - 0.10 * atr if side == "LONG" else float(row.close) > decision.zone_upper + 0.10 * atr
+        if spent:
+            return None
+        prior = data.iloc[index - 1]
+        aligned_body = sign * float(row.close - row.open) / atr
+        closes_away = float(row.close) >= decision.zone_upper if side == "LONG" else float(row.close) <= decision.zone_lower
+        local_control = float(row.close) > float(prior.high) if side == "LONG" else float(row.close) < float(prior.low)
+        frame = data.iloc[touch:index + 1]
+        quote = pd.to_numeric(frame.get("quote_volume", pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0.0)
+        signed = _signed_flow(frame)
+        flow = sign * float(signed.sum()) / max(float(quote.sum()), EPS)
+        last_flow = sign * float(signed.iloc[-1]) / max(float(quote.iloc[-1]), EPS)
+        activity = float(quote.mean()) / max(baseline, EPS) if len(quote) else 0.0
+        initiative = flow > 0.02 and last_flow > 0.0
+        absorption = flow <= 0.02 and last_flow > 0.03 and aligned_body > 0.14 and activity >= 1.08
+        if aligned_body >= 0.08 and closes_away and local_control and (initiative or absorption):
+            strength = max(0.0, aligned_body) + max(0.0, last_flow) + min(activity, 3.0) / 3.0
+            return Response(
+                departure_index=int(departure),
+                touch_index=int(touch),
+                response_index=int(index),
+                retest_extreme=float(retest_extreme),
+                response_kind="ALIGNED_INITIATIVE" if initiative else "ADVERSE_FLOW_ABSORBED_THEN_CONTROL",
+                response_strength=float(strength),
+                response_flow_signed=float(flow),
+                response_activity_ratio=float(activity),
+                response_body_atr=float(aligned_body),
+                response_delay_minutes=float(index - touch),
+            )
+    return None
+
+
+def _proximal_level_price(level: hl.LiquidityLevel, side: str) -> float:
+    return float(level.lower) if side == "LONG" else float(level.upper)
+
+
+def _select_target(
+    data: pd.DataFrame,
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    index: int,
+    entry: float,
+    stop: float,
+    side: str,
+    tick: float,
+) -> tuple[RouteTarget | None, str]:
+    wanted = "HIGH" if side == "LONG" else "LOW"
+    candidates = []
+    for level in _available_route_levels(levels, metadata, index, wanted):
+        proximal = _proximal_level_price(level, side)
+        if (side == "LONG" and proximal > entry + tick) or (side == "SHORT" and proximal < entry - tick):
+            candidates.append((level, proximal))
+    candidates.sort(key=lambda item: (abs(item[1] - entry), -metadata[item[0].level_id].semantic_weight, item[0].level_id))
+    target_level: hl.LiquidityLevel | None = None
+    proximal = 0.0
+    for level, candidate_price in candidates:
+        meta = metadata[level.level_id]
+        if bool(meta.direction_source) or bool(meta.accumulated) or int(level.timeframe_minutes) >= 15 or int(level.defense_count) >= 2:
+            target_level, proximal = level, float(candidate_price)
+            break
+    if target_level is None:
