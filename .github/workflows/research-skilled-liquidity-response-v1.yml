@@ -1,0 +1,135 @@
+name: Skilled liquidity response v1 causal diagnosis
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["research_skilled_liquidity_response"]
+    paths:
+      - ".github/skilled-liquidity-response-trigger"
+      - ".github/workflows/research-skilled-liquidity-response-v1.yml"
+      - "research/candidate-skilled-liquidity-response-v1/**"
+
+concurrency:
+  group: research-skilled-liquidity-response-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-skilled-liquidity-response-v1
+  PYTHONPATH: research/candidate-skilled-liquidity-response-v1:research/candidate-directional-liquidity-policy-v2:research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/skilled-liquidity-response-v1-smoke
+      OUT: artifacts/skilled-liquidity-response-v1-smoke/dev-2025-feb
+      RESULT: artifacts/skilled-liquidity-response-v1-smoke/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_skilled_liquidity_response
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/skilled-liquidity-response-v1-smoke
+          key: skilled-liquidity-response-v1-smoke-2025-feb-w30-data-v1
+
+      - name: Check the causal auction-response primitive
+        run: python "$CANDIDATE/self_check.py"
+
+      - name: Compile the complete candidate
+        run: python -m compileall -q "$CANDIDATE"
+
+      - name: Harvest one short four-market response universe
+        run: |
+          set -o pipefail
+          mkdir -p "$CACHE" "$OUT" "$RESULT"
+          python "$CANDIDATE/episode_policy_exec.py" \
+            --start 2025-02-01 --end 2025-02-04 --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" \
+            2>&1 | tee "$OUT/harvest.log"
+
+      - name: Attach exact source identity
+        run: |
+          SOURCE_SHA="$(git rev-parse HEAD)" OUT="$OUT" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["OUT"]) / "summary.json"
+          data = json.loads(path.read_text(encoding="utf-8"))
+          data.update({
+              "period": "dev-2025-feb-smoke",
+              "role": "dev",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_run_id": "${{ github.run_id }}",
+          })
+          path.write_text(
+              json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Route the actual single-slot continuous account
+        run: |
+          set -o pipefail
+          python "$CANDIDATE/route_skilled_policy.py" \
+            --root artifacts/skilled-liquidity-response-v1-smoke \
+            --output "$RESULT" \
+            2>&1 | tee "$RESULT/route.log"
+
+      - name: Print direct trading evidence
+        run: |
+          RESULT="$RESULT" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RESULT"])
+          summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+          print(json.dumps({
+              "episode_rows": summary.get("episode_rows"),
+              "order_rows": summary.get("order_rows"),
+              "no_trade_reason_counts": summary.get("no_trade_reason_counts"),
+              "account": summary.get("account"),
+          }, ensure_ascii=False, indent=2, default=str))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skilled-liquidity-response-v1-causal-diagnosis
+          path: artifacts/skilled-liquidity-response-v1-smoke/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish exact research result on the research branch
+        if: success()
+        run: |
+          set -euo pipefail
+          destination=research_results/skilled_liquidity_response_v1/latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          for file in summary.json route.log selected_orders.csv closed_trades.csv market_event_or_account_conflicts.csv no_trade_opportunity_audit.csv all_plans.csv.gz all_episodes.csv.gz; do
+            cp "$RESULT/$file" "$destination/$file" 2>/dev/null || true
+          done
+          cp "$OUT/summary.json" "$destination/harvest_summary.json"
+          cp "$OUT/harvest.log" "$destination/harvest.log"
+          printf '{"source_sha":"%s","published_at":"%s","workflow_run_id":"%s","workflow":"skilled-liquidity-response-v1-causal-diagnosis"}\n' \
+            "$(git rev-parse HEAD)" "$(date -u +%FT%TZ)" "${{ github.run_id }}" \
+            > "$destination/run.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record skilled liquidity response v1 diagnosis" || exit 0
+          git push origin HEAD:research_skilled_liquidity_response
