@@ -76,6 +76,10 @@ On every source push to this branch it:
 7. commits compact source-bound evidence to
    `research_results/candidate_liquidity_episode_policy_v1/latest`.
 
+Every committed reproduction record names the exact source SHA that produced it.
+A later GitHub Actions publication commit therefore cannot be confused with the
+policy source commit it evaluated.
+
 Full artifacts remain attached to the GitHub Actions run. The compact committed
 record contains only JSON summaries and source identity, not a substitute result.
 
