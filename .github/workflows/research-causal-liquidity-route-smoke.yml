@@ -1,4 +1,4 @@
-name: Research causal liquidity route executable smoke
+name: Research causal liquidity route v2 executable smoke
 
 on:
   workflow_dispatch:
@@ -6,7 +6,8 @@ on:
     branches: ["research_causal_liquidity_route_system"]
     paths:
       - ".github/workflows/research-causal-liquidity-route-smoke.yml"
-      - "research/candidate-causal-liquidity-route-system/**"
+      - "research/candidate-causal-liquidity-route-system/causal_route_research.py"
+      - "research/candidate-causal-liquidity-route-system/causal_route_research.part*.pyinc"
 
 concurrency:
   group: research-causal-liquidity-route-smoke
@@ -31,35 +32,35 @@ jobs:
         with:
           ref: research_causal_liquidity_route_system
           fetch-depth: 0
-      - name: Compile fragments and run two-day four-market trade clinic
+      - name: Compile fragments and run two-day four-market structural v2 clinic
         run: |
           set +e
-          mkdir -p .cache/causal-route-smoke artifacts/causal-route-smoke
+          mkdir -p .cache/causal-route-smoke-v2 artifacts/causal-route-smoke-v2
           python research/candidate-causal-liquidity-route-system/causal_route_research.py --help \
-            > artifacts/causal-route-smoke/help.log 2>&1
+            > artifacts/causal-route-smoke-v2/help.log 2>&1
           help_status=$?
           if [ "$help_status" -eq 0 ]; then
             python research/candidate-causal-liquidity-route-system/causal_route_research.py \
               --start 2025-08-18 --end 2025-08-20 --role dev --warmup-days 35 \
               --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
-              --cache .cache/causal-route-smoke \
-              --output artifacts/causal-route-smoke/result \
-              > artifacts/causal-route-smoke/run.log 2>&1
+              --cache .cache/causal-route-smoke-v2 \
+              --output artifacts/causal-route-smoke-v2/result \
+              > artifacts/causal-route-smoke-v2/run.log 2>&1
             run_status=$?
           else
             run_status=97
           fi
-          DEST=research_results/causal_liquidity_route_system/executable_smoke
+          DEST=research_results/causal_liquidity_route_system/executable_smoke_v2
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp artifacts/causal-route-smoke/help.log "$DEST/help.log" || true
-          cp artifacts/causal-route-smoke/run.log "$DEST/run.log" || true
+          cp artifacts/causal-route-smoke-v2/help.log "$DEST/help.log" || true
+          cp artifacts/causal-route-smoke-v2/run.log "$DEST/run.log" || true
           for file in summary.json global_trades.csv loss_clinic.csv no_trade_clinic.csv \
                       account_skipped.csv candidate_plans.csv.gz source_event_diagnostics.csv.gz; do
-            cp "artifacts/causal-route-smoke/result/$file" "$DEST/$file" || true
+            cp "artifacts/causal-route-smoke-v2/result/$file" "$DEST/$file" || true
           done
-          if [ -d artifacts/causal-route-smoke/result/cases ]; then
-            cp -R artifacts/causal-route-smoke/result/cases "$DEST/cases"
+          if [ -d artifacts/causal-route-smoke-v2/result/cases ]; then
+            cp -R artifacts/causal-route-smoke-v2/result/cases "$DEST/cases"
           fi
           printf '{"help_status":%s,"run_status":%s,"head_sha":"%s"}\n' \
             "$help_status" "$run_status" "$GITHUB_SHA" > "$DEST/status.json"
@@ -68,7 +69,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST"
           if ! git diff --cached --quiet; then
-            git commit -m "Record causal route four-market trade clinic [skip ci]"
+            git commit -m "Record causal route structural v2 clinic [skip ci]"
             git pull --rebase origin research_causal_liquidity_route_system
             git push origin HEAD:research_causal_liquidity_route_system
           fi
@@ -76,7 +77,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: causal-liquidity-route-executable-smoke
-          path: artifacts/causal-route-smoke/**
+          name: causal-liquidity-route-v2-executable-smoke
+          path: artifacts/causal-route-smoke-v2/**
           if-no-files-found: warn
           retention-days: 14
