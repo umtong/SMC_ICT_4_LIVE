@@ -1,0 +1,43 @@
+name: Inspect unified liquidity world model v2 run
+
+on:
+  push:
+    branches: ["research_liquidity_world_model_v2"]
+    paths:
+      - ".github/workflows/research-liquidity-world-model-v2-status.yml"
+      - "research/candidate-liquidity-world-model-v2/.status-dispatch"
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_world_model_v2
+      - name: Read latest research run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p research_results/liquidity_world_model_v2/workflow_status
+          gh api \
+            'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-liquidity-world-model-v2.yml/runs?branch=research_liquidity_world_model_v2&per_page=1' \
+            --jq '.workflow_runs[0] | {id, head_sha, status, conclusion, created_at, updated_at, html_url}' \
+            > research_results/liquidity_world_model_v2/workflow_status/status.json
+          cat research_results/liquidity_world_model_v2/workflow_status/status.json
+      - name: Publish status
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research_results/liquidity_world_model_v2/workflow_status/status.json
+          git commit -m "Record liquidity world-model v2 workflow status [skip ci]" || exit 0
+          git push origin HEAD:research_liquidity_world_model_v2
