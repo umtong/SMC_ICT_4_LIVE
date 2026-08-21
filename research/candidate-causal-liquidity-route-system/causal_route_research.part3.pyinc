@@ -101,7 +101,7 @@ def _classify_auction(data: pd.DataFrame, source: SourceEvent, tick: float) -> A
             and (initiative_cont or absorption_cont or activity >= 1.10)
         )
         if acceptance:
-            gap = _directional_gap(data, interaction, index + 2, continuation_side, tick)
+            gap = _directional_gap(data, interaction, index, continuation_side, tick)
             ob = _last_opposite_order_block(data, max(0, interaction - 8), index, continuation_side, tick)
             lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
             strength = (
@@ -144,7 +144,7 @@ def _classify_auction(data: pd.DataFrame, source: SourceEvent, tick: float) -> A
                 and (initiative_rev or absorption_rev or activity >= 1.08)
             )
             if failure:
-                gap = _directional_gap(data, interaction, index + 2, reversal_side, tick)
+                gap = _directional_gap(data, interaction, index, reversal_side, tick)
                 ob = _last_opposite_order_block(data, interaction, index, reversal_side, tick)
                 lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
                 strength = (
