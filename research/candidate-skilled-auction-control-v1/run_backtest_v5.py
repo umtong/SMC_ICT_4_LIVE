@@ -15,23 +15,22 @@ from structural_auction_control_v5 import (
     FAILED_AUCTION_JOURNEY_RULE,
     FIRST_CAUSAL_DESTINATION_RULE,
     ONE_CAUSAL_JOURNEY_RULE,
-    StructuralAuctionControlV5Bundle,
 )
+from structural_auction_control_v5_market import StructuralAuctionControlV5MarketBundle
 
 
 # Retain the exact aggressor-flow data, order lifecycle, costs, 3% quantity and
-# single global account.  The market-factor strategy is itself the same flow
-# strategy with one additional responsibility: observe the completed four-symbol
-# one-minute bucket and propagate a BTC/ETH-led common-control state before local
-# plans are emitted.
-_flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV5Bundle
+# single global account.  The market-factor strategy observes the completed
+# four-symbol one-minute bucket, then the integration bundle propagates that
+# state to every compatible structural sensor before local decisions are made.
+_flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV5MarketBundle
 _flow._runner.EasyChartRE1Strategy = EasyChartRE1LocalAuctionStrategy
 
 
 def _rewrite(output: Path) -> None:
     _flow._rewrite_metadata(output)
     metadata = {
-        "candidate": "candidate-structural-auction-control-v5",
+        "candidate": "candidate-structural-auction-control-v5-market",
         "decision_policy": (
             "event-time public auction journey: failed auction, accepted auction "
             "or defended auction -> immutable structural invalidation and first causal destination"
