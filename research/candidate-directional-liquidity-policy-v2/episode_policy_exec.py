@@ -9,9 +9,13 @@ import pandas as pd
 
 import departure_first_return_harvest_fixed as fixed
 import directional_liquidity_policy as policy
+from metrics_compat import load_range_metrics_sparse
 
 core = fixed.core
+# Replace only two inherited extension points.  Source/event generation remains the
+# mature point-in-time implementation; plan construction is the new coherent policy.
 core.generate_symbol = policy.generate_symbol
+core.load_range_metrics = load_range_metrics_sparse
 _BASE_RUN = core.run_research
 
 
@@ -47,6 +51,7 @@ def run_research(*, start, end, warmup_days, symbols, cache, output):
                 "fitted_admission_model": False,
                 "symbol_identity_feature": False,
                 "policy_model_inputs_are_causal": True,
+                "optional_metrics_are_sparse_safe": True,
             }
         )
         (Path(output) / "summary.json").write_text(
