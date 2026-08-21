@@ -16,9 +16,17 @@ on:
       - "research/candidate-liquidity-world-model-v1/**"
       - "research/candidate-liquidity-auction-v2/dynamic_boundaries.py"
       - "research/candidate-liquidity-auction-v5/**"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-policy-v1.yml"
+      - "research/candidate-liquidity-episode-policy-v1/**"
+      - "research/candidate-liquidity-world-model-v1/**"
+      - "research/candidate-liquidity-auction-v2/dynamic_boundaries.py"
+      - "research/candidate-liquidity-auction-v5/**"
 
 concurrency:
-  group: candidate-liquidity-episode-policy-v1-${{ github.ref }}
+  group: candidate-liquidity-episode-policy-v1-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -76,7 +84,7 @@ jobs:
 
   real-data-smoke:
     needs: deterministic-contract
-    if: ${{ github.event_name == 'push' || inputs.run_real_smoke }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.run_real_smoke) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     container:
@@ -137,13 +145,13 @@ jobs:
         run: mkdir -p .reproduction-download
 
       - uses: actions/download-artifact@v4
-        if: ${{ needs.deterministic-contract.result == 'success' }}
+        if: ${{ needs['deterministic-contract'].result == 'success' }}
         with:
           name: candidate-liquidity-episode-policy-v1-contract
           path: .reproduction-download/contract
 
       - uses: actions/download-artifact@v4
-        if: ${{ needs.real-data-smoke.result == 'success' }}
+        if: ${{ needs['real-data-smoke'].result == 'success' }}
         with:
           name: candidate-liquidity-episode-policy-v1-real-smoke
           path: .reproduction-download/smoke
@@ -177,8 +185,8 @@ jobs:
               "workflow": os.environ["GITHUB_WORKFLOW"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "deterministic_contract_job": "${{ needs.deterministic-contract.result }}",
-              "real_data_smoke_job": "${{ needs.real-data-smoke.result }}",
+              "deterministic_contract_job": "${{ needs['deterministic-contract'].result }}",
+              "real_data_smoke_job": "${{ needs['real-data-smoke'].result }}",
               "record_is_compact_not_full_artifact": True,
           }
           (out / "run.json").write_text(
@@ -196,5 +204,5 @@ jobs:
       - name: Preserve failure as workflow failure
         if: always()
         run: |
-          test "${{ needs.deterministic-contract.result }}" = "success"
-          test "${{ needs.real-data-smoke.result }}" = "success"
+          test "${{ needs['deterministic-contract'].result }}" = "success"
+          test "${{ needs['real-data-smoke'].result }}" = "success"
