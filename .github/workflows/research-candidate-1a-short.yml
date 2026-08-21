@@ -1,0 +1,161 @@
+name: Research candidate 1a causal auction short diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_1a"]
+    paths:
+      - ".github/workflows/research-candidate-1a-short.yml"
+      - "research/candidate-1a/**"
+      - "research/candidate-auction-episode-system/**"
+      - "research/candidate-liquidity-auction-v6/**"
+      - "research/candidate-liquidity-auction-v5/**"
+
+concurrency:
+  group: research-candidate-1a-short
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_1a
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_1a/workflow_status
+          mkdir -p "$DEST"
+          cat > "$DEST/status.json" <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "head_sha": "${{ github.sha }}",
+            "status": "RUNNING",
+            "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST/status.json"
+          git commit -m "Track candidate 1a diagnostic ${{ github.run_id }} [skip ci]"
+          git push origin HEAD:research_candidate_1a
+
+  harvest:
+    needs: announce
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: dev, period: dev-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1a:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-1a/${{ matrix.period }}
+      OUT: artifacts/candidate-1a/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_1a
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-1a/causal_auction_harvest.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-1a-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-1a/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_1a
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-1a-dev-*
+          path: artifacts/candidate-1a/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-1a-fresh-*
+          path: artifacts/candidate-1a/fresh
+      - run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-1a/result
+          python research/candidate-auction-episode-system/auction_episode_policy.py \
+            --development-root artifacts/candidate-1a/development \
+            --fresh-root artifacts/candidate-1a/fresh \
+            --output artifacts/candidate-1a/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-1a-system-result
+          path: artifacts/candidate-1a/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_1a/short_diagnostic
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp artifacts/candidate-1a/result/summary.json "$DEST/"
+          for file in \
+            fresh_orders.csv fresh_trades.csv fresh_decisions.csv \
+            fresh_loss_clinic.csv fresh_no_trade_clinic.csv \
+            development_loss_clinic.csv development_no_trade_clinic.csv; do
+            if [ -f "artifacts/candidate-1a/result/$file" ]; then
+              cp "artifacts/candidate-1a/result/$file" "$DEST/$file"
+            fi
+          done
+          STATUS=research_results/candidate_1a/workflow_status/status.json
+          cat > "$STATUS" <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "head_sha": "${{ github.sha }}",
+            "status": "COMPLETED",
+            "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST" "$STATUS"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record candidate 1a short diagnostic [skip ci]"
+            git push origin HEAD:research_candidate_1a
+          fi
