@@ -6,6 +6,7 @@ on:
     branches: ["research_structural_auction_control"]
     paths:
       - "research/candidate-skilled-auction-control-v1/structural_auction_control_v5.py"
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v5_market.py"
       - "research/candidate-skilled-auction-control-v1/run_backtest_v5.py"
       - ".github/workflows/research-structural-auction-control-v5-smoke.yml"
       - ".dispatch-structural-auction-control-v5-smoke"
@@ -45,17 +46,18 @@ jobs:
             research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py \
             research/candidate-skilled-auction-control-v1/structural_auction_control_v2_strict.py \
             research/candidate-skilled-auction-control-v1/structural_auction_control_v5.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v5_market.py \
             research/candidate-skilled-auction-control-v1/run_backtest_v5.py \
             research/candidate-skilled-auction-control-v1/summarize_v2_evidence.py
           python - <<'PY'
-          from structural_auction_control_v5 import StructuralAuctionControlV5Bundle
+          from structural_auction_control_v5_market import StructuralAuctionControlV5MarketBundle
           ticks = {"BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.001, "XRPUSDT": 0.0001}
           for symbol, tick in ticks.items():
-              bundle = StructuralAuctionControlV5Bundle(symbol, tick, 1.0)
+              bundle = StructuralAuctionControlV5MarketBundle(symbol, tick, 1.0)
               assert len(bundle.sources) == 4
               assert bundle.symbol == symbol
               assert bundle.plans == []
-          print("structural v5 construction passed")
+          print("structural v5 market construction passed")
           PY
       - name: Run public-example day in one four-market account
         id: run
