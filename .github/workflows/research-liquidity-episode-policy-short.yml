@@ -1,0 +1,194 @@
+name: Research liquidity episode policy short diagnosis
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_episode_policy"]
+    paths:
+      - ".github/workflows/research-liquidity-episode-policy-short.yml"
+      - "research/candidate-liquidity-episode-policy-v1/**"
+
+concurrency:
+  group: research-liquidity-episode-policy-short
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/liquidity-episode-policy/${{ matrix.period }}
+      OUT: artifacts/liquidity-episode-policy/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      PERIOD: ${{ matrix.period }}
+      ROLE: ${{ matrix.role }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_episode_policy
+
+      - name: Harvest restored one-plan episodes
+        id: harvest
+        run: |
+          set +e
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-liquidity-episode-policy-v1/episode_policy_exec.py \
+            --start "$START" --end "$END" --warmup-days 75 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" \
+            2>&1 | tee "$OUT/harvest.log"
+          rc=${PIPESTATUS[0]}
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path(os.environ["OUT"])
+          path = out / "summary.json"
+          data = json.loads(path.read_text()) if path.exists() else {}
+          data.update({
+              "period": os.environ["PERIOD"],
+              "role": os.environ["ROLE"],
+              "harvest_exit_code": int(os.environ.get("HARVEST_RC", "0")),
+          })
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
+          PY
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+        env:
+          HARVEST_RC: "0"
+
+      - name: Correct recorded harvest exit code
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["OUT"]) / "summary.json"
+          data = json.loads(path.read_text()) if path.exists() else {}
+          data["harvest_exit_code"] = int("${{ steps.harvest.outputs.exit_code || '1' }}")
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
+          PY
+
+      - name: Preserve exact price-volume path
+        if: ${{ steps.harvest.outputs.exit_code == '0' }}
+        run: |
+          set +e
+          mkdir -p "$OUT/chart"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "$PERIOD" --start "$START" --end "$END" \
+            --cache "$CACHE" --output "$OUT/chart" \
+            2>&1 | tee "$OUT/chart_export.log"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-policy-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/liquidity-episode-policy/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1
+      PYTHONUNBUFFERED: "1"
+      UNIVERSE: artifacts/liquidity-episode-policy/universe
+      RESULT: artifacts/liquidity-episode-policy/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_episode_policy
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-episode-policy-*
+          path: artifacts/liquidity-episode-policy/universe
+
+      - name: Route causal policy through one account
+        id: route
+        run: |
+          set +e
+          mkdir -p "$RESULT"
+          python research/candidate-liquidity-episode-policy-v1/route_episode_policy.py \
+            --root "$UNIVERSE" --output "$RESULT" \
+            2>&1 | tee "$RESULT/route.log"
+          rc=${PIPESTATUS[0]}
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          if [ ! -f "$RESULT/summary.json" ]; then
+            ROUTE_RC="$rc" python -c 'import json,os,pathlib; pathlib.Path(os.environ["RESULT"],"summary.json").write_text(json.dumps({"route_exit_code": int(os.environ["ROUTE_RC"]), "error": "route did not produce summary.json", "diagnostic_windows_are_not_a_long_continuous_backtest": True}, indent=2) + "\n")'
+          fi
+          exit 0
+
+      - name: Record workflow status
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = Path(os.environ["RESULT"])
+          path = result / "summary.json"
+          data = json.loads(path.read_text()) if path.exists() else {}
+          data["route_exit_code"] = int("${{ steps.route.outputs.exit_code || '1' }}")
+          data["harvest_job_result"] = "${{ needs.harvest.result }}"
+          data["source_sha"] = "${{ github.sha }}"
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-policy-short-result
+          path: artifacts/liquidity-episode-policy/result/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish compact diagnostic result on branch
+        if: always()
+        run: |
+          set -euo pipefail
+          destination=research_results/liquidity_episode_policy_v1/latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp "$RESULT/summary.json" "$destination/summary.json"
+          cp "$RESULT/route.log" "$destination/route.log" 2>/dev/null || true
+          cp "$RESULT/selected_orders.csv" "$destination/selected_orders.csv" 2>/dev/null || true
+          cp "$RESULT/closed_trades.csv" "$destination/closed_trades.csv" 2>/dev/null || true
+          cp "$RESULT/near_miss_rejected_orders.csv" "$destination/near_miss_rejected_orders.csv" 2>/dev/null || true
+          printf '{"source_sha":"%s","published_at":"%s","workflow":"short-diagnosis"}\n' \
+            "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "$destination/run.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record restored episode-policy short diagnosis" || exit 0
+          git push origin HEAD:research_liquidity_episode_policy
