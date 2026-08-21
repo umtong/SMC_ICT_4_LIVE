@@ -1,4 +1,4 @@
-name: Research candidate 1a causal auction short diagnostic
+name: Research candidate 1a control-transfer diagnostic
 
 on:
   workflow_dispatch:
@@ -6,7 +6,9 @@ on:
     branches: ["research_candidate_1a"]
     paths:
       - ".github/workflows/research-candidate-1a-short.yml"
-      - "research/candidate-1a/**"
+      - "research/candidate-1a/causal_auction_harvest.py"
+      - "research/candidate-1a/control_transfer_harvest.py"
+      - "research/candidate-1a/control_transfer_policy.py"
       - "research/candidate-auction-episode-system/**"
       - "research/candidate-liquidity-auction-v6/**"
       - "research/candidate-liquidity-auction-v5/**"
@@ -32,7 +34,7 @@ jobs:
           ref: research_candidate_1a
       - run: |
           set -euo pipefail
-          DEST=research_results/candidate_1a/workflow_status
+          DEST=research_results/candidate_1a/control_transfer_status
           mkdir -p "$DEST"
           cat > "$DEST/status.json" <<EOF
           {
@@ -45,7 +47,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST/status.json"
-          git commit -m "Track candidate 1a diagnostic ${{ github.run_id }} [skip ci]"
+          git commit -m "Track candidate 1a control-transfer diagnostic ${{ github.run_id }} [skip ci]"
           git push origin HEAD:research_candidate_1a
 
   harvest:
@@ -71,8 +73,8 @@ jobs:
     env:
       PYTHONPATH: research/candidate-1a:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
       PYTHONUNBUFFERED: "1"
-      CACHE: .cache/candidate-1a/${{ matrix.period }}
-      OUT: artifacts/candidate-1a/${{ matrix.period }}
+      CACHE: .cache/candidate-1a-control/${{ matrix.period }}
+      OUT: artifacts/candidate-1a-control/${{ matrix.period }}
       START: ${{ matrix.start }}
       END: ${{ matrix.end }}
     steps:
@@ -82,26 +84,25 @@ jobs:
       - run: |
           set -euo pipefail
           mkdir -p "$CACHE" "$OUT"
-          python research/candidate-1a/causal_auction_harvest.py \
+          python research/candidate-1a/control_transfer_harvest.py \
             --start "$START" --end "$END" --warmup-days 45 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" --output "$OUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-1a-${{ matrix.role }}-${{ matrix.period }}
-          path: artifacts/candidate-1a/${{ matrix.period }}/**
+          name: candidate-1a-control-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-1a-control/${{ matrix.period }}/**
           if-no-files-found: error
           retention-days: 30
 
   route-and-publish:
     needs: harvest
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 60
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
-      PYTHONPATH: research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -109,40 +110,38 @@ jobs:
           ref: research_candidate_1a
       - uses: actions/download-artifact@v4
         with:
-          pattern: candidate-1a-dev-*
-          path: artifacts/candidate-1a/development
+          pattern: candidate-1a-control-dev-*
+          path: artifacts/candidate-1a-control/development
       - uses: actions/download-artifact@v4
         with:
-          pattern: candidate-1a-fresh-*
-          path: artifacts/candidate-1a/fresh
+          pattern: candidate-1a-control-fresh-*
+          path: artifacts/candidate-1a-control/fresh
       - run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-1a/result
-          python research/candidate-auction-episode-system/auction_episode_policy.py \
-            --development-root artifacts/candidate-1a/development \
-            --fresh-root artifacts/candidate-1a/fresh \
-            --output artifacts/candidate-1a/result
+          python research/candidate-1a/control_transfer_policy.py \
+            --root artifacts/candidate-1a-control/development \
+            --output artifacts/candidate-1a-control/result/development
+          python research/candidate-1a/control_transfer_policy.py \
+            --root artifacts/candidate-1a-control/fresh \
+            --output artifacts/candidate-1a-control/result/fresh
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-1a-system-result
-          path: artifacts/candidate-1a/result/**
+          name: candidate-1a-control-system-result
+          path: artifacts/candidate-1a-control/result/**
           if-no-files-found: error
           retention-days: 30
       - run: |
           set -euo pipefail
-          DEST=research_results/candidate_1a/short_diagnostic
+          DEST=research_results/candidate_1a/control_transfer_diagnostic
           rm -rf "$DEST"
-          mkdir -p "$DEST"
-          cp artifacts/candidate-1a/result/summary.json "$DEST/"
-          for file in \
-            fresh_orders.csv fresh_trades.csv fresh_decisions.csv \
-            fresh_loss_clinic.csv fresh_no_trade_clinic.csv \
-            development_loss_clinic.csv development_no_trade_clinic.csv; do
-            if [ -f "artifacts/candidate-1a/result/$file" ]; then
-              cp "artifacts/candidate-1a/result/$file" "$DEST/$file"
-            fi
-          done
-          STATUS=research_results/candidate_1a/workflow_status/status.json
+          mkdir -p "$DEST/development" "$DEST/fresh"
+          cp artifacts/candidate-1a-control/result/development/summary.json "$DEST/development/"
+          cp artifacts/candidate-1a-control/result/development/orders.csv "$DEST/development/"
+          cp artifacts/candidate-1a-control/result/development/trades.csv "$DEST/development/"
+          cp artifacts/candidate-1a-control/result/fresh/summary.json "$DEST/fresh/"
+          cp artifacts/candidate-1a-control/result/fresh/orders.csv "$DEST/fresh/"
+          cp artifacts/candidate-1a-control/result/fresh/trades.csv "$DEST/fresh/"
+          STATUS=research_results/candidate_1a/control_transfer_status/status.json
           cat > "$STATUS" <<EOF
           {
             "run_id": "${{ github.run_id }}",
@@ -155,7 +154,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST" "$STATUS"
-          if ! git diff --cached --quiet; then
-            git commit -m "Record candidate 1a short diagnostic [skip ci]"
-            git push origin HEAD:research_candidate_1a
-          fi
+          git commit -m "Record candidate 1a control-transfer diagnostic [skip ci]"
+          git push origin HEAD:research_candidate_1a
