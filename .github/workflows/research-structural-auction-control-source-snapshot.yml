@@ -1,0 +1,47 @@
+name: research-structural-auction-control-source-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_structural_auction_control"]
+    paths:
+      - ".github/workflows/research-structural-auction-control-source-snapshot.yml"
+      - ".dispatch-structural-auction-control-source-snapshot"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+      - name: Package complete relevant source
+        run: |
+          set -euo pipefail
+          tar -czf /tmp/structural-auction-control-source.tar.gz \
+            research/candidate-skilled-auction-control-v1 \
+            research/candidate-easychart_re1 \
+            research/candidate-easychart-v5 \
+            research/candidate-easychart-v3 \
+            .github/workflows/research-structural-auction-control-v1-pr.yml \
+            .github/workflows/research-structural-auction-control-v2-diagnostic.yml \
+            .github/workflows/research-structural-auction-control-v2-evidence.yml \
+            .github/workflows/research-structural-auction-control-v2-fast.yml \
+            .github/workflows/research-structural-auction-control-v2-strict-smoke.yml \
+            .github/workflows/research-structural-auction-control-v3-evidence.yml \
+            .github/workflows/research-structural-auction-control-v3-smoke.yml \
+            .github/workflows/research-structural-auction-control-v4-smoke.yml \
+            pyproject.toml uv.lock Dockerfile.research
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-auction-control-source-${{ github.sha }}
+          path: /tmp/structural-auction-control-source.tar.gz
+          retention-days: 7
+          if-no-files-found: error
