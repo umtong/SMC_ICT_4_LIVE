@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Decision-window-correct executable for candidate-1a two-sided auction V2.
 
-The inherited data loader intentionally keeps three post-window days so positions
-opened before the requested end can resolve at stop or target.  Candidate overlays had
-replaced the fixed wrapper's generator and therefore also emitted *new entries* during
-those three label-only days.  This wrapper restores the exact contract: entry decisions
-must occur in [start, end), while their causal exits may occur after end.
+The inherited loader deliberately keeps three post-window days so entries opened before
+``end`` can resolve at stop or target.  Candidate overlays replaced the fixed wrapper's
+generator and accidentally emitted new entries during those label-only days.  This
+wrapper restores [start, end) decisions while retaining post-end exits.
 """
 from __future__ import annotations
 
-from typing import Any
+import os
+import sys
 
 import pandas as pd
 
@@ -18,20 +18,34 @@ import two_sided_source_auction_harvest_v2 as v2
 core = v2.core
 
 
+def _decision_end_ns() -> int | None:
+    # Workflows expose END.  Direct CLI use is also supported so the contract does not
+    # depend on a hidden module-global in one layer of the inherited wrapper stack.
+    text = os.environ.get("DECISION_END") or os.environ.get("END")
+    if not text:
+        for index, token in enumerate(sys.argv[:-1]):
+            if token == "--end":
+                text = sys.argv[index + 1]
+                break
+    if not text:
+        return None
+    return int(pd.Timestamp(text, tz="UTC").value)
+
+
 def generate_symbol(symbol, data, levels, metadata, trading_start):
     frame, counts = v2.generate_symbol(
         symbol, data, levels, metadata, trading_start
     )
-    decision_end = getattr(core, "_DECISION_END_NS", None)
+    decision_end = _decision_end_ns()
     if decision_end is not None and not frame.empty:
         frame = frame[
-            pd.to_numeric(frame.order_time_ns, errors="coerce")
-            < int(decision_end)
+            pd.to_numeric(frame.order_time_ns, errors="coerce") < decision_end
         ].copy()
         counts = dict(counts)
         counts["plans"] = int(len(frame))
         counts["states"] = int(frame.state_id.nunique())
         counts["decision_window_filter_restored"] = True
+        counts["decision_end_ns"] = int(decision_end)
     return frame, counts
 
 
