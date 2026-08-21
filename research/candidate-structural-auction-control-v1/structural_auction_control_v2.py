@@ -1,6 +1,6 @@
 """Absorption-confirmed revision of structural auction control.
 
-The state machine remains identical to v1. The decision evidence is narrowed
+The state machine remains identical to v1.  The decision evidence is narrowed
 mechanistically: the completed first-return entry bar must absorb meaningful
 aggressive flow against the intended trade while closing in structural control.
 Pure aligned aggression is not accepted because it usually confirms after
@@ -132,13 +132,14 @@ class EntryRetestAbsorptionMixin:
         )
         if self.plans and self.plans[-1].plan_id == plan.plan_id:
             self.plans[-1] = refined
-        current = self.auction_flow.latest
         self._trace(
             "entry_retest_absorption_confirmed",
             bar.ts_close_ns,
             setup,
             plan_id=refined.plan_id,
-            signed_taker_quote=current.signed_taker_quote if current is not None else None,
+            signed_taker_quote=current.signed_taker_quote
+            if (current := self.auction_flow.last_observation) is not None
+            else None,
             activity_ratio=current.activity_ratio if current is not None else None,
             delta_ratio=current.delta_ratio if current is not None else None,
             rule_provenance=ENTRY_RETEST_ABSORPTION_RULE,
