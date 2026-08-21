@@ -1,0 +1,215 @@
+        return None, "NO_LIVE_OPPOSING_LIQUIDITY"
+    target = proximal - _sign(side) * TARGET_INSIDE_TICKS * tick
+    risk = abs(entry - stop)
+    gross_rr = abs(target - entry) / max(risk, EPS)
+    if gross_rr < 1.0:
+        return None, "NEAREST_OPPOSING_LIQUIDITY_RR_BELOW_ONE"
+    target_distance = abs(target - entry)
+    target_weight = max(float(metadata[target_level.level_id].semantic_weight), EPS)
+    barriers: list[tuple[hl.LiquidityLevel, float]] = []
+    for level in _available_route_levels(levels, metadata, index, wanted):
+        if level.level_id == target_level.level_id:
+            continue
+        price = _proximal_level_price(level, side)
+        if (entry < price < target if side == "LONG" else target < price < entry):
+            barriers.append((level, price))
+    pressure, strongest = 0.0, 0.0
+    for barrier, price in barriers:
+        distance_fraction = abs(price - entry) / max(target_distance, EPS)
+        ratio = float(metadata[barrier.level_id].semantic_weight) / target_weight
+        pressure += ratio * math.exp(-1.5 * distance_fraction)
+        strongest = max(strongest, ratio)
+    clarity = 1.0 / (1.0 + pressure)
+    congestion = _volume_congestion(data, index, entry, target)
+    if barriers and clarity < 0.18 and strongest >= 1.0:
+        return None, "ROUTE_BLOCKED_BY_STRONGER_LIVE_LIQUIDITY"
+    return RouteTarget(
+        level_id=str(target_level.level_id),
+        kind=str(metadata[target_level.level_id].pool_kind),
+        price=float(target),
+        structure_price=float(target_level.price),
+        timeframe_minutes=int(target_level.timeframe_minutes),
+        semantic_weight=float(target_weight),
+        gross_rr=float(gross_rr),
+        route_clarity=float(clarity),
+        barrier_count=int(len(barriers)),
+        strongest_barrier_ratio=float(strongest),
+        volume_congestion=float(congestion),
+        zone_lower=float(target_level.lower),
+        zone_upper=float(target_level.upper),
+    ), ""
+
+
+def _structural_stop(data: pd.DataFrame, source: SourceEvent, decision: AuctionDecision, response: Response, tick: float) -> float:
+    atr = _atr_price(data, response.response_index)
+    buffer = max(2.0 * tick, 0.035 * atr)
+    if decision.branch == "FAILED_AUCTION_REVERSAL":
+        reference = float(decision.event_extreme)
+    else:
+        reference = (
+            min(float(response.retest_extreme), float(decision.zone_lower))
+            if decision.side == "LONG"
+            else max(float(response.retest_extreme), float(decision.zone_upper))
+        )
+    return reference - buffer if decision.side == "LONG" else reference + buffer
+
+
+def _defended_limit_price(decision: AuctionDecision, side: str, tick: float) -> float:
+    price = float(decision.zone_upper if side == "LONG" else decision.zone_lower)
+    return round(price / tick) * tick
+
+
+def _label_limit_trade(
+    data: pd.DataFrame,
+    response: Response,
+    side: str,
+    entry_limit: float,
+    stop: float,
+    target: float,
+    tick: float,
+) -> tuple[TradeLabel | None, str]:
+    order_index = int(response.response_index) + 1
+    if order_index >= len(data):
+        return None, "NO_BAR_AFTER_LIMIT_ORDER"
+    sign = _sign(side)
+    stop_fill = float(stop) - sign * STOP_SLIPPAGE_TICKS * tick
+    valid = stop_fill < entry_limit < target if side == "LONG" else target < entry_limit < stop_fill
+    if not valid:
+        return None, "INVALID_LIMIT_STOP_TARGET_GEOMETRY"
+    planned_risk = abs(entry_limit - stop)
+    cash_risk = abs(entry_limit - stop_fill)
+    gross_rr = abs(target - entry_limit) / max(planned_risk, EPS)
+    if gross_rr < 1.0:
+        return None, "REALIZED_LIMIT_RR_BELOW_ONE"
+    entry_raw_fee = MAKER_FEE * abs(entry_limit)
+    target_raw = sign * (target - entry_limit) / cash_risk - (entry_raw_fee + MAKER_FEE * abs(target)) / cash_risk
+    stop_raw = sign * (stop_fill - entry_limit) / cash_risk - (entry_raw_fee + TAKER_FEE * abs(stop_fill)) / cash_risk
+    normalization = max(abs(stop_raw), EPS)
+    target_net_r = target_raw / normalization
+    fill_index: int | None = None
+    for index in range(order_index, len(data)):
+        row = data.iloc[index]
+        stop_before_fill = float(row.low) <= stop if side == "LONG" else float(row.high) >= stop
+        target_before_fill = float(row.high) >= target if side == "LONG" else float(row.low) <= target
+        traded_through = float(row.low) <= entry_limit - tick if side == "LONG" else float(row.high) >= entry_limit + tick
+        if traded_through:
+            fill_index = index
+            break
+        if stop_before_fill:
+            return None, "HYPOTHESIS_INVALIDATED_BEFORE_LIMIT_FILL"
+        if target_before_fill:
+            return None, "TARGET_CONSUMED_BEFORE_LIMIT_FILL"
+    if fill_index is None:
+        return None, "DEFENDED_LIMIT_NOT_REVISITED"
+    best, worst = 0.0, 0.0
+    for index in range(fill_index, len(data)):
+        row = data.iloc[index]
+        if side == "LONG":
+            target_hit = float(row.high) >= target
+            stop_hit = float(row.low) <= stop
+            favorable = (float(row.high) - entry_limit) / cash_risk / normalization
+            adverse = (float(row.low) - entry_limit) / cash_risk / normalization
+        else:
+            target_hit = float(row.low) <= target
+            stop_hit = float(row.high) >= stop
+            favorable = (entry_limit - float(row.low)) / cash_risk / normalization
+            adverse = (entry_limit - float(row.high)) / cash_risk / normalization
+        best, worst = max(best, favorable), min(worst, adverse)
+        if target_hit and stop_hit:
+            outcome, result = "AMBIGUOUS_SAME_MINUTE", -1.0
+        elif stop_hit:
+            outcome, result = "STOP_FIRST", -1.0
+        elif target_hit:
+            outcome, result = "TARGET_FIRST", float(target_net_r)
+        else:
+            continue
+        return TradeLabel(
+            outcome=outcome,
+            entry_index=int(fill_index),
+            entry_time_ns=int(data.index[fill_index].value),
+            resolution_index=int(index),
+            resolution_time_ns=int(data.index[index].value),
+            entry=float(entry_limit),
+            stop=float(stop),
+            stop_fill=float(stop_fill),
+            target=float(target),
+            gross_rr=float(gross_rr),
+            target_net_r=float(target_net_r),
+            net_r=float(result),
+            holding_minutes=float(index - fill_index),
+            mfe_r=float(best),
+            mae_r=float(worst),
+            order_index=int(order_index),
+            order_time_ns=int(data.index[order_index].value),
+            fill_delay_minutes=float(fill_index - order_index),
+        ), ""
+    return TradeLabel(
+        outcome="CENSORED_OPEN",
+        entry_index=int(fill_index),
+        entry_time_ns=int(data.index[fill_index].value),
+        resolution_index=None,
+        resolution_time_ns=None,
+        entry=float(entry_limit),
+        stop=float(stop),
+        stop_fill=float(stop_fill),
+        target=float(target),
+        gross_rr=float(gross_rr),
+        target_net_r=float(target_net_r),
+        net_r=None,
+        holding_minutes=None,
+        mfe_r=float(best),
+        mae_r=float(worst),
+        order_index=int(order_index),
+        order_time_ns=int(data.index[order_index].value),
+        fill_delay_minutes=float(fill_index - order_index),
+    ), ""
+
+
+def _plan_score(source: SourceEvent, decision: AuctionDecision, response: Response, target: RouteTarget, structure_vote: float) -> float:
+    alignment = _sign(decision.side) * structure_vote
+    source_quality = math.log1p(max(source.confluence_weight or source.semantic_weight, 0.0))
+    confluence = math.log1p(max(0, source.confluence_count - 1))
+    route_value = min(target.gross_rr, 3.0) * target.route_clarity * (1.0 - 0.5 * target.volume_congestion)
+    return float(
+        source_quality
+        + 0.55 * confluence
+        + decision.event_strength
+        + response.response_strength
+        + route_value
+        + 0.35 * alignment
+        + 0.20 * float(source.accumulated)
+    )
+
+
+def _make_plan(
+    symbol: str,
+    data: pd.DataFrame,
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    source: SourceEvent,
+    tick: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    diagnostic: dict[str, Any] = {
+        "source_id": source.source_id,
+        "symbol": symbol,
+        "source_kind": source.source_kind,
+        "source_side": source.side,
+        "source_price": source.price,
+        "source_timeframe_minutes": source.timeframe_minutes,
+        "source_semantic_weight": source.semantic_weight,
+        "source_confluence_weight": source.confluence_weight,
+        "source_confluence_count": source.confluence_count,
+        "source_confluence_kinds": source.confluence_kinds,
+        "source_confluence_timeframes": source.confluence_timeframes,
+        "source_accumulated": source.accumulated,
+        "source_interaction_index": source.interaction_index,
+        "source_interaction_time_ns": int(data.index[source.interaction_index].value),
+        "line_slope_atr_per_hour": source.line_slope_atr_per_hour,
+    }
+    decision = _classify_auction(data, source, tick)
+    if decision is None:
+        diagnostic["reason"] = "NO_VALUE_ACCEPTANCE_OR_FAILED_AUCTION"
+        return None, diagnostic
+    diagnostic.update(
+        {
+            "branch": decision.branch,
