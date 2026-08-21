@@ -1,0 +1,55 @@
+name: research-skilled-auction-control-v1-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_skilled_auction_control"]
+    paths:
+      - "research/candidate-skilled-auction-control-v1/**"
+      - ".github/workflows/research-skilled-auction-control-v1-smoke.yml"
+      - ".dispatch-skilled-auction-control-v1-smoke"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-skilled-auction-control-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_skilled_auction_control
+      - name: Compile and instantiate all four market bundles
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-skilled-auction-control-v1/skilled_auction_control_v1.py \
+            research/candidate-skilled-auction-control-v1/run_backtest.py
+          python - <<'PY'
+          from skilled_auction_control_v1 import SkilledAuctionControlV1Bundle
+          ticks={"BTCUSDT":0.1,"ETHUSDT":0.01,"SOLUSDT":0.001,"XRPUSDT":0.0001}
+          for symbol,tick in ticks.items():
+              bundle=SkilledAuctionControlV1Bundle(symbol,tick,1.0)
+              assert bundle.symbol==symbol
+              assert set(bundle.detectors)=={1,5,15,60}
+              assert bundle.plans==[]
+          print("skilled auction control v1 import smoke passed")
+          PY
+      - name: Record smoke
+        if: always()
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > .latest-skilled-auction-control-v1-smoke
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-skilled-auction-control-v1-smoke
+          git commit -m "Record skilled auction control v1 smoke $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_skilled_auction_control
