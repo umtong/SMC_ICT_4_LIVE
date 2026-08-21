@@ -1,0 +1,200 @@
+            if side == "LONG"
+            else max(float(source.upper), float(event.high.max()))
+        )
+    touch: int | None = None
+    retest_extreme: float | None = None
+    response_end = min(len(data) - 2, departure + max(45, min(240, 2 * source.timeframe_minutes)))
+    baseline = _activity_baseline(data, departure)
+    for index in range(departure + 1, response_end + 1):
+        row = data.iloc[index]
+        invalidated = float(row.low) <= invalidation if side == "LONG" else float(row.high) >= invalidation
+        if invalidated:
+            return None
+        overlaps = float(row.low) <= decision.zone_upper and float(row.high) >= decision.zone_lower
+        if touch is None:
+            if not overlaps:
+                continue
+            touch = index
+            retest_extreme = float(row.low if side == "LONG" else row.high)
+        else:
+            retest_extreme = (
+                min(float(retest_extreme), float(row.low))
+                if side == "LONG"
+                else max(float(retest_extreme), float(row.high))
+            )
+        spent = float(row.close) < decision.zone_lower - 0.10 * atr if side == "LONG" else float(row.close) > decision.zone_upper + 0.10 * atr
+        if spent:
+            return None
+        prior = data.iloc[index - 1]
+        aligned_body = sign * float(row.close - row.open) / atr
+        closes_away = float(row.close) >= decision.zone_upper if side == "LONG" else float(row.close) <= decision.zone_lower
+        local_control = float(row.close) > float(prior.high) if side == "LONG" else float(row.close) < float(prior.low)
+        frame = data.iloc[touch:index + 1]
+        quote = pd.to_numeric(frame.get("quote_volume", pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0.0)
+        flow = sign * float(_signed_flow(frame).sum()) / max(float(quote.sum()), EPS)
+        activity = float(quote.mean()) / baseline if len(quote) else 0.0
+        initiative = flow > 0.02
+        absorption = flow <= 0.02 and aligned_body > 0.14
+        if aligned_body >= 0.08 and closes_away and local_control and (initiative or absorption or activity >= 1.08):
+            strength = max(0.0, aligned_body) + max(0.0, flow) + min(activity, 3.0) / 3.0
+            return Response(
+                departure_index=int(departure),
+                touch_index=int(touch),
+                response_index=int(index),
+                retest_extreme=float(retest_extreme),
+                response_kind="ALIGNED_INITIATIVE" if initiative else "ADVERSE_FLOW_ABSORBED",
+                response_strength=float(strength),
+                response_flow_signed=float(flow),
+                response_activity_ratio=float(activity),
+                response_body_atr=float(aligned_body),
+                response_delay_minutes=float(index - touch),
+            )
+    return None
+
+
+def _available_route_levels(
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    index: int,
+    wanted_side: str,
+) -> list[hl.LiquidityLevel]:
+    return [
+        level for level in route_levels(levels, metadata)
+        if str(level.side) == wanted_side
+        and int(level.observed_index_1m) < index
+        and (level.first_penetration_index is None or int(level.first_penetration_index) > index)
+    ]
+
+
+def _volume_congestion(data: pd.DataFrame, index: int, entry: float, target: float) -> float:
+    frame = data.iloc[max(0, index - 1440):index]
+    if len(frame) < 120 or "quote_volume" not in frame:
+        return 0.5
+    typical = ((frame.high + frame.low + frame.close) / 3.0).to_numpy(float)
+    weight = pd.to_numeric(frame.quote_volume, errors="coerce").fillna(0.0).to_numpy(float)
+    lo, hi = sorted((entry, target))
+    route = (typical > lo) & (typical < hi) & np.isfinite(weight) & (weight > 0.0)
+    all_valid = np.isfinite(typical) & np.isfinite(weight) & (weight > 0.0)
+    if route.sum() < 5 or all_valid.sum() < 20:
+        return 0.5
+    route_density = float(weight[route].sum()) / max(float(route.sum()), 1.0)
+    total_density = float(weight[all_valid].sum()) / max(float(all_valid.sum()), 1.0)
+    ratio = route_density / max(total_density, EPS)
+    return float(ratio / (1.0 + ratio))
+
+
+def _select_target(
+    data: pd.DataFrame,
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    index: int,
+    entry: float,
+    stop: float,
+    side: str,
+    tick: float,
+) -> tuple[RouteTarget | None, str]:
+    wanted = "HIGH" if side == "LONG" else "LOW"
+    candidates = [
+        level for level in _available_route_levels(levels, metadata, index, wanted)
+        if (side == "LONG" and float(level.price) > entry + tick)
+        or (side == "SHORT" and float(level.price) < entry - tick)
+    ]
+    candidates.sort(key=lambda level: (abs(float(level.price) - entry), -metadata[level.level_id].semantic_weight, level.level_id))
+    target_level: hl.LiquidityLevel | None = None
+    for level in candidates:
+        meta = metadata[level.level_id]
+        target_worthy = (
+            bool(meta.direction_source)
+            or bool(meta.accumulated)
+            or int(level.timeframe_minutes) >= 15
+            or int(level.defense_count) >= 2
+        )
+        if target_worthy:
+            target_level = level
+            break
+    if target_level is None:
+        return None, "NO_LIVE_OPPOSING_LIQUIDITY"
+    target = float(target_level.price) - _sign(side) * TARGET_INSIDE_TICKS * tick
+    risk = abs(entry - stop)
+    gross_rr = abs(target - entry) / max(risk, EPS)
+    if gross_rr < 1.0:
+        return None, "NEAREST_OPPOSING_LIQUIDITY_RR_BELOW_ONE"
+    target_distance = abs(target - entry)
+    target_weight = max(float(metadata[target_level.level_id].semantic_weight), EPS)
+    barriers = [
+        level for level in _available_route_levels(levels, metadata, index, wanted)
+        if level.level_id != target_level.level_id
+        and (
+            entry < float(level.price) < target if side == "LONG"
+            else target < float(level.price) < entry
+        )
+    ]
+    pressure = 0.0
+    strongest = 0.0
+    for barrier in barriers:
+        distance_fraction = abs(float(barrier.price) - entry) / max(target_distance, EPS)
+        ratio = float(metadata[barrier.level_id].semantic_weight) / target_weight
+        pressure += ratio * math.exp(-1.5 * distance_fraction)
+        strongest = max(strongest, ratio)
+    clarity = 1.0 / (1.0 + pressure)
+    congestion = _volume_congestion(data, index, entry, target)
+    if barriers and clarity < 0.18 and strongest >= 1.0:
+        return None, "ROUTE_BLOCKED_BY_STRONGER_LIVE_LIQUIDITY"
+    return RouteTarget(
+        level_id=str(target_level.level_id),
+        kind=str(metadata[target_level.level_id].pool_kind),
+        price=float(target),
+        structure_price=float(target_level.price),
+        timeframe_minutes=int(target_level.timeframe_minutes),
+        semantic_weight=float(target_weight),
+        gross_rr=float(gross_rr),
+        route_clarity=float(clarity),
+        barrier_count=int(len(barriers)),
+        strongest_barrier_ratio=float(strongest),
+        volume_congestion=float(congestion),
+    ), ""
+
+
+def _structural_stop(
+    data: pd.DataFrame,
+    source: SourceEvent,
+    decision: AuctionDecision,
+    response: Response,
+    tick: float,
+) -> float:
+    atr = _atr_price(data, response.response_index)
+    buffer = max(2.0 * tick, 0.035 * atr)
+    if decision.branch == "FAILED_AUCTION_REVERSAL":
+        reference = float(decision.event_extreme)
+    else:
+        event = data.iloc[decision.interaction_index:decision.confirmation_index + 1]
+        reference = (
+            min(float(source.lower), float(response.retest_extreme), float(event.low.min()))
+            if decision.side == "LONG"
+            else max(float(source.upper), float(response.retest_extreme), float(event.high.max()))
+        )
+    return reference - buffer if decision.side == "LONG" else reference + buffer
+
+
+def _label_trade(
+    data: pd.DataFrame,
+    response: Response,
+    side: str,
+    stop: float,
+    target: float,
+    tick: float,
+) -> TradeLabel | None:
+    entry_index = int(response.response_index) + 1
+    if entry_index >= len(data):
+        return None
+    sign = _sign(side)
+    entry = float(data.iloc[entry_index].open) + sign * ENTRY_SLIPPAGE_TICKS * tick
+    stop_fill = float(stop) - sign * STOP_SLIPPAGE_TICKS * tick
+    valid = stop_fill < entry < target if side == "LONG" else target < entry < stop_fill
+    if not valid:
+        return None
+    cash_risk = abs(entry - stop_fill)
+    planned_risk = abs(entry - stop)
+    gross_rr = abs(target - entry) / max(planned_risk, EPS)
+    if gross_rr < 1.0:
+        return None

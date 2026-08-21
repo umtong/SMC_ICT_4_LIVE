@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Causal liquidity-route day-trading research policy.
+
+This is a structural replacement for the prior plan/RR lattice.  One causal auction
+interaction can produce at most one trade plan.  Direction comes from the auction
+outcome at a meaningful liquidity boundary; OB/FVG/SR-flip geometry only refines the
+first defended return; the stop is the event invalidation; and the target is the nearest
+still-live opposing liquidity pool rather than a fixed R multiple.
+
+The research simulator uses future bars only to label an immutable plan.  A filled
+position has no time exit: it resolves only at the predeclared target or stop.  The
+four symbols share one global single-position account and every completed trade risks
+3% of then-current NAV.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict, dataclass
+from datetime import date, timedelta
+import hashlib
+import json
+import math
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+
+import numpy as np
+import pandas as pd
+
+import coherent_policy as context
+import hierarchical_liquidity_bpr as hl
+from auction_episode_research import CONTRACTS
+from derivatives_dislocation import prepare_market_state
+from liquidity_displacement import _add_common_state
+from market_data import load_range as load_reference_range
+from metrics_state import load_range_metrics
+from semantic_liquidity_v4 import PoolMeta, build_semantic_liquidity, direction_sources, route_levels
+
+
+POLICY = (
+    "CAUSAL_LIQUIDITY_ROUTE:PAIRED_LIVE_LIQUIDITY_THEN_MUTUALLY_EXCLUSIVE_"
+    "FAILED_OR_ACCEPTED_AUCTION_THEN_EVENT_VOLUME_CONFIRMATION_THEN_FIRST_"
+    "DEFENDED_RETURN_THEN_STRUCTURAL_STOP_AND_NEAREST_LIVE_OPPOSING_TARGET"
+)
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+RISK_FRACTION = 0.03
+ENTRY_SLIPPAGE_TICKS = 2
+STOP_SLIPPAGE_TICKS = 2
+TAKER_FEE = 0.0005
+MAKER_FEE = 0.0002
+TARGET_INSIDE_TICKS = 1
+EPS = 1e-12
+
+
+@dataclass(frozen=True, slots=True)
+class SourceEvent:
+    source_id: str
+    symbol: str
+    source_kind: str
+    side: str  # HIGH or LOW liquidity / boundary side
+    price: float
+    lower: float
+    upper: float
+    timeframe_minutes: int
+    observed_index: int
+    interaction_index: int
+    semantic_weight: float
+    strength_ratio: float
+    defense_count: int
+    accumulated: bool
+    line_slope_atr_per_hour: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class AuctionDecision:
+    branch: str
+    side: str  # LONG or SHORT trade direction
+    interaction_index: int
+    confirmation_index: int
+    event_extreme: float
+    zone_lower: float
+    zone_upper: float
+    location_kind: str
+    event_strength: float
+    outside_close_ratio: float
+    outside_volume_ratio: float
+    event_path_efficiency: float
+    event_activity_ratio: float
+    event_flow_signed: float
+    event_volume_clock: float
+
+
+@dataclass(frozen=True, slots=True)
+class Response:
+    departure_index: int
+    touch_index: int
+    response_index: int
+    retest_extreme: float
+    response_kind: str
+    response_strength: float
+    response_flow_signed: float
+    response_activity_ratio: float
+    response_body_atr: float
+    response_delay_minutes: float
+
+
+@dataclass(frozen=True, slots=True)
+class RouteTarget:
+    level_id: str
+    kind: str
+    price: float
+    structure_price: float
+    timeframe_minutes: int
+    semantic_weight: float
+    gross_rr: float
+    route_clarity: float
+    barrier_count: int
+    strongest_barrier_ratio: float
+    volume_congestion: float
+
+
+@dataclass(frozen=True, slots=True)
+class TradeLabel:
+    outcome: str
+    entry_index: int
+    entry_time_ns: int
+    resolution_index: int | None
+    resolution_time_ns: int | None
+    entry: float
+    stop: float
+    stop_fill: float
+    target: float
+    gross_rr: float
+    target_net_r: float
+    net_r: float | None
+    holding_minutes: float | None
+    mfe_r: float
+    mae_r: float
+
+
+def _finite(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _sign(side: str) -> float:
+    return 1.0 if side == "LONG" else -1.0
+
+
+def _stable(*parts: Any) -> str:
+    return hashlib.sha1("|".join(str(part) for part in parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _atr_price(data: pd.DataFrame, index: int, window: int = 90) -> float:
+    start = max(1, index - window)
+    frame = data.iloc[start:index + 1]
+    if frame.empty:
+        return max(abs(float(data.iloc[index].close)) * 1e-5, EPS)
+    previous = frame.close.shift(1)
+    true_range = pd.concat(
+        [
+            (frame.high - frame.low).abs(),
+            (frame.high - previous).abs(),
+            (frame.low - previous).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    value = _finite(true_range.iloc[:-1].median() if len(true_range) > 1 else true_range.median())
+    return max(value, abs(float(data.iloc[index].close)) * 1e-6, EPS)
+
+
+def _signed_flow(frame: pd.DataFrame) -> pd.Series:
+    quote = pd.to_numeric(frame.get("quote_volume", pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0.0)
+    if "signed_quote_flow" in frame:
+        return pd.to_numeric(frame.signed_quote_flow, errors="coerce").fillna(0.0)
+    if "taker_buy_quote_volume" in frame:
+        buy = pd.to_numeric(frame.taker_buy_quote_volume, errors="coerce").fillna(0.0)
+        return 2.0 * buy - quote
+    if "delta_share" in frame:
+        share = pd.to_numeric(frame.delta_share, errors="coerce").fillna(0.0)
+        return share * quote
+    return pd.Series(0.0, index=frame.index)
+
+
+def _activity_baseline(data: pd.DataFrame, index: int) -> float:
+    if "quote_volume" not in data:
+        return 1.0
+    values = pd.to_numeric(data.quote_volume.iloc[max(0, index - 180):index], errors="coerce").replace(0.0, np.nan)
+    return max(_finite(values.median(), 1.0), EPS)
+
+
+def _path_efficiency(closes: np.ndarray, sign: float) -> float:
+    if len(closes) < 2:
+        return 0.0
+    travel = float(np.abs(np.diff(closes)).sum())
+    return sign * float(closes[-1] - closes[0]) / max(travel, EPS)
+
+

@@ -1,0 +1,200 @@
+    target_raw = sign * (target - entry) / cash_risk - (TAKER_FEE * abs(entry) + MAKER_FEE * abs(target)) / cash_risk
+    stop_raw = sign * (stop_fill - entry) / cash_risk - (TAKER_FEE * abs(entry) + TAKER_FEE * abs(stop_fill)) / cash_risk
+    normalization = max(abs(stop_raw), EPS)
+    target_net_r = target_raw / normalization
+    best, worst = 0.0, 0.0
+    for index in range(entry_index, len(data)):
+        row = data.iloc[index]
+        if side == "LONG":
+            target_hit = float(row.high) >= target
+            stop_hit = float(row.low) <= stop
+            favorable = (float(row.high) - entry) / cash_risk / normalization
+            adverse = (float(row.low) - entry) / cash_risk / normalization
+        else:
+            target_hit = float(row.low) <= target
+            stop_hit = float(row.high) >= stop
+            favorable = (entry - float(row.low)) / cash_risk / normalization
+            adverse = (entry - float(row.high)) / cash_risk / normalization
+        best, worst = max(best, favorable), min(worst, adverse)
+        if target_hit and stop_hit:
+            outcome, result = "AMBIGUOUS_SAME_MINUTE", -1.0
+        elif stop_hit:
+            outcome, result = "STOP_FIRST", -1.0
+        elif target_hit:
+            outcome, result = "TARGET_FIRST", float(target_net_r)
+        else:
+            continue
+        return TradeLabel(
+            outcome=outcome,
+            entry_index=entry_index,
+            entry_time_ns=int(data.index[entry_index].value),
+            resolution_index=index,
+            resolution_time_ns=int(data.index[index].value),
+            entry=float(entry),
+            stop=float(stop),
+            stop_fill=float(stop_fill),
+            target=float(target),
+            gross_rr=float(gross_rr),
+            target_net_r=float(target_net_r),
+            net_r=float(result),
+            holding_minutes=float(index - entry_index),
+            mfe_r=float(best),
+            mae_r=float(worst),
+        )
+    return TradeLabel(
+        outcome="CENSORED_OPEN",
+        entry_index=entry_index,
+        entry_time_ns=int(data.index[entry_index].value),
+        resolution_index=None,
+        resolution_time_ns=None,
+        entry=float(entry),
+        stop=float(stop),
+        stop_fill=float(stop_fill),
+        target=float(target),
+        gross_rr=float(gross_rr),
+        target_net_r=float(target_net_r),
+        net_r=None,
+        holding_minutes=None,
+        mfe_r=float(best),
+        mae_r=float(worst),
+    )
+
+
+def _counterfactual_path(
+    data: pd.DataFrame,
+    index: int,
+    side: str,
+    entry: float,
+    stop: float,
+    horizon: int = 240,
+) -> tuple[float, float]:
+    sign = _sign(side)
+    risk = max(abs(entry - stop), EPS)
+    frame = data.iloc[index + 1:min(len(data), index + horizon + 1)]
+    if frame.empty:
+        return 0.0, 0.0
+    if side == "LONG":
+        mfe = (float(frame.high.max()) - entry) / risk
+        mae = (float(frame.low.min()) - entry) / risk
+    else:
+        mfe = (entry - float(frame.low.min())) / risk
+        mae = (entry - float(frame.high.max())) / risk
+    return float(mfe), float(mae)
+
+
+def _plan_score(
+    source: SourceEvent,
+    decision: AuctionDecision,
+    response: Response,
+    target: RouteTarget,
+    structure_vote: float,
+) -> float:
+    direction = _sign(decision.side)
+    alignment = direction * structure_vote
+    source_quality = math.log1p(max(source.semantic_weight, 0.0))
+    route_value = min(target.gross_rr, 3.0) * target.route_clarity * (1.0 - 0.5 * target.volume_congestion)
+    return float(
+        source_quality
+        + decision.event_strength
+        + response.response_strength
+        + route_value
+        + 0.35 * alignment
+        + 0.20 * float(source.accumulated)
+    )
+
+
+def _make_plan(
+    symbol: str,
+    data: pd.DataFrame,
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    source: SourceEvent,
+    tick: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    diagnostic: dict[str, Any] = {
+        "source_id": source.source_id,
+        "symbol": symbol,
+        "source_kind": source.source_kind,
+        "source_side": source.side,
+        "source_price": source.price,
+        "source_timeframe_minutes": source.timeframe_minutes,
+        "source_semantic_weight": source.semantic_weight,
+        "source_accumulated": source.accumulated,
+        "source_interaction_index": source.interaction_index,
+        "source_interaction_time_ns": int(data.index[source.interaction_index].value),
+        "line_slope_atr_per_hour": source.line_slope_atr_per_hour,
+    }
+    decision = _classify_auction(data, source, tick)
+    if decision is None:
+        diagnostic["reason"] = "NO_MUTUALLY_EXCLUSIVE_AUCTION_DECISION"
+        return None, diagnostic
+    diagnostic.update(
+        {
+            "branch": decision.branch,
+            "side": decision.side,
+            "confirmation_index": decision.confirmation_index,
+            "confirmation_time_ns": int(data.index[decision.confirmation_index].value),
+            "event_extreme": decision.event_extreme,
+            "zone_lower": decision.zone_lower,
+            "zone_upper": decision.zone_upper,
+            "location_kind": decision.location_kind,
+            "event_strength": decision.event_strength,
+        }
+    )
+    response = _first_defended_return(data, source, decision, tick)
+    if response is None:
+        proxy = float(data.iloc[decision.confirmation_index].close)
+        provisional = (
+            decision.event_extreme
+            if decision.branch == "FAILED_AUCTION_REVERSAL"
+            else (source.lower if decision.side == "LONG" else source.upper)
+        )
+        mfe, mae = _counterfactual_path(data, decision.confirmation_index, decision.side, proxy, float(provisional))
+        diagnostic.update({"reason": "NO_FIRST_DEFENDED_RETURN", "counterfactual_mfe_r": mfe, "counterfactual_mae_r": mae})
+        return None, diagnostic
+    stop = _structural_stop(data, source, decision, response, tick)
+    next_index = response.response_index + 1
+    if next_index >= len(data):
+        diagnostic["reason"] = "NO_NEXT_OPEN"
+        return None, diagnostic
+    provisional_entry = float(data.iloc[next_index].open) + _sign(decision.side) * ENTRY_SLIPPAGE_TICKS * tick
+    valid_stop = stop < provisional_entry if decision.side == "LONG" else stop > provisional_entry
+    if not valid_stop:
+        diagnostic["reason"] = "INVALID_STRUCTURAL_STOP_GEOMETRY"
+        return None, diagnostic
+    target, reason = _select_target(data, levels, metadata, response.response_index, provisional_entry, stop, decision.side, tick)
+    if target is None:
+        mfe, mae = _counterfactual_path(data, response.response_index, decision.side, provisional_entry, stop)
+        diagnostic.update(
+            {
+                "reason": reason,
+                "response_index": response.response_index,
+                "response_time_ns": int(data.index[response.response_index].value),
+                "counterfactual_mfe_r": mfe,
+                "counterfactual_mae_r": mae,
+            }
+        )
+        return None, diagnostic
+    label = _label_trade(data, response, decision.side, stop, target.price, tick)
+    if label is None:
+        diagnostic["reason"] = "FILL_GEOMETRY_OR_REALIZED_RR_INVALID"
+        return None, diagnostic
+    structure = context._active_structure_features(data, levels, response.response_index)
+    vote = _finite(structure.get("structure_multiscale_trend_vote"), 0.0)
+    score = _plan_score(source, decision, response, target, vote)
+    episode_id = f"CLR:{symbol}:{int(data.index[source.interaction_index].value)}:{_stable(source.source_id)}"
+    plan = {
+        "episode_id": episode_id,
+        "symbol": symbol,
+        "side": decision.side,
+        "family": decision.branch,
+        "source_id": source.source_id,
+        "source_kind": source.source_kind,
+        "source_side": source.side,
+        "source_price": source.price,
+        "source_lower": source.lower,
+        "source_upper": source.upper,
+        "source_timeframe_minutes": source.timeframe_minutes,
+        "source_semantic_weight": source.semantic_weight,
+        "source_strength_ratio": source.strength_ratio,
+        "source_defense_count": source.defense_count,

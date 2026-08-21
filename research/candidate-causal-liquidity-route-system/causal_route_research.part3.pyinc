@@ -1,0 +1,200 @@
+        row = data.iloc[index]
+        if sign * float(row.close - row.open) >= 0.0:
+            continue
+        lower = min(float(row.open), float(row.close))
+        upper = max(float(row.open), float(row.close))
+        if upper - lower < 2.0 * tick:
+            lower, upper = float(row.low), float(row.high)
+        if upper - lower >= tick:
+            return lower, upper, index
+    return None
+
+
+def _directional_gap(
+    data: pd.DataFrame,
+    start: int,
+    end: int,
+    side: str,
+    tick: float,
+) -> hl.Gap | None:
+    gaps: list[hl.Gap] = []
+    for index in range(max(2, start), min(len(data), end + 1)):
+        gap = hl._gap_at(data, index, tick)
+        if gap is not None and str(gap.side) == side:
+            gaps.append(gap)
+    return gaps[-1] if gaps else None
+
+
+def _merge_zone(
+    base: tuple[float, float],
+    gap: hl.Gap | None,
+    ob: tuple[float, float, int] | None,
+    tick: float,
+) -> tuple[float, float, str]:
+    lower, upper = base
+    kind = "TRANSFERRED_BOUNDARY"
+    if gap is not None:
+        lower, upper = float(gap.lower), float(gap.upper)
+        kind = "DIRECTIONAL_FVG"
+    if ob is not None:
+        ob_lower, ob_upper, _ = ob
+        overlap_lower, overlap_upper = max(lower, ob_lower), min(upper, ob_upper)
+        if overlap_upper > overlap_lower + tick:
+            lower, upper = overlap_lower, overlap_upper
+            kind += "_OB_OVERLAP"
+        elif gap is None:
+            lower, upper = ob_lower, ob_upper
+            kind = "ORDER_BLOCK"
+    return float(lower), float(upper), kind
+
+
+def _classify_auction(data: pd.DataFrame, source: SourceEvent, tick: float) -> AuctionDecision | None:
+    interaction = int(source.interaction_index)
+    if interaction >= len(data) - 4:
+        return None
+    atr = _atr_price(data, interaction)
+    baseline = _activity_baseline(data, interaction)
+    quote_all = pd.to_numeric(data.get("quote_volume", pd.Series(0.0, index=data.index)), errors="coerce").fillna(0.0)
+    event_end = min(len(data) - 3, interaction + max(30, min(120, int(source.timeframe_minutes))))
+    continuation_side = "LONG" if source.side == "HIGH" else "SHORT"
+    reversal_side = "SHORT" if source.side == "HIGH" else "LONG"
+    cont_sign, rev_sign = _sign(continuation_side), _sign(reversal_side)
+    extreme = float(data.iloc[interaction].high if source.side == "HIGH" else data.iloc[interaction].low)
+    reclaimed_once = False
+    outside_count = 0
+    outside_volume = 0.0
+    total_volume = 0.0
+    for index in range(interaction, event_end + 1):
+        row = data.iloc[index]
+        extreme = max(extreme, float(row.high)) if source.side == "HIGH" else min(extreme, float(row.low))
+        close = float(row.close)
+        outside = close > source.upper if source.side == "HIGH" else close < source.lower
+        reclaimed = close < source.lower if source.side == "HIGH" else close > source.upper
+        outside_count += int(outside)
+        volume = float(quote_all.iloc[index])
+        total_volume += max(volume, 0.0)
+        if outside:
+            outside_volume += max(volume, 0.0)
+        if reclaimed:
+            reclaimed_once = True
+        segment = data.iloc[interaction:index + 1]
+        closes = segment.close.to_numpy(float)
+        signed = _signed_flow(segment)
+        segment_quote = pd.to_numeric(segment.get("quote_volume", pd.Series(0.0, index=segment.index)), errors="coerce").fillna(0.0)
+        flow_cont = cont_sign * float(signed.sum()) / max(float(segment_quote.sum()), EPS)
+        progress_cont = cont_sign * (close - float(source.price)) / atr
+        efficiency_cont = _path_efficiency(closes, cont_sign)
+        outside_ratio = outside_count / max(len(segment), 1)
+        outside_volume_ratio = outside_volume / max(total_volume, EPS)
+        activity = float(segment_quote.mean()) / baseline if len(segment_quote) else 0.0
+        volume_clock = float(segment_quote.sum()) / baseline
+        body_cont = cont_sign * float(row.close - row.open) / atr
+        initiative_cont = flow_cont > 0.025
+        absorption_cont = flow_cont <= 0.025 and body_cont > 0.16
+        acceptance = (
+            outside
+            and outside_count >= 2
+            and progress_cont >= 0.22
+            and outside_ratio >= 0.50
+            and outside_volume_ratio >= 0.50
+            and (efficiency_cont >= 0.24 or body_cont >= 0.16)
+            and (initiative_cont or absorption_cont or activity >= 1.10)
+        )
+        if acceptance:
+            gap = _directional_gap(data, interaction, index + 2, continuation_side, tick)
+            ob = _last_opposite_order_block(data, max(0, interaction - 8), index, continuation_side, tick)
+            lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
+            strength = (
+                max(0.0, progress_cont)
+                + max(0.0, efficiency_cont)
+                + outside_volume_ratio
+                + min(activity, 3.0) / 3.0
+                + min(max(volume_clock, 0.0), 8.0) / 8.0
+            )
+            return AuctionDecision(
+                branch="ACCEPTED_AUCTION_CONTINUATION",
+                side=continuation_side,
+                interaction_index=interaction,
+                confirmation_index=index,
+                event_extreme=float(extreme),
+                zone_lower=lower,
+                zone_upper=upper,
+                location_kind=location,
+                event_strength=float(strength),
+                outside_close_ratio=float(outside_ratio),
+                outside_volume_ratio=float(outside_volume_ratio),
+                event_path_efficiency=float(efficiency_cont),
+                event_activity_ratio=float(activity),
+                event_flow_signed=float(flow_cont),
+                event_volume_clock=float(volume_clock),
+            )
+        if reclaimed_once and reclaimed and index > interaction:
+            progress_rev = rev_sign * (close - extreme) / atr
+            efficiency_rev = _path_efficiency(closes, rev_sign)
+            body_rev = rev_sign * float(row.close - row.open) / atr
+            flow_rev = rev_sign * float(signed.sum()) / max(float(segment_quote.sum()), EPS)
+            prior = data.iloc[index - 1]
+            local_control = close > float(prior.high) if reversal_side == "LONG" else close < float(prior.low)
+            initiative_rev = flow_rev > 0.025
+            absorption_rev = flow_rev <= 0.025 and body_rev > 0.16
+            failure = (
+                progress_rev >= 0.28
+                and (efficiency_rev >= 0.20 or body_rev >= 0.14)
+                and local_control
+                and (initiative_rev or absorption_rev or activity >= 1.08)
+            )
+            if failure:
+                gap = _directional_gap(data, interaction, index + 2, reversal_side, tick)
+                ob = _last_opposite_order_block(data, interaction, index, reversal_side, tick)
+                lower, upper, location = _merge_zone((source.lower, source.upper), gap, ob, tick)
+                strength = (
+                    max(0.0, progress_rev)
+                    + max(0.0, efficiency_rev)
+                    + min(activity, 3.0) / 3.0
+                    + min(max(volume_clock, 0.0), 8.0) / 8.0
+                    + min(abs(float(source.price - extreme)) / atr, 2.0) / 2.0
+                )
+                return AuctionDecision(
+                    branch="FAILED_AUCTION_REVERSAL",
+                    side=reversal_side,
+                    interaction_index=interaction,
+                    confirmation_index=index,
+                    event_extreme=float(extreme),
+                    zone_lower=lower,
+                    zone_upper=upper,
+                    location_kind=location,
+                    event_strength=float(strength),
+                    outside_close_ratio=float(outside_ratio),
+                    outside_volume_ratio=float(outside_volume_ratio),
+                    event_path_efficiency=float(efficiency_rev),
+                    event_activity_ratio=float(activity),
+                    event_flow_signed=float(flow_rev),
+                    event_volume_clock=float(volume_clock),
+                )
+    return None
+
+
+def _first_defended_return(
+    data: pd.DataFrame,
+    source: SourceEvent,
+    decision: AuctionDecision,
+    tick: float,
+) -> Response | None:
+    side, sign = decision.side, _sign(decision.side)
+    atr = _atr_price(data, decision.confirmation_index)
+    departure: int | None = None
+    start = decision.confirmation_index
+    for index in range(start, min(len(data) - 2, start + max(20, min(90, source.timeframe_minutes))) + 1):
+        close = float(data.iloc[index].close)
+        away = close > decision.zone_upper + max(tick, 0.04 * atr) if side == "LONG" else close < decision.zone_lower - max(tick, 0.04 * atr)
+        if away:
+            departure = index
+            break
+    if departure is None:
+        return None
+    if decision.branch == "FAILED_AUCTION_REVERSAL":
+        invalidation = float(decision.event_extreme)
+    else:
+        event = data.iloc[decision.interaction_index:decision.confirmation_index + 1]
+        invalidation = (
+            min(float(source.lower), float(event.low.min()))

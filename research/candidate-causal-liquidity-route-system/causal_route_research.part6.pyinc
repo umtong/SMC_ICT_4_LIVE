@@ -1,0 +1,200 @@
+        "source_accumulated": source.accumulated,
+        "line_slope_atr_per_hour": source.line_slope_atr_per_hour,
+        "interaction_index": source.interaction_index,
+        "interaction_time_ns": int(data.index[source.interaction_index].value),
+        "confirmation_index": decision.confirmation_index,
+        "confirmation_time_ns": int(data.index[decision.confirmation_index].value),
+        "departure_index": response.departure_index,
+        "departure_time_ns": int(data.index[response.departure_index].value),
+        "touch_index": response.touch_index,
+        "touch_time_ns": int(data.index[response.touch_index].value),
+        "response_index": response.response_index,
+        "response_time_ns": int(data.index[response.response_index].value),
+        "location_kind": decision.location_kind,
+        "zone_lower": decision.zone_lower,
+        "zone_upper": decision.zone_upper,
+        "event_extreme": decision.event_extreme,
+        "event_strength": decision.event_strength,
+        "event_outside_close_ratio": decision.outside_close_ratio,
+        "event_outside_volume_ratio": decision.outside_volume_ratio,
+        "event_path_efficiency": decision.event_path_efficiency,
+        "event_activity_ratio": decision.event_activity_ratio,
+        "event_flow_signed": decision.event_flow_signed,
+        "event_volume_clock": decision.event_volume_clock,
+        "response_kind": response.response_kind,
+        "response_strength": response.response_strength,
+        "response_flow_signed": response.response_flow_signed,
+        "response_activity_ratio": response.response_activity_ratio,
+        "response_body_atr": response.response_body_atr,
+        "response_delay_minutes": response.response_delay_minutes,
+        "target_level_id": target.level_id,
+        "target_kind": target.kind,
+        "target_structure_price": target.structure_price,
+        "target_timeframe_minutes": target.timeframe_minutes,
+        "target_semantic_weight": target.semantic_weight,
+        "route_clarity": target.route_clarity,
+        "route_barrier_count": target.barrier_count,
+        "route_strongest_barrier_ratio": target.strongest_barrier_ratio,
+        "route_volume_congestion": target.volume_congestion,
+        "structure_multiscale_trend_vote": vote,
+        "arbitration_score": score,
+        **asdict(label),
+    }
+    diagnostic.update({"reason": "TRADE_PLAN", "episode_id": episode_id})
+    return plan, diagnostic
+
+
+def _account_route(plans: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    if plans.empty:
+        return plans.copy(), pd.DataFrame(), {
+            "trades": 0,
+            "wins": 0,
+            "win_rate": 0.0,
+            "average_net_r": 0.0,
+            "payoff_ratio": 0.0,
+            "profit_factor": 0.0,
+            "nav_final": 1.0,
+            "max_drawdown": 0.0,
+        }
+    resolved = plans[plans.net_r.notna() & plans.resolution_time_ns.notna()].copy()
+    resolved = resolved.sort_values(["entry_time_ns", "arbitration_score", "episode_id"], ascending=[True, False, True])
+    selected: list[pd.Series] = []
+    skipped: list[dict[str, Any]] = []
+    busy_until = -1
+    for entry_time, group in resolved.groupby("entry_time_ns", sort=True):
+        group = group.sort_values(["arbitration_score", "gross_rr", "episode_id"], ascending=[False, False, True])
+        if int(entry_time) < busy_until:
+            for _, row in group.iterrows():
+                item = row.to_dict()
+                item["account_skip_reason"] = "GLOBAL_ACCOUNT_POSITION_OPEN"
+                skipped.append(item)
+            continue
+        winner = group.iloc[0]
+        selected.append(winner)
+        busy_until = int(winner.resolution_time_ns)
+        for _, row in group.iloc[1:].iterrows():
+            item = row.to_dict()
+            item["account_skip_reason"] = "SIMULTANEOUS_LOWER_PRIORITY"
+            skipped.append(item)
+    trades = pd.DataFrame([row.to_dict() for row in selected])
+    nav = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    if not trades.empty:
+        nav_before, nav_after, drawdowns = [], [], []
+        for value in pd.to_numeric(trades.net_r, errors="coerce").fillna(0.0):
+            nav_before.append(nav)
+            nav *= max(EPS, 1.0 + RISK_FRACTION * float(value))
+            peak = max(peak, nav)
+            drawdown = nav / peak - 1.0
+            max_drawdown = min(max_drawdown, drawdown)
+            nav_after.append(nav)
+            drawdowns.append(drawdown)
+        trades["nav_before"] = nav_before
+        trades["nav_after"] = nav_after
+        trades["drawdown"] = drawdowns
+    values = pd.to_numeric(trades.get("net_r", pd.Series(dtype=float)), errors="coerce").dropna()
+    wins = values[values > 0.0]
+    losses = values[values < 0.0]
+    payoff = float(wins.mean() / abs(losses.mean())) if len(wins) and len(losses) else 0.0
+    profit_factor = float(wins.sum() / abs(losses.sum())) if len(wins) and len(losses) else (float("inf") if len(wins) else 0.0)
+    metrics = {
+        "trades": int(len(values)),
+        "wins": int((values > 0.0).sum()),
+        "losses": int((values < 0.0).sum()),
+        "win_rate": float((values > 0.0).mean()) if len(values) else 0.0,
+        "average_net_r": float(values.mean()) if len(values) else 0.0,
+        "average_win_r": float(wins.mean()) if len(wins) else 0.0,
+        "average_loss_r": float(losses.mean()) if len(losses) else 0.0,
+        "payoff_ratio": payoff,
+        "profit_factor": profit_factor,
+        "nav_final": float(nav),
+        "max_drawdown": float(max_drawdown),
+        "median_holding_minutes": float(pd.to_numeric(trades.holding_minutes, errors="coerce").median()) if not trades.empty else 0.0,
+        "mean_gross_rr": float(pd.to_numeric(trades.gross_rr, errors="coerce").mean()) if not trades.empty else 0.0,
+    }
+    return trades, pd.DataFrame(skipped), metrics
+
+
+def _group_metrics(frame: pd.DataFrame, column: str) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    if frame.empty or column not in frame:
+        return output
+    for name, group in frame.groupby(column):
+        values = pd.to_numeric(group.net_r, errors="coerce").dropna()
+        output[str(name)] = {
+            "trades": int(len(values)),
+            "win_rate": float((values > 0.0).mean()) if len(values) else 0.0,
+            "average_net_r": float(values.mean()) if len(values) else 0.0,
+            "sum_net_r": float(values.sum()) if len(values) else 0.0,
+            "mean_gross_rr": float(pd.to_numeric(group.gross_rr, errors="coerce").mean()) if len(group) else 0.0,
+        }
+    return output
+
+
+def _plot_case(data: pd.DataFrame, row: pd.Series, path: Path, title: str) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+    center = int(row.get("entry_index", row.get("confirmation_index", 0)))
+    start, end = max(0, center - 90), min(len(data), center + 150)
+    frame = data.iloc[start:end]
+    if frame.empty:
+        return
+    x = np.arange(len(frame))
+    fig, ax = plt.subplots(figsize=(13, 5))
+    ax.vlines(x, frame.low.to_numpy(float), frame.high.to_numpy(float), linewidth=0.5, alpha=0.55)
+    ax.plot(x, frame.close.to_numpy(float), linewidth=1.0)
+    for value, label in (
+        (row.get("entry"), "entry"),
+        (row.get("stop"), "stop"),
+        (row.get("target"), "target"),
+        (row.get("source_price"), "source"),
+    ):
+        value = _finite(value, float("nan"))
+        if math.isfinite(value):
+            ax.axhline(value, linestyle="--", linewidth=0.8, label=label)
+    for key, label in (("interaction_index", "interaction"), ("confirmation_index", "confirm"), ("response_index", "response")):
+        value = row.get(key)
+        if value is not None and not pd.isna(value):
+            local = int(value) - start
+            if 0 <= local < len(frame):
+                ax.axvline(local, linestyle=":", linewidth=0.8, label=label)
+    ax.set_title(title)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def run_research(
+    *,
+    start: date,
+    end: date,
+    role: str,
+    warmup_days: int,
+    symbols: Sequence[str],
+    cache: Path,
+    output: Path,
+) -> dict[str, Any]:
+    from data_re1_flow import load_range_flow
+
+    output.mkdir(parents=True, exist_ok=True)
+    cache.mkdir(parents=True, exist_ok=True)
+    load_start = start - timedelta(days=warmup_days)
+    prepared: dict[str, pd.DataFrame] = {}
+    levels_by: dict[str, list[hl.LiquidityLevel]] = {}
+    metadata_by: dict[str, dict[str, PoolMeta]] = {}
+    for symbol in symbols:
+        tick = float(CONTRACTS[symbol].tick_size)
+        raw = load_range_flow(symbol, load_start, end + timedelta(days=3), cache)
+        index_price = load_reference_range("indexPriceKlines", symbol, load_start, end + timedelta(days=3), cache)
+        mark_price = load_reference_range("markPriceKlines", symbol, load_start, end + timedelta(days=3), cache)
+        metrics = load_range_metrics(symbol, load_start, end + timedelta(days=3), cache)
+        state = prepare_market_state(raw, index_price, mark_price, metrics, tick)
+        levels, metadata = build_semantic_liquidity(symbol, state, raw, tick)
+        prepared[symbol] = state
+        levels_by[symbol] = levels
+        metadata_by[symbol] = metadata

@@ -1,0 +1,200 @@
+def _source_from_level(symbol: str, level: hl.LiquidityLevel, meta: PoolMeta) -> SourceEvent:
+    return SourceEvent(
+        source_id=str(level.level_id),
+        symbol=symbol,
+        source_kind=str(meta.pool_kind),
+        side=str(level.side),
+        price=float(level.price),
+        lower=float(level.lower),
+        upper=float(level.upper),
+        timeframe_minutes=int(level.timeframe_minutes),
+        observed_index=int(level.observed_index_1m),
+        interaction_index=int(level.first_penetration_index),
+        semantic_weight=float(meta.semantic_weight),
+        strength_ratio=_finite(level.strength_ratio),
+        defense_count=int(level.defense_count),
+        accumulated=bool(meta.accumulated),
+    )
+
+
+def _horizontal_sources(
+    symbol: str,
+    levels: Sequence[hl.LiquidityLevel],
+    metadata: dict[str, PoolMeta],
+    start_index: int,
+) -> list[SourceEvent]:
+    candidates = [
+        level for level in direction_sources(levels, metadata)
+        if level.first_penetration_index is not None
+        and int(level.first_penetration_index) >= start_index
+        and int(level.observed_index_1m) < int(level.first_penetration_index)
+    ]
+    candidates.sort(
+        key=lambda level: (
+            int(level.first_penetration_index),
+            level.side,
+            -metadata[level.level_id].semantic_weight,
+            -int(level.timeframe_minutes),
+            level.level_id,
+        )
+    )
+    output: list[SourceEvent] = []
+    for _, group in _group_consecutive(candidates, key=lambda item: (int(item.first_penetration_index), item.side)):
+        owner = max(
+            group,
+            key=lambda item: (
+                metadata[item.level_id].semantic_weight,
+                int(item.timeframe_minutes),
+                int(item.defense_count),
+                _finite(item.strength_ratio),
+            ),
+        )
+        output.append(_source_from_level(symbol, owner, metadata[owner.level_id]))
+    return output
+
+
+def _group_consecutive(items: Iterable[Any], key):
+    current_key = object()
+    group: list[Any] = []
+    for item in items:
+        item_key = key(item)
+        if group and item_key != current_key:
+            yield current_key, group
+            group = []
+        current_key = item_key
+        group.append(item)
+    if group:
+        yield current_key, group
+
+
+def _event_position(data: pd.DataFrame, event_time_ns: int) -> int:
+    timestamp = pd.Timestamp(int(event_time_ns), unit="ns", tz="UTC")
+    return min(len(data) - 1, int(data.index.searchsorted(timestamp, side="left")))
+
+
+def _diagonal_sources(
+    symbol: str,
+    data: pd.DataFrame,
+    levels: Sequence[hl.LiquidityLevel],
+    start_index: int,
+) -> list[SourceEvent]:
+    """Build causal projected trendline boundaries from confirmed pivot pairs.
+
+    The line is not available until the second pivot is confirmed.  Its first later
+    penetration is the source interaction.  The projected line is then frozen at that
+    interaction so the subsequent auction decision is fully causal.
+    """
+    output: list[SourceEvent] = []
+    for timeframe in (15, 60, 240):
+        for boundary_side in ("HIGH", "LOW"):
+            pivots = [
+                level for level in levels
+                if int(level.timeframe_minutes) == timeframe
+                and str(level.side) == boundary_side
+                and "CONFIRMED_EXTERNAL" in str(level.source_kind)
+            ]
+            pivots.sort(key=lambda item: (int(item.observed_index_1m), int(item.event_time_ns), item.level_id))
+            deduped: list[hl.LiquidityLevel] = []
+            for level in pivots:
+                if deduped and abs(int(level.event_time_ns) - int(deduped[-1].event_time_ns)) < 60_000_000_000:
+                    if _finite(level.strength_ratio) > _finite(deduped[-1].strength_ratio):
+                        deduped[-1] = level
+                    continue
+                deduped.append(level)
+            for position in range(1, len(deduped)):
+                first, second = deduped[position - 1], deduped[position]
+                p0 = _event_position(data, int(first.event_time_ns))
+                p1 = _event_position(data, int(second.event_time_ns))
+                if p1 <= p0 + max(3, timeframe // 3):
+                    continue
+                known = max(int(second.observed_index_1m), p1 + 1)
+                if known >= len(data) - 2:
+                    continue
+                slope = (float(second.price) - float(first.price)) / max(p1 - p0, 1)
+                atr = _atr_price(data, known)
+                slope_atr_hour = slope * 60.0 / atr
+                if abs(slope_atr_hour) > 2.4:
+                    continue
+                next_known = int(deduped[position + 1].observed_index_1m) if position + 1 < len(deduped) else len(data)
+                end = min(len(data), next_known, known + max(240, 8 * timeframe))
+                tolerance = max(
+                    abs(float(first.upper - first.lower)),
+                    abs(float(second.upper - second.lower)),
+                    0.08 * atr,
+                )
+                interaction: int | None = None
+                projected_price = 0.0
+                for index in range(known, end):
+                    projected_price = float(second.price) + slope * (index - p1)
+                    row = data.iloc[index]
+                    penetrated = (
+                        float(row.high) > projected_price + tolerance
+                        if boundary_side == "HIGH"
+                        else float(row.low) < projected_price - tolerance
+                    )
+                    if penetrated:
+                        interaction = index
+                        break
+                if interaction is None or interaction < start_index:
+                    continue
+                weight = (
+                    math.sqrt(max(timeframe, 5) / 5.0)
+                    * max(0.25, 0.5 * (_finite(first.strength_ratio) + _finite(second.strength_ratio)))
+                    * (1.0 + math.log1p(max(0, int(second.defense_count) - 1)))
+                )
+                output.append(
+                    SourceEvent(
+                        source_id=(
+                            f"{symbol}:DIAGONAL:{timeframe}:{boundary_side}:"
+                            f"{int(first.event_time_ns)}:{int(second.event_time_ns)}:{_stable(first.level_id, second.level_id)}"
+                        ),
+                        symbol=symbol,
+                        source_kind=f"DIAGONAL_{'RESISTANCE' if boundary_side == 'HIGH' else 'SUPPORT'}",
+                        side=boundary_side,
+                        price=float(projected_price),
+                        lower=float(projected_price - tolerance),
+                        upper=float(projected_price + tolerance),
+                        timeframe_minutes=timeframe,
+                        observed_index=known,
+                        interaction_index=interaction,
+                        semantic_weight=float(weight),
+                        strength_ratio=0.5 * (_finite(first.strength_ratio) + _finite(second.strength_ratio)),
+                        defense_count=max(2, int(first.defense_count), int(second.defense_count)),
+                        accumulated=True,
+                        line_slope_atr_per_hour=float(slope_atr_hour),
+                    )
+                )
+    output.sort(key=lambda item: (item.interaction_index, item.side, -item.semantic_weight, item.source_id))
+    return output
+
+
+def _dedup_sources(data: pd.DataFrame, sources: Sequence[SourceEvent]) -> list[SourceEvent]:
+    kept: list[SourceEvent] = []
+    for source in sorted(sources, key=lambda item: (item.interaction_index, item.side, -item.semantic_weight)):
+        atr = _atr_price(data, source.interaction_index)
+        collisions = [
+            prior for prior in kept
+            if prior.side == source.side
+            and abs(prior.interaction_index - source.interaction_index) <= 2
+            and abs(prior.price - source.price) <= 0.30 * atr
+        ]
+        if not collisions:
+            kept.append(source)
+            continue
+        best = max([source, *collisions], key=lambda item: (item.semantic_weight, item.timeframe_minutes, item.defense_count))
+        if best is source:
+            kept = [item for item in kept if item not in collisions]
+            kept.append(source)
+    kept.sort(key=lambda item: (item.interaction_index, item.side, item.source_id))
+    return kept
+
+
+def _last_opposite_order_block(
+    data: pd.DataFrame,
+    start: int,
+    end: int,
+    side: str,
+    tick: float,
+) -> tuple[float, float, int] | None:
+    sign = _sign(side)
+    for index in range(end, max(start, 0) - 1, -1):

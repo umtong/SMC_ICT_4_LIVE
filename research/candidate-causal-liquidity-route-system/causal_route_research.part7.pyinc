@@ -1,0 +1,109 @@
+    prepared = _add_common_state(prepared)
+
+    plans: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    by_symbol_counts: dict[str, Any] = {}
+    trading_start_ns = int(pd.Timestamp(start, tz="UTC").value)
+    trading_end_ns = int(pd.Timestamp(end, tz="UTC").value)
+    for symbol in symbols:
+        data = prepared[symbol]
+        tick = float(CONTRACTS[symbol].tick_size)
+        start_index = int(data.index.searchsorted(pd.Timestamp(start, tz="UTC"), side="left"))
+        horizontal = _horizontal_sources(symbol, levels_by[symbol], metadata_by[symbol], start_index)
+        diagonal = _diagonal_sources(symbol, data, levels_by[symbol], start_index)
+        sources = _dedup_sources(data, [*horizontal, *diagonal])
+        used = 0
+        for source in sources:
+            interaction_ns = int(data.index[source.interaction_index].value)
+            if interaction_ns < trading_start_ns or interaction_ns >= trading_end_ns:
+                continue
+            plan, diagnostic = _make_plan(symbol, data, levels_by[symbol], metadata_by[symbol], source, tick)
+            diagnostics.append(diagnostic)
+            if plan is not None:
+                plans.append(plan)
+                used += 1
+        by_symbol_counts[symbol] = {
+            "horizontal_sources": int(len(horizontal)),
+            "diagonal_sources": int(len(diagonal)),
+            "deduplicated_sources": int(len(sources)),
+            "plans": int(used),
+        }
+
+    plan_frame = pd.DataFrame(plans)
+    diagnostic_frame = pd.DataFrame(diagnostics)
+    trades, skipped, account_metrics = _account_route(plan_frame)
+    calendar_days = max((end - start).days, 1)
+    account_metrics["calendar_days"] = int(calendar_days)
+    account_metrics["trades_per_calendar_day"] = float(account_metrics["trades"] / calendar_days)
+    account_metrics["independent_completed_trades"] = int(account_metrics["trades"])
+    summary = {
+        "policy": POLICY,
+        "role": role,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "symbols": list(symbols),
+        "risk_fraction": RISK_FRACTION,
+        "candidate_plans": int(len(plan_frame)),
+        "diagnosed_source_events": int(len(diagnostic_frame)),
+        "no_trade_reasons": diagnostic_frame.reason.value_counts(dropna=False).to_dict() if not diagnostic_frame.empty else {},
+        "account": account_metrics,
+        "by_symbol": _group_metrics(trades, "symbol"),
+        "by_family": _group_metrics(trades, "family"),
+        "source_counts": by_symbol_counts,
+        "future_information_in_decision": False,
+        "filled_position_exit_contract": "PREDECLARED_TARGET_OR_STRUCTURAL_STOP_ONLY",
+        "global_account_constraint": "ONE_POSITION_ACROSS_BTC_ETH_SOL_XRP",
+        "split_entry_or_exit": False,
+    }
+    plan_frame.to_csv(output / "candidate_plans.csv.gz", index=False, compression="gzip")
+    diagnostic_frame.to_csv(output / "source_event_diagnostics.csv.gz", index=False, compression="gzip")
+    trades.to_csv(output / "global_trades.csv", index=False)
+    skipped.to_csv(output / "account_skipped.csv", index=False)
+    if not trades.empty:
+        trades[trades.net_r < 0.0].sort_values(["net_r", "arbitration_score"]).to_csv(output / "loss_clinic.csv", index=False)
+    if not diagnostic_frame.empty:
+        no_trade = diagnostic_frame[diagnostic_frame.reason != "TRADE_PLAN"].copy()
+        if "counterfactual_mfe_r" in no_trade:
+            no_trade = no_trade.sort_values("counterfactual_mfe_r", ascending=False)
+        no_trade.to_csv(output / "no_trade_clinic.csv", index=False)
+    (output / "summary.json").write_text(json.dumps(summary, indent=2, default=str) + "\n")
+
+    case_dir = output / "cases"
+    if not trades.empty:
+        losses = trades[trades.net_r < 0.0].sort_values("arbitration_score", ascending=False).head(12)
+        for _, row in losses.iterrows():
+            symbol = str(row.symbol)
+            name = f"loss_{symbol}_{int(row.entry_time_ns)}.png"
+            _plot_case(prepared[symbol], row, case_dir / name, f"LOSS {symbol} {row.family} {row.net_r:.3f}R")
+        wins = trades[trades.net_r > 0.0].sort_values("arbitration_score", ascending=False).head(6)
+        for _, row in wins.iterrows():
+            symbol = str(row.symbol)
+            name = f"win_{symbol}_{int(row.entry_time_ns)}.png"
+            _plot_case(prepared[symbol], row, case_dir / name, f"WIN {symbol} {row.family} {row.net_r:.3f}R")
+    print(json.dumps(summary, indent=2, default=str))
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=date.fromisoformat, required=True)
+    parser.add_argument("--end", type=date.fromisoformat, required=True)
+    parser.add_argument("--role", choices=("dev", "fresh"), required=True)
+    parser.add_argument("--warmup-days", type=int, default=60)
+    parser.add_argument("--symbols", nargs="+", default=list(SYMBOLS))
+    parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    run_research(
+        start=args.start,
+        end=args.end,
+        role=args.role,
+        warmup_days=args.warmup_days,
+        symbols=args.symbols,
+        cache=args.cache,
+        output=args.output,
+    )
+
+
+if __name__ == "__main__":
+    main()
