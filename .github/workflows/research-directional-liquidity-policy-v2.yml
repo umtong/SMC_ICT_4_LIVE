@@ -1,0 +1,177 @@
+name: Research directional liquidity policy v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_directional_liquidity_policy_v2"]
+    paths:
+      - ".github/workflows/research-directional-liquidity-policy-v2.yml"
+      - "research/candidate-directional-liquidity-policy-v2/**"
+
+concurrency:
+  group: research-directional-liquidity-policy-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-directional-liquidity-policy-v2
+  PYTHONPATH: research/candidate-directional-liquidity-policy-v2:research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  self-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_directional_liquidity_policy_v2
+      - name: Check causal direction, 3% sizing, market episodes and global account
+        run: python "$CANDIDATE/self_check.py"
+      - name: Compile the complete candidate
+        run: python -m compileall -q "$CANDIDATE"
+      - name: Import the Nautilus execution bridge
+        run: |
+          python - <<'PY'
+          import nautilus_trader
+          import nautilus_strategy
+          print("nautilus", nautilus_trader.__version__)
+          print("strategy", nautilus_strategy.DirectionalLiquidityExecutionStrategy.__name__)
+          PY
+
+  harvest:
+    needs: self-check
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: fresh-2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/directional-liquidity-policy-v2/${{ matrix.period }}
+      OUT: artifacts/directional-liquidity-policy-v2/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      PERIOD: ${{ matrix.period }}
+      ROLE: ${{ matrix.role }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_directional_liquidity_policy_v2
+
+      - name: Harvest one-plan directional liquidity episodes
+        run: |
+          set -o pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "$CANDIDATE/episode_policy_exec.py" \
+            --start "$START" --end "$END" --warmup-days 75 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" \
+            2>&1 | tee "$OUT/harvest.log"
+
+      - name: Attach exact diagnostic identity
+        if: always()
+        run: |
+          PERIOD="$PERIOD" ROLE="$ROLE" OUT="$OUT" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["OUT"]) / "summary.json"
+          data = json.loads(path.read_text()) if path.exists() else {}
+          data.update({
+              "period": os.environ["PERIOD"],
+              "role": os.environ["ROLE"],
+              "source_sha": "${{ github.sha }}",
+          })
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
+          PY
+
+      - name: Export price-volume chart universe
+        if: success()
+        run: |
+          mkdir -p "$OUT/chart"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "$PERIOD" --start "$START" --end "$END" \
+            --cache "$CACHE" --output "$OUT/chart" \
+            2>&1 | tee "$OUT/chart_export.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: directional-liquidity-policy-v2-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/directional-liquidity-policy-v2/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    if: ${{ needs.harvest.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      UNIVERSE: artifacts/directional-liquidity-policy-v2/universe
+      RESULT: artifacts/directional-liquidity-policy-v2/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_directional_liquidity_policy_v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: directional-liquidity-policy-v2-*
+          path: artifacts/directional-liquidity-policy-v2/universe
+
+      - name: Route one continuous market-wide account
+        run: |
+          set -o pipefail
+          mkdir -p "$RESULT"
+          python "$CANDIDATE/route_directional_policy_causal.py" \
+            --root "$UNIVERSE" --output "$RESULT" \
+            2>&1 | tee "$RESULT/route.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: directional-liquidity-policy-v2-result
+          path: artifacts/directional-liquidity-policy-v2/result/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish compact research result on branch
+        if: success()
+        run: |
+          set -euo pipefail
+          destination=research_results/directional_liquidity_policy_v2/latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          for file in summary.json route.log selected_orders.csv closed_trades.csv market_event_or_account_conflicts.csv no_trade_opportunity_audit.csv; do
+            cp "$RESULT/$file" "$destination/$file" 2>/dev/null || true
+          done
+          printf '{"source_sha":"%s","published_at":"%s","workflow":"directional-liquidity-policy-v2-short-diagnosis"}\n' \
+            "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "$destination/run.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record directional liquidity policy v2 diagnosis" || exit 0
+          git push origin HEAD:research_directional_liquidity_policy_v2
