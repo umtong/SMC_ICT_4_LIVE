@@ -18,13 +18,14 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+# Importing the restored policy installs dynamic trend-line/channel destinations.
 import episode_policy as restored
 from directional_context import (
     build_directional_snapshot,
     build_objective_snapshot,
     mechanism_coherence,
 )
-from world_model_common import EPS, MEDIUM_SCALE, EpisodeSignal, sign, stable
+from world_model_common import EPS, MEDIUM_SCALE, EpisodeSignal, finite, sign, stable
 
 base_policy = restored.base_policy
 geometry = restored.geometry
@@ -64,13 +65,24 @@ def _last_fvg(
         middle_body = float(bodies.iloc[index - 1])
         displacement = middle_body / normal
         if side == "LONG":
-            lower, upper = float(data.high.iloc[index - 2]), float(data.low.iloc[index])
+            left_high = float(data.high.iloc[index - 2])
+            right_low = float(data.low.iloc[index])
+            if right_low <= left_high:
+                continue
+            lower, upper = left_high, right_low
             kind = "BULLISH_FVG"
         else:
-            lower, upper = float(data.high.iloc[index]), float(data.low.iloc[index - 2])
+            right_high = float(data.high.iloc[index])
+            left_low = float(data.low.iloc[index - 2])
+            if right_high >= left_low:
+                continue
+            lower, upper = right_high, left_low
             kind = "BEARISH_FVG"
-        lower, upper = sorted((lower, upper))
-        if upper - lower <= 2.0 * tick or displacement <= 1.0:
+        if upper - lower <= 2.0 * tick:
+            continue
+        # A gap is useful only when the middle candle actually represents an
+        # initiative displacement relative to what was normal immediately before it.
+        if displacement <= 1.0:
             continue
         candidates.append((lower, upper, kind, index, displacement))
     return candidates[-1] if candidates else None
@@ -141,6 +153,8 @@ def _one_entry_zone(
         valid.append((priority, distance / max(atr_price, EPS), -item[3], item))
     if not valid:
         return None
+    # Family semantics decide first; distance only resolves two observations of
+    # the same semantic class.  There is no alternative plan expansion.
     _, _, _, selected = min(valid, key=lambda item: (item[0], item[1], item[2]))
     return float(selected[0]), float(selected[1]), str(selected[2])
 
@@ -156,6 +170,8 @@ def _entry_price(
     if source is not None and lower <= float(source.price) <= upper:
         return float(source.price)
     width = max(upper - lower, EPS)
+    # Proximal quarter captures the first retest without chasing the confirmation
+    # candle; the same geometry is applied to every symbol.
     return float(upper - 0.25 * width if side == "LONG" else lower + 0.25 * width)
 
 
@@ -286,6 +302,9 @@ def directional_plan_from_signal(
     }, "PLAN_CREATED"
 
 
+# world_model_policy imported plan_from_signal into its module namespace; replacing
+# that single reference changes generation without forking the mature causal source
+# and episode detectors.
 base_policy.plan_from_signal = directional_plan_from_signal
 
 
