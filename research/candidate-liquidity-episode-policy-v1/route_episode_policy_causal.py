@@ -5,7 +5,8 @@ The base router is reused, but feature conversion is deliberately pointwise: no
 quantile, mean, variance or category information from later/fresh windows is
 allowed to alter an earlier decision. HistGradientBoosting receives finite raw
 causal features and performs all fitting inside each chronological training
-window.
+window. A missing learning dependency is a hard execution error, not a silent
+policy fallback.
 """
 from __future__ import annotations
 
@@ -14,6 +15,12 @@ import pandas as pd
 
 import route_episode_policy as base
 from episode_policy_features import FEATURE_COLUMNS
+
+
+if base.HistGradientBoostingClassifier is None:
+    raise RuntimeError(
+        "scikit-learn HistGradientBoostingClassifier is required for causal routing"
+    )
 
 
 def causal_numeric_features(frame: pd.DataFrame) -> pd.DataFrame:
