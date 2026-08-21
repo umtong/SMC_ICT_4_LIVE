@@ -1,0 +1,48 @@
+name: Research candidate 1a one-day smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_1a"]
+    paths:
+      - ".github/workflows/research-candidate-1a-smoke.yml"
+      - "research/candidate-1a/causal_auction_harvest.py"
+
+concurrency:
+  group: research-candidate-1a-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1a:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_1a
+      - run: |
+          set -euo pipefail
+          python research/candidate-1a/causal_auction_harvest.py \
+            --start 2025-08-01 --end 2025-08-02 --warmup-days 3 \
+            --symbols BTCUSDT --cache .cache/candidate-1a-smoke \
+            --output artifacts/candidate-1a-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-1a-smoke
+          path: artifacts/candidate-1a-smoke/**
+          if-no-files-found: error
+          retention-days: 7
