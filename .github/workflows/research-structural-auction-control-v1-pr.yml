@@ -49,7 +49,10 @@ jobs:
           ticks = {"BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.001, "XRPUSDT": 0.0001}
           for symbol, tick in ticks.items():
               bundle = StructuralAuctionControlV5MarketBundle(symbol, tick, 1.0)
-              assert len(bundle.sources) == 4
+              assert [name for name, _ in bundle.sources] == [
+                  "CHANNEL_CONTROL",
+                  "COMPLETE_OPPORTUNITY",
+              ]
           PY
       - name: Run the public-trade day in one continuous four-market account
         run: |
@@ -58,7 +61,7 @@ jobs:
           python research/candidate-skilled-auction-control-v1/run_backtest_v5.py \
             --start 2025-08-19 \
             --end 2025-08-20 \
-            --warmup-days 21 \
+            --warmup-days 7 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" \
             --output "$OUT" \
