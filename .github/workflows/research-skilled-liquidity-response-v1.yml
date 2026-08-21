@@ -27,16 +27,42 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
-  diagnose:
+  self-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_skilled_liquidity_response
+      - name: Check the causal auction-response primitive
+        run: python "$CANDIDATE/self_check.py"
+      - name: Compile the complete candidate
+        run: python -m compileall -q "$CANDIDATE"
+
+  harvest:
+    needs: self-check
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {symbol: BTCUSDT, slug: btc}
+          - {symbol: ETHUSDT, slug: eth}
+          - {symbol: SOLUSDT, slug: sol}
+          - {symbol: XRPUSDT, slug: xrp}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
-      CACHE: .cache/skilled-liquidity-response-v1-smoke
-      OUT: artifacts/skilled-liquidity-response-v1-smoke/dev-2025-feb
-      RESULT: artifacts/skilled-liquidity-response-v1-smoke/result
+      SYMBOL: ${{ matrix.symbol }}
+      SLUG: ${{ matrix.slug }}
+      CACHE: .cache/skilled-liquidity-response-v1-smoke/${{ matrix.slug }}
+      OUT: artifacts/skilled-liquidity-response-v1-smoke/${{ matrix.slug }}/dev-2025-feb-smoke
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,28 +70,22 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: .cache/skilled-liquidity-response-v1-smoke
-          key: skilled-liquidity-response-v1-smoke-2025-feb-w30-data-v1
+          path: .cache/skilled-liquidity-response-v1-smoke/${{ matrix.slug }}
+          key: skilled-liquidity-response-v1-${{ matrix.slug }}-2025-feb-w30-data-v1
 
-      - name: Check the causal auction-response primitive
-        run: python "$CANDIDATE/self_check.py"
-
-      - name: Compile the complete candidate
-        run: python -m compileall -q "$CANDIDATE"
-
-      - name: Harvest one short four-market response universe
+      - name: Harvest one symbol from the shared causal policy
         run: |
           set -o pipefail
-          mkdir -p "$CACHE" "$OUT" "$RESULT"
+          mkdir -p "$CACHE" "$OUT"
           python "$CANDIDATE/episode_policy_exec.py" \
             --start 2025-02-01 --end 2025-02-04 --warmup-days 30 \
-            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --symbols "$SYMBOL" \
             --cache "$CACHE" --output "$OUT" \
             2>&1 | tee "$OUT/harvest.log"
 
       - name: Attach exact source identity
         run: |
-          SOURCE_SHA="$(git rev-parse HEAD)" OUT="$OUT" python - <<'PY'
+          SOURCE_SHA="$(git rev-parse HEAD)" OUT="$OUT" SYMBOL="$SYMBOL" python - <<'PY'
           import json, os
           from pathlib import Path
           path = Path(os.environ["OUT"]) / "summary.json"
@@ -73,6 +93,7 @@ jobs:
           data.update({
               "period": "dev-2025-feb-smoke",
               "role": "dev",
+              "symbol_partition": os.environ["SYMBOL"],
               "source_sha": os.environ["SOURCE_SHA"],
               "workflow_run_id": "${{ github.run_id }}",
           })
@@ -82,12 +103,41 @@ jobs:
           )
           PY
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skilled-liquidity-response-v1-${{ matrix.slug }}
+          path: artifacts/skilled-liquidity-response-v1-smoke/${{ matrix.slug }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    if: ${{ needs.harvest.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      UNIVERSE: artifacts/skilled-liquidity-response-v1-smoke/universe
+      RESULT: artifacts/skilled-liquidity-response-v1-smoke/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_skilled_liquidity_response
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: skilled-liquidity-response-v1-*
+          path: artifacts/skilled-liquidity-response-v1-smoke/universe
+
       - name: Route the actual single-slot continuous account
         run: |
           set -o pipefail
+          mkdir -p "$RESULT"
           python "$CANDIDATE/route_skilled_policy.py" \
-            --root artifacts/skilled-liquidity-response-v1-smoke \
-            --output "$RESULT" \
+            --root "$UNIVERSE" --output "$RESULT" \
             2>&1 | tee "$RESULT/route.log"
 
       - name: Print direct trading evidence
@@ -109,7 +159,7 @@ jobs:
         if: always()
         with:
           name: skilled-liquidity-response-v1-causal-diagnosis
-          path: artifacts/skilled-liquidity-response-v1-smoke/**
+          path: artifacts/skilled-liquidity-response-v1-smoke/result/**
           if-no-files-found: error
           retention-days: 30
 
@@ -123,8 +173,6 @@ jobs:
           for file in summary.json route.log selected_orders.csv closed_trades.csv market_event_or_account_conflicts.csv no_trade_opportunity_audit.csv all_plans.csv.gz all_episodes.csv.gz; do
             cp "$RESULT/$file" "$destination/$file" 2>/dev/null || true
           done
-          cp "$OUT/summary.json" "$destination/harvest_summary.json"
-          cp "$OUT/harvest.log" "$destination/harvest.log"
           printf '{"source_sha":"%s","published_at":"%s","workflow_run_id":"%s","workflow":"skilled-liquidity-response-v1-causal-diagnosis"}\n' \
             "$(git rev-parse HEAD)" "$(date -u +%FT%TZ)" "${{ github.run_id }}" \
             > "$destination/run.json"
