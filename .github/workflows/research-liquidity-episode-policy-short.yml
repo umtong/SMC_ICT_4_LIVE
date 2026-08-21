@@ -52,57 +52,47 @@ jobs:
         with:
           ref: research_liquidity_episode_policy
 
-      - name: Harvest restored one-plan episodes
-        id: harvest
+      - name: Verify restored policy imports and compiles
         run: |
-          set +e
+          set -euo pipefail
+          python -m py_compile research/candidate-liquidity-episode-policy-v1/*.py
+          python - <<'PY'
+          import dynamic_boundaries
+          import episode_policy
+          import route_episode_policy_causal
+          assert callable(dynamic_boundaries.build_dynamic_boundaries)
+          assert callable(episode_policy.generate_symbol)
+          assert callable(route_episode_policy_causal.causal_numeric_features)
+          PY
+
+      - name: Harvest restored one-plan episodes
+        run: |
+          set -euo pipefail
           mkdir -p "$CACHE" "$OUT"
           python research/candidate-liquidity-episode-policy-v1/episode_policy_exec.py \
             --start "$START" --end "$END" --warmup-days 75 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" --output "$OUT" \
             2>&1 | tee "$OUT/harvest.log"
-          rc=${PIPESTATUS[0]}
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          out = Path(os.environ["OUT"])
-          path = out / "summary.json"
-          data = json.loads(path.read_text()) if path.exists() else {}
-          data.update({
-              "period": os.environ["PERIOD"],
-              "role": os.environ["ROLE"],
-              "harvest_exit_code": int(os.environ.get("HARVEST_RC", "0")),
-          })
-          path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
-          PY
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
-        env:
-          HARVEST_RC: "0"
-
-      - name: Correct recorded harvest exit code
-        if: always()
-        run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
           path = Path(os.environ["OUT"]) / "summary.json"
-          data = json.loads(path.read_text()) if path.exists() else {}
-          data["harvest_exit_code"] = int("${{ steps.harvest.outputs.exit_code || '1' }}")
+          data = json.loads(path.read_text())
+          data["period"] = os.environ["PERIOD"]
+          data["role"] = os.environ["ROLE"]
+          data["harvest_exit_code"] = 0
           path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n")
           PY
 
       - name: Preserve exact price-volume path
-        if: ${{ steps.harvest.outputs.exit_code == '0' }}
         run: |
-          set +e
+          set -euo pipefail
           mkdir -p "$OUT/chart"
           python research/candidate-liquidity-auction-v3/export_chart_universe.py \
             --period "$PERIOD" --start "$START" --end "$END" \
             --cache "$CACHE" --output "$OUT/chart" \
             2>&1 | tee "$OUT/chart_export.log"
-          exit 0
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -114,7 +104,6 @@ jobs:
 
   route:
     needs: harvest
-    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -136,37 +125,29 @@ jobs:
           path: artifacts/liquidity-episode-policy/universe
 
       - name: Route causal policy through one account
-        id: route
         run: |
-          set +e
+          set -euo pipefail
           mkdir -p "$RESULT"
-          python research/candidate-liquidity-episode-policy-v1/route_episode_policy.py \
+          python research/candidate-liquidity-episode-policy-v1/route_episode_policy_causal.py \
             --root "$UNIVERSE" --output "$RESULT" \
             2>&1 | tee "$RESULT/route.log"
-          rc=${PIPESTATUS[0]}
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          if [ ! -f "$RESULT/summary.json" ]; then
-            ROUTE_RC="$rc" python -c 'import json,os,pathlib; pathlib.Path(os.environ["RESULT"],"summary.json").write_text(json.dumps({"route_exit_code": int(os.environ["ROUTE_RC"]), "error": "route did not produce summary.json", "diagnostic_windows_are_not_a_long_continuous_backtest": True}, indent=2) + "\n")'
-          fi
-          exit 0
 
-      - name: Record workflow status
-        if: always()
+      - name: Record exact successful source
         run: |
+          set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          result = Path(os.environ["RESULT"])
-          path = result / "summary.json"
-          data = json.loads(path.read_text()) if path.exists() else {}
-          data["route_exit_code"] = int("${{ steps.route.outputs.exit_code || '1' }}")
+          path = Path(os.environ["RESULT"]) / "summary.json"
+          data = json.loads(path.read_text())
+          data["route_exit_code"] = 0
           data["harvest_job_result"] = "${{ needs.harvest.result }}"
           data["source_sha"] = "${{ github.sha }}"
+          data["causal_feature_preprocessing"] = "pointwise finite conversion only"
           path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n")
           PY
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: liquidity-episode-policy-short-result
           path: artifacts/liquidity-episode-policy/result/**
@@ -174,17 +155,16 @@ jobs:
           retention-days: 30
 
       - name: Publish compact diagnostic result on branch
-        if: always()
         run: |
           set -euo pipefail
           destination=research_results/liquidity_episode_policy_v1/latest
           rm -rf "$destination"
           mkdir -p "$destination"
           cp "$RESULT/summary.json" "$destination/summary.json"
-          cp "$RESULT/route.log" "$destination/route.log" 2>/dev/null || true
-          cp "$RESULT/selected_orders.csv" "$destination/selected_orders.csv" 2>/dev/null || true
-          cp "$RESULT/closed_trades.csv" "$destination/closed_trades.csv" 2>/dev/null || true
-          cp "$RESULT/near_miss_rejected_orders.csv" "$destination/near_miss_rejected_orders.csv" 2>/dev/null || true
+          cp "$RESULT/route.log" "$destination/route.log"
+          cp "$RESULT/selected_orders.csv" "$destination/selected_orders.csv"
+          cp "$RESULT/closed_trades.csv" "$destination/closed_trades.csv"
+          cp "$RESULT/near_miss_rejected_orders.csv" "$destination/near_miss_rejected_orders.csv"
           printf '{"source_sha":"%s","published_at":"%s","workflow":"short-diagnosis"}\n' \
             "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "$destination/run.json"
           git config user.name "github-actions[bot]"
