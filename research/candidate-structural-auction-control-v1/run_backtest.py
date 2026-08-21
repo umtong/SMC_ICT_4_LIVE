@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run structural auction control v1 in the continuous Nautilus account."""
+"""Run absorption-confirmed structural auction control in the continuous Nautilus account."""
 from __future__ import annotations
 
 import json
@@ -12,28 +12,31 @@ from structural_auction_control_v1 import (
     FAILED_ACCEPTANCE_TRAP_RULE,
     PRICE_VOLUME_CONTROL_RULE,
     SINGLE_EPISODE_STATE_RULE,
-    StructuralAuctionControlV1Bundle,
+)
+from structural_auction_control_v2 import (
+    ENTRY_RETEST_ABSORPTION_RULE,
+    StructuralAuctionControlV2Bundle,
 )
 
 
 # Keep the existing Binance extended-kline loader, Nautilus execution strategy,
 # fees, slippage, one-global-position account, and 3% risk sizing. Only the
 # decision bundle is replaced.
-_flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV1Bundle
+_flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV2Bundle
 
 
 def _rewrite(output: Path) -> None:
     metadata = {
-        "candidate": "candidate-structural-auction-control-v1",
+        "candidate": "candidate-structural-auction-control-v2-absorption",
         "decision_policy": (
             "60m direction and reversal-area context -> causal 15m public structure -> "
-            "5m rejection/acceptance/trap state ownership -> completed 1m aggressor-flow "
-            "initiative or absorption -> first event-local OB/FVG or exact retest -> "
+            "5m rejection/acceptance/trap state ownership -> completed 1m "
+            "opposing-aggression absorption -> first event-local OB/FVG or exact retest -> "
             "immutable full-position structural plan"
         ),
         "structural_changes": [
             "FAILED_ACCEPTANCE_TRANSITIONS_TO_SAME_EPISODE_TRAP",
-            "PRICE_AND_VOLUME_CONTROL_REQUIRED_BEFORE_PLAN",
+            "ENTRY_RETEST_OPPOSING_AGGRESSION_ABSORPTION_REQUIRED",
             "NO_INDEPENDENT_OB_FVG_CHANNEL_OR_TRAP_STRATEGY_LATTICE",
         ],
         "rule_provenance": [
@@ -41,6 +44,7 @@ def _rewrite(output: Path) -> None:
             PRICE_VOLUME_CONTROL_RULE,
             EFFORT_RESULT_RULE,
             SINGLE_EPISODE_STATE_RULE,
+            ENTRY_RETEST_ABSORPTION_RULE,
         ],
     }
     _flow._rewrite_metadata(output)
