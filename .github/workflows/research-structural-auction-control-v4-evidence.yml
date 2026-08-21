@@ -1,0 +1,148 @@
+name: research-structural-auction-control-v4-evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_structural_auction_control"]
+    paths:
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py"
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v2_strict.py"
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v3.py"
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v4.py"
+      - "research/candidate-skilled-auction-control-v1/run_backtest_v4.py"
+      - "research/candidate-skilled-auction-control-v1/summarize_v2_evidence.py"
+      - ".github/workflows/research-structural-auction-control-v4-evidence.yml"
+      - ".dispatch-structural-auction-control-v4-evidence"
+
+concurrency:
+  group: research-structural-auction-control-v4-evidence
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: regime-2023-feb, start: 2023-02-01, end: 2023-02-04}
+          - {period: regime-2024-aug, start: 2024-08-03, end: 2024-08-06}
+          - {period: public-cases-2025-aug, start: 2025-08-13, end: 2025-08-16}
+          - {period: recent-2026-jul, start: 2026-07-21, end: 2026-07-24}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-skilled-auction-control-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/structural-auction-control-v4-evidence/${{ matrix.period }}
+      OUT: artifacts/structural-auction-control-v4-evidence/${{ matrix.period }}
+      PERIOD: ${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+          fetch-depth: 0
+      - name: Compile structural controller
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v2_strict.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v3.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v4.py \
+            research/candidate-skilled-auction-control-v1/run_backtest_v4.py \
+            research/candidate-skilled-auction-control-v1/summarize_v2_evidence.py
+      - name: Run one continuous four-market account
+        id: run
+        run: |
+          set +e
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-skilled-auction-control-v1/run_backtest_v4.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 21 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2 \
+            2>&1 | tee "$OUT/run.log"
+          rc=${PIPESTATUS[0]}
+          RUN_RC="$rc" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path(os.environ["OUT"])
+          (out / "workflow_status.json").write_text(json.dumps({
+              "period": os.environ["PERIOD"],
+              "run_exit_code": int(os.environ["RUN_RC"]),
+          }, indent=2) + "\n")
+          PY
+          exit "$rc"
+      - name: Upload complete raw period evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-v4-evidence-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/structural-auction-control-v4-evidence/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  preserve:
+    if: always()
+    needs: diagnostic
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: structural-v4-evidence-*
+          path: /tmp/structural-v4-artifacts
+          merge-multiple: false
+      - name: Build compact raw evidence snapshot
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/structural-v4-evidence
+          mkdir -p /tmp/structural-v4-evidence
+          if [ -d /tmp/structural-v4-artifacts ]; then
+            python research/candidate-skilled-auction-control-v1/summarize_v2_evidence.py \
+              --input /tmp/structural-v4-artifacts \
+              --output /tmp/structural-v4-evidence
+          else
+            printf '{"error":"no artifacts downloaded","run_id":%s}\n' "$GITHUB_RUN_ID" \
+              > /tmp/structural-v4-evidence/manifest.json
+          fi
+      - name: Commit evidence without retriggering diagnostics
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research_structural_auction_control
+            git reset --hard origin/research_structural_auction_control
+            target=research/candidate-skilled-auction-control-v1/evidence/v4-diagnostic-latest
+            rm -rf "$target"
+            mkdir -p "$target"
+            cp -a /tmp/structural-v4-evidence/. "$target/"
+            printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "$target/run.json"
+            git add "$target"
+            git commit -m "Record structural v4 evidence $GITHUB_RUN_ID" || exit 0
+            if git push origin HEAD:research_structural_auction_control; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
