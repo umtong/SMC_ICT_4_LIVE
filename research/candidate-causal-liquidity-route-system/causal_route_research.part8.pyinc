@@ -1,0 +1,215 @@
+# Structural v2 overlay: value acceptance, confluence, defended limit entry,
+# proximal liquidity targets, and single-account pending-order cancellation.
+POLICY = (
+    "CAUSAL_LIQUIDITY_ROUTE_V2:CONFLUENT_SOURCE_THEN_VALUE_ACCEPTANCE_OR_FAILED_"
+    "AUCTION_THEN_FINAL_FLOW_CONTROL_THEN_DEFENDED_LIMIT_RETURN_THEN_PROXIMAL_"
+    "OPPOSING_LIQUIDITY_TARGET_AND_GLOBAL_PENDING_CANCELLATION"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceEvent:
+    source_id: str
+    symbol: str
+    source_kind: str
+    side: str
+    price: float
+    lower: float
+    upper: float
+    timeframe_minutes: int
+    observed_index: int
+    interaction_index: int
+    semantic_weight: float
+    strength_ratio: float
+    defense_count: int
+    accumulated: bool
+    line_slope_atr_per_hour: float = 0.0
+    confluence_count: int = 1
+    confluence_kinds: str = ""
+    confluence_timeframes: str = ""
+    confluence_weight: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class AuctionDecision:
+    branch: str
+    side: str
+    interaction_index: int
+    confirmation_index: int
+    event_extreme: float
+    zone_lower: float
+    zone_upper: float
+    location_kind: str
+    event_strength: float
+    outside_close_ratio: float
+    outside_volume_ratio: float
+    event_path_efficiency: float
+    event_activity_ratio: float
+    event_flow_signed: float
+    event_volume_clock: float
+    consecutive_outside_closes: int = 0
+    event_value_migration_atr: float = 0.0
+    event_vwap: float = 0.0
+    event_last_bar_flow_signed: float = 0.0
+    penetration_atr: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class RouteTarget:
+    level_id: str
+    kind: str
+    price: float
+    structure_price: float
+    timeframe_minutes: int
+    semantic_weight: float
+    gross_rr: float
+    route_clarity: float
+    barrier_count: int
+    strongest_barrier_ratio: float
+    volume_congestion: float
+    zone_lower: float = 0.0
+    zone_upper: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class TradeLabel:
+    outcome: str
+    entry_index: int
+    entry_time_ns: int
+    resolution_index: int | None
+    resolution_time_ns: int | None
+    entry: float
+    stop: float
+    stop_fill: float
+    target: float
+    gross_rr: float
+    target_net_r: float
+    net_r: float | None
+    holding_minutes: float | None
+    mfe_r: float
+    mae_r: float
+    order_index: int = 0
+    order_time_ns: int = 0
+    fill_delay_minutes: float = 0.0
+    entry_type: str = "DEFENDED_ZONE_LIMIT"
+
+
+def _tail_true(values: Sequence[bool]) -> int:
+    count = 0
+    for value in reversed(values):
+        if not bool(value):
+            break
+        count += 1
+    return count
+
+
+def _merge_source_cluster(data: pd.DataFrame, cluster: Sequence[SourceEvent]) -> SourceEvent:
+    owner = max(
+        cluster,
+        key=lambda item: (
+            item.semantic_weight,
+            item.timeframe_minutes,
+            item.defense_count,
+            item.strength_ratio,
+        ),
+    )
+    kinds = sorted({str(item.source_kind) for item in cluster})
+    timeframes = sorted({int(item.timeframe_minutes) for item in cluster})
+    energy = math.sqrt(sum(max(float(item.semantic_weight), 0.0) ** 2 for item in cluster))
+    independent_bonus = 1.0 + 0.18 * math.log1p(max(0, len(kinds) - 1)) + 0.12 * math.log1p(max(0, len(timeframes) - 1))
+    confluence_weight = max(float(owner.semantic_weight), energy * independent_bonus)
+    source_id = owner.source_id if len(cluster) == 1 else (
+        f"{owner.symbol}:CONFLUENCE:{owner.side}:{owner.interaction_index}:"
+        f"{_stable(*(item.source_id for item in sorted(cluster, key=lambda value: value.source_id)))}"
+    )
+    return SourceEvent(
+        source_id=source_id,
+        symbol=owner.symbol,
+        source_kind="+".join(kinds),
+        side=owner.side,
+        price=float(owner.price),
+        lower=float(owner.lower),
+        upper=float(owner.upper),
+        timeframe_minutes=int(owner.timeframe_minutes),
+        observed_index=max(int(item.observed_index) for item in cluster),
+        interaction_index=int(owner.interaction_index),
+        semantic_weight=float(owner.semantic_weight),
+        strength_ratio=max(float(item.strength_ratio) for item in cluster),
+        defense_count=max(int(item.defense_count) for item in cluster),
+        accumulated=any(bool(item.accumulated) for item in cluster),
+        line_slope_atr_per_hour=float(owner.line_slope_atr_per_hour),
+        confluence_count=int(len(cluster)),
+        confluence_kinds="|".join(kinds),
+        confluence_timeframes="|".join(str(value) for value in timeframes),
+        confluence_weight=float(confluence_weight),
+    )
+
+
+def _dedup_sources(data: pd.DataFrame, sources: Sequence[SourceEvent]) -> list[SourceEvent]:
+    clusters: list[list[SourceEvent]] = []
+    for source in sorted(sources, key=lambda item: (item.interaction_index, item.side, -item.semantic_weight, item.source_id)):
+        atr = _atr_price(data, source.interaction_index)
+        matching: list[SourceEvent] | None = None
+        for cluster in reversed(clusters[-12:]):
+            owner = max(cluster, key=lambda item: item.semantic_weight)
+            if owner.side != source.side:
+                continue
+            if abs(owner.interaction_index - source.interaction_index) > 2:
+                continue
+            if abs(owner.price - source.price) <= 0.30 * atr:
+                matching = cluster
+                break
+        if matching is None:
+            clusters.append([source])
+        else:
+            matching.append(source)
+    output = [_merge_source_cluster(data, cluster) for cluster in clusters]
+    output.sort(key=lambda item: (item.interaction_index, item.side, item.source_id))
+    return output
+
+
+def _segment_flow_state(segment: pd.DataFrame, sign: float, baseline: float, boundary: float) -> dict[str, float]:
+    quote = pd.to_numeric(segment.get("quote_volume", pd.Series(0.0, index=segment.index)), errors="coerce").fillna(0.0)
+    signed = _signed_flow(segment)
+    total_quote = max(float(quote.sum()), EPS)
+    flow = sign * float(signed.sum()) / total_quote
+    last_quote = max(float(quote.iloc[-1]), EPS)
+    last_flow = sign * float(signed.iloc[-1]) / last_quote
+    typical = ((segment.high + segment.low + segment.close) / 3.0).to_numpy(float)
+    weights = quote.to_numpy(float)
+    vwap = float(np.average(typical, weights=weights)) if np.isfinite(weights).all() and weights.sum() > 0.0 else float(segment.close.iloc[-1])
+    outside = typical > boundary if sign > 0.0 else typical < boundary
+    outside_volume = float(weights[outside].sum()) / total_quote if len(weights) else 0.0
+    return {
+        "flow": float(flow),
+        "last_flow": float(last_flow),
+        "vwap": float(vwap),
+        "outside_volume_ratio": float(outside_volume),
+        "activity": float(quote.mean()) / max(baseline, EPS) if len(quote) else 0.0,
+        "volume_clock": float(quote.sum()) / max(baseline, EPS),
+    }
+
+
+def _classify_auction(data: pd.DataFrame, source: SourceEvent, tick: float) -> AuctionDecision | None:
+    interaction = int(source.interaction_index)
+    if interaction >= len(data) - 4:
+        return None
+    atr = _atr_price(data, interaction)
+    baseline = _activity_baseline(data, interaction)
+    event_end = min(len(data) - 3, interaction + max(30, min(120, int(source.timeframe_minutes))))
+    continuation_side = "LONG" if source.side == "HIGH" else "SHORT"
+    reversal_side = "SHORT" if source.side == "HIGH" else "LONG"
+    cont_sign, rev_sign = _sign(continuation_side), _sign(reversal_side)
+    cont_boundary = float(source.upper if source.side == "HIGH" else source.lower)
+    extreme = float(data.iloc[interaction].high if source.side == "HIGH" else data.iloc[interaction].low)
+    outside_flags: list[bool] = []
+    reclaimed_once = False
+    for index in range(interaction, event_end + 1):
+        row = data.iloc[index]
+        extreme = max(extreme, float(row.high)) if source.side == "HIGH" else min(extreme, float(row.low))
+        close = float(row.close)
+        outside = close > source.upper if source.side == "HIGH" else close < source.lower
+        reclaimed = close < source.lower if source.side == "HIGH" else close > source.upper
+        outside_flags.append(bool(outside))
+        reclaimed_once = reclaimed_once or reclaimed
+        segment = data.iloc[interaction:index + 1]
