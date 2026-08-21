@@ -49,6 +49,10 @@ def load_range_metrics_sparse(
         inclusive="left",
         tz="UTC",
     )
+    # The repository's one-minute market state uses microsecond datetime storage;
+    # pandas merge_asof now requires the physical datetime units to match exactly.
+    complete_index = complete_index.as_unit("us")
+    regular.index = pd.DatetimeIndex(regular.index).as_unit("us")
     regular = regular.reindex(complete_index)
     regular.index.name = "metric_time"
     return regular.reset_index()
