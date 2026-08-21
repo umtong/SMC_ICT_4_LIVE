@@ -135,6 +135,7 @@ def _candidate(
         pre_event_control=pre_event_control,
     )
     candidate = core.DepartureCandidate(
+        source=source,
         confirmation_index=int(confirmation),
         departure_index=int(confirmation),
         setup=setup,
@@ -171,8 +172,6 @@ def _run_branch(
     if not frame.empty:
         frame = frame.copy()
         frame["source_auction_resolution"] = branch
-        # Both outcomes intentionally share episode_id: they are competing
-        # explanations of one boundary interaction.  Action ids must remain unique.
         frame["action_id"] = branch + ":" + frame.action_id.astype(str)
     return frame, counts
 
