@@ -19,7 +19,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research_causal_liquidity_route_system
-      - name: Compile fragments and run one-day BTC executable smoke
+          fetch-depth: 0
+      - name: Compile fragments and run two-day four-market trade clinic
         run: |
           set +e
           mkdir -p .cache/causal-route-smoke artifacts/causal-route-smoke
@@ -39,8 +40,8 @@ jobs:
           help_status=$?
           if [ "$help_status" -eq 0 ]; then
             python research/candidate-causal-liquidity-route-system/causal_route_research.py \
-              --start 2025-08-18 --end 2025-08-19 --role dev --warmup-days 21 \
-              --symbols BTCUSDT \
+              --start 2025-08-18 --end 2025-08-20 --role dev --warmup-days 35 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
               --cache .cache/causal-route-smoke \
               --output artifacts/causal-route-smoke/result \
               > artifacts/causal-route-smoke/run.log 2>&1
@@ -48,19 +49,27 @@ jobs:
           else
             run_status=97
           fi
-          mkdir -p research_results/causal_liquidity_route_system/executable_smoke
-          cp artifacts/causal-route-smoke/help.log research_results/causal_liquidity_route_system/executable_smoke/help.log || true
-          cp artifacts/causal-route-smoke/run.log research_results/causal_liquidity_route_system/executable_smoke/run.log || true
-          cp artifacts/causal-route-smoke/result/summary.json research_results/causal_liquidity_route_system/executable_smoke/summary.json || true
+          DEST=research_results/causal_liquidity_route_system/executable_smoke
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp artifacts/causal-route-smoke/help.log "$DEST/help.log" || true
+          cp artifacts/causal-route-smoke/run.log "$DEST/run.log" || true
+          for file in summary.json global_trades.csv loss_clinic.csv no_trade_clinic.csv \
+                      account_skipped.csv candidate_plans.csv.gz source_event_diagnostics.csv.gz; do
+            cp "artifacts/causal-route-smoke/result/$file" "$DEST/$file" || true
+          done
+          if [ -d artifacts/causal-route-smoke/result/cases ]; then
+            cp -R artifacts/causal-route-smoke/result/cases "$DEST/cases"
+          fi
           printf '{"help_status":%s,"run_status":%s,"head_sha":"%s"}\n' \
-            "$help_status" "$run_status" "$GITHUB_SHA" \
-            > research_results/causal_liquidity_route_system/executable_smoke/status.json
+            "$help_status" "$run_status" "$GITHUB_SHA" > "$DEST/status.json"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add research_results/causal_liquidity_route_system/executable_smoke
+          git pull --rebase origin research_causal_liquidity_route_system
+          git add "$DEST"
           if ! git diff --cached --quiet; then
-            git commit -m "Record causal route executable smoke [skip ci]"
+            git commit -m "Record causal route four-market trade clinic [skip ci]"
             git push origin HEAD:research_causal_liquidity_route_system
           fi
           exit "$run_status"
