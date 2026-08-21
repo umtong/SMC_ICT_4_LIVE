@@ -7,11 +7,15 @@ on:
     paths:
       - ".github/workflows/research-liquidity-episode-policy-short.yml"
       - "research/candidate-liquidity-episode-policy-v1/**"
+      - "research/candidate-liquidity-world-model-v1/semantic_liquidity_full.py"
+      - "research/candidate-liquidity-auction-v2/dynamic_boundaries.py"
   pull_request:
     branches: ["main"]
     paths:
       - ".github/workflows/research-liquidity-episode-policy-short.yml"
       - "research/candidate-liquidity-episode-policy-v1/**"
+      - "research/candidate-liquidity-world-model-v1/semantic_liquidity_full.py"
+      - "research/candidate-liquidity-auction-v2/dynamic_boundaries.py"
 
 concurrency:
   group: research-liquidity-episode-policy-short-${{ github.event_name }}-${{ github.ref }}
@@ -60,7 +64,7 @@ jobs:
       - name: Prepare observable output
         run: mkdir -p "$OUT"
 
-      - name: Verify restored policy imports and compiles
+      - name: Verify restored harvest imports and compiles
         run: |
           set -euo pipefail
           {
@@ -68,10 +72,10 @@ jobs:
             python - <<'PY'
           import dynamic_boundaries
           import episode_policy
-          import route_episode_policy_causal
+          import episode_policy_exec
           assert callable(dynamic_boundaries.build_dynamic_boundaries)
           assert callable(episode_policy.generate_symbol)
-          assert callable(route_episode_policy_causal.causal_numeric_features)
+          assert callable(episode_policy_exec.main)
           PY
           } 2>&1 | tee "$OUT/verify.log"
 
@@ -129,6 +133,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research_liquidity_episode_policy
+
+      - name: Install pinned strict-router runtime
+        run: |
+          set -euo pipefail
+          uv pip install \
+            --python "$VIRTUAL_ENV/bin/python" \
+            --requirement research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          python - <<'PY'
+          from importlib.metadata import version
+          from sklearn.ensemble import HistGradientBoostingClassifier
+          assert version("scikit-learn") == "1.9.0"
+          assert HistGradientBoostingClassifier is not None
+          PY
 
       - name: Prepare result directory
         run: mkdir -p "$RESULT"
