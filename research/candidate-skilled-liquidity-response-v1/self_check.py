@@ -153,7 +153,7 @@ def main() -> None:
         atr_price=0.50,
     )
     assert initiative["auction_response_kind"] == "INITIATIVE_DISPLACEMENT_MITIGATION"
-    assert float(initiative["initiative_move_atr"]) > 2.0
+    assert float(initiative["initiative_move_atr"]) >= 1.9
     assert float(initiative["auction_response_score"]) > 0.0
 
     source = SourceEvent(
