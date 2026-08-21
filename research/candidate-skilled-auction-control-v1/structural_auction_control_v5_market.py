@@ -1,19 +1,22 @@
 """Market-aware integration layer for structural auction control v5.
 
 The event-time journey is still the only decision policy. This adapter gives it
-four integration responsibilities:
+five integration responsibilities:
 
+* use the complete opportunity sensor plus the independently rigorous channel
+  owner instead of replaying overlapping partial ancestors as separate sources;
 * propagate the completed BTC/ETH-led four-market control state to every sensor
   which understands common initiative;
-* namespace raw plan identities by sensor, because independent causal engines
-  legitimately start their own local counters at the same value;
-* keep lower-scale families from receiving a sixty-minute bar they do not own,
-  while each enclosing bundle still receives that bar for macro context;
+* namespace raw plan identities by sensor;
+* keep lower-scale families from receiving a sixty-minute bar they do not own;
 * begin the journey at the opening of the completed decision bar whose close
-  owns the recorded interaction, so its intrabar sweep or break is observed.
+  owns the recorded interaction.
 
-No market-factor state creates a trade. It may only prevent a local sensor from
-fighting a live common shock. No ranking score or outcome information is added.
+When two sensors describe the same completed journey, the more complete
+mechanism wins first and the nearest still-valid destination offering at least
+one gross R wins next. No market-factor state creates a trade, no trained score
+or outcome information is used, and a larger advertised R never compensates for
+a farther target.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from typing import Any
 from structural_auction_control_v2 import (
     StructuralProposal,
     _descriptor,
+    _gross_rr,
     _number,
     _price_geometry,
 )
@@ -56,15 +60,7 @@ class OwnedTimeframeProxy:
 
 
 class InteractionBarEventTimeTape(EventTimeTape):
-    """Include the full completed decision bar which created the interaction.
-
-    A five-minute sweep or body break is known only at that bar's close.  The
-    inherited plan records that close as ``interaction_time_ns``.  Starting the
-    one-minute path at the same instant discards the very sweep or break whose
-    result we need to interpret.  Move only the path/baseline observation start
-    to the decision-bar open; preserve the original interaction identity used
-    for causal ownership.
-    """
+    """Include the full completed decision bar which created the interaction."""
 
     def evaluate(self, plan: Any, mechanism: str) -> JourneyEvidence:
         original = int(_number(getattr(plan, "interaction_time_ns", 0), 0.0))
@@ -88,10 +84,11 @@ class StructuralAuctionControlV5MarketBundle(_Base):
 
     def __init__(self, symbol: str, tick_size: float, minimum_gross_rr: float = 1.0) -> None:
         super().__init__(symbol, tick_size, minimum_gross_rr)
-        # These are explicit 15m/5m/1m owners. Their enclosing complete policy
-        # still consumes 60m bars for macro direction. Forwarding the same 60m
-        # bar into a nested lower-scale engine is an implementation error, not
-        # an opportunity. Declare clock ownership instead of catching failures.
+        source_map = dict(self.sources)
+        self.sources = [
+            ("CHANNEL_CONTROL", source_map["CHANNEL_CONTROL"]),
+            ("COMPLETE_OPPORTUNITY", source_map["COMPLETE_OPPORTUNITY"]),
+        ]
         for _, sensor in self.sources:
             for attribute in self._LOWER_SCALE_FAMILIES:
                 family = getattr(sensor, attribute, None)
@@ -133,6 +130,7 @@ class StructuralAuctionControlV5MarketBundle(_Base):
         plan = proposal.plan
         entry, _, target = _price_geometry(plan)
         distance = abs(target - entry) if math.isfinite(entry) and math.isfinite(target) else math.inf
+        gross_rr = _gross_rr(plan)
         descriptor = _descriptor(plan)
         journey = self._journey_by_source_plan.get((proposal.source, plan.plan_id))
         blocks: tuple[ActivityBlock, ...] = () if journey is None else journey.blocks
@@ -140,10 +138,11 @@ class StructuralAuctionControlV5MarketBundle(_Base):
         late_efficiency = blocks[-1].path_efficiency if blocks else -math.inf
         return (
             self._PRIORITY[proposal.mechanism],
+            gross_rr if math.isfinite(gross_rr) else math.inf,
+            distance,
             self._destination_rank(descriptor),
             -late_progress,
             -late_efficiency,
-            distance,
             proposal.observed_time_ns,
             proposal.source,
             plan.plan_id,
