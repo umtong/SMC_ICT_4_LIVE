@@ -1,0 +1,118 @@
+name: Skilled response fast directional-change clinic
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["research_skilled_liquidity_response_fast_dc"]
+    paths:
+      - ".github/skilled-response-fast-dc-trigger"
+      - ".github/workflows/research-skilled-liquidity-response-fast-dc.yml"
+      - "research/candidate-skilled-liquidity-response-v1/**"
+
+concurrency:
+  group: research-skilled-response-fast-dc
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-skilled-liquidity-response-v1
+  PYTHONPATH: research/candidate-skilled-liquidity-response-v1:research/candidate-directional-liquidity-policy-v2:research/candidate-liquidity-episode-policy-v1:research/candidate-liquidity-world-model-v1:research/candidate-liquidity-auction-v2:research/candidate-liquidity-auction-v7:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  clinic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/skilled-response-fast-dc
+      OUT: artifacts/skilled-response-fast-dc/dev-2025-feb
+      RESULT: artifacts/skilled-response-fast-dc/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_skilled_liquidity_response_fast_dc
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/skilled-response-fast-dc
+          key: skilled-response-fast-dc-2025-feb-w14-data-v1
+
+      - name: Check causal response implementation
+        run: python "$CANDIDATE/self_check.py"
+
+      - name: Harvest synchronized four-market directional-change response episodes
+        run: |
+          set -o pipefail
+          mkdir -p "$CACHE" "$OUT" "$RESULT"
+          python "$CANDIDATE/fast_dc_exec.py" \
+            --start 2025-02-01 --end 2025-02-02 --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" \
+            2>&1 | tee "$OUT/harvest.log"
+
+      - name: Route one actual continuous account
+        run: |
+          set -o pipefail
+          python "$CANDIDATE/route_skilled_policy.py" \
+            --root artifacts/skilled-response-fast-dc \
+            --output "$RESULT" \
+            2>&1 | tee "$RESULT/route.log"
+
+      - name: Preserve exact source and direct result
+        run: |
+          SOURCE_SHA="$(git rev-parse HEAD)" RESULT="$RESULT" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = Path(os.environ["RESULT"])
+          summary = json.loads((result / "summary.json").read_text(encoding="utf-8"))
+          summary.update({
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_run_id": "${{ github.run_id }}",
+              "clinic": "FAST_DIRECTIONAL_CHANGE_BOUNDARIES_ONLY",
+              "complete_semantic_candidate": False,
+          })
+          (result / "summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skilled-response-fast-dc-clinic
+          path: artifacts/skilled-response-fast-dc/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish the clinic evidence on this research branch
+        if: success()
+        run: |
+          set -euo pipefail
+          destination=research_results/skilled_liquidity_response_v1/fast_dc_latest
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          for file in summary.json route.log selected_orders.csv closed_trades.csv market_event_or_account_conflicts.csv no_trade_opportunity_audit.csv all_plans.csv.gz all_episodes.csv.gz; do
+            cp "$RESULT/$file" "$destination/$file" 2>/dev/null || true
+          done
+          cp "$OUT/summary.json" "$destination/harvest_summary.json"
+          cp "$OUT/harvest.log" "$destination/harvest.log"
+          printf '{"source_sha":"%s","published_at":"%s","workflow_run_id":"%s","workflow":"skilled-response-fast-dc-clinic"}\n' \
+            "$(git rev-parse HEAD)" "$(date -u +%FT%TZ)" "${{ github.run_id }}" \
+            > "$destination/run.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          git commit -m "Record fast directional-change response clinic" || exit 0
+          git push origin HEAD:research_skilled_liquidity_response_fast_dc
