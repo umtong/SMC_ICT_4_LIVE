@@ -1,7 +1,7 @@
 """Causal multi-scale direction and liquidity-objective measurements.
 
 The module deliberately contains no symbol identity, fitted model, future label or
-period-specific parameter. It translates the same price/volume observations into
+period-specific parameter.  It translates the same price/volume observations into
 one directional state for every liquid market in the research universe.
 """
 from __future__ import annotations
@@ -81,6 +81,8 @@ def _signed_flow(data: pd.DataFrame, start: int, end: int) -> tuple[float, float
     elif "delta_share" in part:
         signed = _series(part, "delta_share") * quote
     else:
+        # Causal OHLCV proxy used only when taker-side data is absent.  The body is
+        # scaled by the full candle range so a tiny body cannot masquerade as flow.
         body = _series(part, "close") - _series(part, "open")
         span = (_series(part, "high") - _series(part, "low")).abs().clip(lower=EPS)
         signed = quote * (body / span).clip(-1.0, 1.0)
@@ -127,14 +129,15 @@ def build_directional_snapshot(
         for weight, move, efficiency in zip(_WEIGHTS, aligned_moves, efficiencies)
     ]
     trend_alignment = float(sum(trend_components))
-    trend_consensus = float(sum(weight * value for weight, value in zip(_WEIGHTS, signs)))
+    trend_consensus = float(sum(weight * sign for weight, sign in zip(_WEIGHTS, signs)))
     path_efficiency = float(sum(weight * value for weight, value in zip(_WEIGHTS, efficiencies)))
 
     flow_start = max(0, decision_index - 60)
     flow_share_raw, current_activity = _signed_flow(data, flow_start, decision_index)
     prior_start = max(0, flow_start - 180)
     _, prior_activity = _signed_flow(data, prior_start, max(prior_start, flow_start - 1))
-    activity_ratio = current_activity / max(prior_activity, current_activity, EPS)
+    activity_baseline = prior_activity if prior_activity > EPS else current_activity
+    activity_ratio = current_activity / max(activity_baseline, EPS)
     signed_flow_share = direction * flow_share_raw
     medium_move = aligned_moves[1]
     effort_result = medium_move / max(0.20, activity_ratio * (abs(signed_flow_share) + 0.12))
@@ -144,6 +147,8 @@ def build_directional_snapshot(
     low = _finite(pd.to_numeric(prior.low, errors="coerce").min(), close[decision_index])
     high = _finite(pd.to_numeric(prior.high, errors="coerce").max(), close[decision_index])
     location = (close[decision_index] - low) / max(high - low, EPS)
+    # +1 means price already occupies the directionally favorable half of the
+    # public range; -1 means it remains on the wrong side of that range.
     range_location_signed = direction * (2.0 * location - 1.0)
 
     row = data.iloc[decision_index]
@@ -215,7 +220,13 @@ def mechanism_coherence(
     source_strength: float,
     source_confluence: int,
 ) -> float:
-    """Translate a completed event into one continuous, causal coherence value."""
+    """Translate a completed event into one continuous, causal coherence value.
+
+    Detection supplies the categorical event.  This value does not create a new
+    threshold lattice; it only asks whether the event, broader direction and live
+    objective tell the same story.  Zero is the natural boundary between agreement
+    and contradiction.
+    """
     control_move = _finite(evidence.get("control_move_atr"))
     control_efficiency = _finite(evidence.get("control_path_efficiency"))
     control_flow = _finite(evidence.get("control_flow_share_signed"))
@@ -234,6 +245,9 @@ def mechanism_coherence(
         + 0.07 * source_term
     )
     if family == "FAILED_AUCTION_REVERSAL":
+        # A completed sweep/reclaim may legitimately reverse the prior trend.  The
+        # event receives more weight and only a strongly opposing long-horizon state
+        # counts against it.
         context = 0.20 * direction.trend_alignment + 0.10 * direction.trend_consensus
         exhaustion = 0.18 * max(-direction.long_move_atr, 0.0)
         return float(shared + context + exhaustion)
