@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 import run_mtf_backtest_re1_flow as _flow
+from easychart_re1_local_auction_continuation import EasyChartRE1LocalAuctionStrategy
 from structural_auction_control_v5 import (
     ACCEPTED_AUCTION_JOURNEY_RULE,
     DEFENDED_AUCTION_JOURNEY_RULE,
@@ -18,9 +19,13 @@ from structural_auction_control_v5 import (
 )
 
 
-# Keep the existing aggressor-flow market data, Nautilus strategy, fills, costs,
-# position sizing and global account arbitration. Replace only the policy bundle.
+# Retain the exact aggressor-flow data, order lifecycle, costs, 3% quantity and
+# single global account.  The market-factor strategy is itself the same flow
+# strategy with one additional responsibility: observe the completed four-symbol
+# one-minute bucket and propagate a BTC/ETH-led common-control state before local
+# plans are emitted.
 _flow._runner.EasyChartRE1NaturalBundle = StructuralAuctionControlV5Bundle
+_flow._runner.EasyChartRE1Strategy = EasyChartRE1LocalAuctionStrategy
 
 
 def _rewrite(output: Path) -> None:
@@ -30,6 +35,10 @@ def _rewrite(output: Path) -> None:
         "decision_policy": (
             "event-time public auction journey: failed auction, accepted auction "
             "or defended auction -> immutable structural invalidation and first causal destination"
+        ),
+        "market_context_policy": (
+            "completed BTC/ETH-led three-of-four common initiative is propagated before "
+            "local decisions and may veto an opposing local first touch"
         ),
         "mechanism_owners": [
             "FAILED_AUCTION_REVERSAL",
