@@ -56,5 +56,11 @@ def run_research(*, start, end, warmup_days, symbols, cache, output):
 
 core.run_research = run_research
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Expose the inherited CLI as an importable, testable entry point."""
     core.main()
+
+
+if __name__ == "__main__":
+    main()
