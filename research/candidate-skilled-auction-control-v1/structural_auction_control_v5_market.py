@@ -1,14 +1,16 @@
 """Market-aware integration layer for structural auction control v5.
 
 The event-time journey is still the only decision policy. This adapter gives it
-three integration responsibilities:
+four integration responsibilities:
 
 * propagate the completed BTC/ETH-led four-market control state to every sensor
   which understands common initiative;
 * namespace raw plan identities by sensor, because independent causal engines
   legitimately start their own local counters at the same value;
 * keep lower-scale families from receiving a sixty-minute bar they do not own,
-  while each enclosing bundle still receives that bar for macro context.
+  while each enclosing bundle still receives that bar for macro context;
+* begin the journey at the opening of the completed decision bar whose close
+  owns the recorded interaction, so its intrabar sweep or break is observed.
 
 No market-factor state creates a trade. It may only prevent a local sensor from
 fighting a live common shock. No ranking score or outcome information is added.
@@ -20,12 +22,21 @@ import math
 import re
 from typing import Any
 
-from structural_auction_control_v2 import StructuralProposal, _descriptor, _price_geometry
+from structural_auction_control_v2 import (
+    StructuralProposal,
+    _descriptor,
+    _number,
+    _price_geometry,
+)
 from structural_auction_control_v5 import (
     ActivityBlock,
+    EventTimeTape,
     JourneyEvidence,
     StructuralAuctionControlV5Bundle as _Base,
 )
+
+
+MINUTE_NS = 60_000_000_000
 
 
 class OwnedTimeframeProxy:
@@ -42,6 +53,31 @@ class OwnedTimeframeProxy:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.sensor, name)
+
+
+class InteractionBarEventTimeTape(EventTimeTape):
+    """Include the full completed decision bar which created the interaction.
+
+    A five-minute sweep or body break is known only at that bar's close.  The
+    inherited plan records that close as ``interaction_time_ns``.  Starting the
+    one-minute path at the same instant discards the very sweep or break whose
+    result we need to interpret.  Move only the path/baseline observation start
+    to the decision-bar open; preserve the original interaction identity used
+    for causal ownership.
+    """
+
+    def evaluate(self, plan: Any, mechanism: str) -> JourneyEvidence:
+        original = int(_number(getattr(plan, "interaction_time_ns", 0), 0.0))
+        decision_minutes = int(
+            max(
+                1.0,
+                _number(getattr(plan, "decision_timeframe_minutes", 5), 5.0),
+            )
+        )
+        event_start = original - decision_minutes * MINUTE_NS
+        observed_plan = replace(plan, interaction_time_ns=event_start)
+        evidence = super().evaluate(observed_plan, mechanism)
+        return replace(evidence, interaction_time_ns=original)
 
 
 class StructuralAuctionControlV5MarketBundle(_Base):
@@ -66,6 +102,7 @@ class StructuralAuctionControlV5MarketBundle(_Base):
                     attribute,
                     OwnedTimeframeProxy(family, frozenset({1, 5, 15})),
                 )
+        self.tape = InteractionBarEventTimeTape(tick_size)
         self._journey_by_source_plan: dict[tuple[str, str], JourneyEvidence] = {}
         self._namespaced_source_plans: dict[tuple[str, str], str] = {}
         self._market_factor_state: Any | None = None
