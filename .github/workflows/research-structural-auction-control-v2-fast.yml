@@ -1,0 +1,102 @@
+name: research-structural-auction-control-v2-fast
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_structural_auction_control"]
+    paths:
+      - "research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py"
+      - "research/candidate-skilled-auction-control-v1/run_backtest_v2_exec.py"
+      - ".github/workflows/research-structural-auction-control-v2-fast.yml"
+      - ".dispatch-structural-auction-control-v2-fast"
+
+concurrency:
+  group: research-structural-auction-control-v2-fast
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: february-2025, start: 2025-02-04, end: 2025-02-06}
+          - {period: august-2025, start: 2025-08-13, end: 2025-08-15}
+          - {period: february-2026, start: 2026-02-06, end: 2026-02-08}
+          - {period: july-2026, start: 2026-07-21, end: 2026-07-23}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-skilled-auction-control-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/structural-auction-control-v2-fast/${{ matrix.period }}
+      OUT: artifacts/structural-auction-control-v2-fast/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+      - name: Compile and import policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py \
+            research/candidate-skilled-auction-control-v1/run_backtest_v2_exec.py
+          python - <<'PY'
+          from structural_auction_control_v2 import StructuralAuctionControlV2Bundle
+          assert StructuralAuctionControlV2Bundle.__name__ == "StructuralAuctionControlV2Bundle"
+          PY
+      - name: Run continuous four-market account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-skilled-auction-control-v1/run_backtest_v2_exec.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Preserve actual trade and no-trade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-auction-control-v2-fast-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/structural-auction-control-v2-fast/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  record:
+    if: always()
+    needs: diagnostic
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+          fetch-depth: 0
+      - name: Record run identity
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research_structural_auction_control
+            git reset --hard origin/research_structural_auction_control
+            printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+              > .latest-structural-auction-control-v2-fast
+            git add .latest-structural-auction-control-v2-fast
+            git commit -m "Record structural auction control v2 fast run $GITHUB_RUN_ID" || exit 0
+            if git push origin HEAD:research_structural_auction_control; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
