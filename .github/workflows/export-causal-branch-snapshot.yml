@@ -1,0 +1,35 @@
+name: Export causal branch snapshot
+
+on:
+  push:
+    branches: ["research_causal_liquidity_route_system"]
+    paths:
+      - ".github/workflows/export-causal-branch-snapshot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_causal_liquidity_route_system
+      - name: Collect research source and results
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot
+          cp -a research/candidate-causal-liquidity-route-system snapshot/
+          if [ -d research_results/causal_liquidity_route_system ]; then
+            cp -a research_results/causal_liquidity_route_system snapshot/
+          fi
+          find snapshot -type f -printf '%P\n' | sort > snapshot/MANIFEST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: causal-liquidity-route-snapshot
+          path: snapshot/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
