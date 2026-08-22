@@ -1,0 +1,46 @@
+name: research-structural-auction-source-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_structural_auction_control"]
+    paths:
+      - ".github/workflows/research-structural-auction-source-snapshot.yml"
+      - ".dispatch-structural-auction-source-snapshot"
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+          fetch-depth: 0
+      - name: Package current research source
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude='*.zip' -czf /tmp/structural-auction-source.tar.gz \
+            research/candidate-skilled-auction-control-v1 \
+            research/candidate-easychart_re1 \
+            research/candidate-easychart-v5 \
+            research/candidate-easychart-v3 \
+            pyproject.toml uv.lock Dockerfile.research
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-auction-source-${{ github.sha }}
+          path: /tmp/structural-auction-source.tar.gz
+          retention-days: 7
+      - name: Record source snapshot run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > .latest-structural-auction-source-snapshot
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-structural-auction-source-snapshot
+          git commit -m "Record structural auction source snapshot $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_structural_auction_control
