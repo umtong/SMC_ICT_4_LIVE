@@ -1,0 +1,78 @@
+name: research-structural-auction-control-v1-pr
+
+on:
+  pull_request:
+    branches: ["research_skilled_auction_control"]
+    paths:
+      - "research/candidate-skilled-auction-control-v1/**"
+      - ".github/workflows/research-structural-auction-control-v1-pr.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: research-structural-auction-control-v5-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-skilled-auction-control-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/structural-auction-control-v5-pr
+      OUT: artifacts/structural-auction-control-v5-pr
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_structural_auction_control
+      - name: Compile and construct the current event-time policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v2.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v2_strict.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v5.py \
+            research/candidate-skilled-auction-control-v1/structural_auction_control_v5_market.py \
+            research/candidate-skilled-auction-control-v1/run_backtest_v5.py
+          python - <<'PY'
+          from structural_auction_control_v5_market import StructuralAuctionControlV5MarketBundle
+          ticks = {"BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.001, "XRPUSDT": 0.0001}
+          for symbol, tick in ticks.items():
+              bundle = StructuralAuctionControlV5MarketBundle(symbol, tick, 1.0)
+              assert [name for name, _ in bundle.sources] == [
+                  "CHANNEL_CONTROL",
+                  "COMPLETE_OPPORTUNITY",
+              ]
+          PY
+      - name: Run the public-trade day in one continuous four-market account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-skilled-auction-control-v1/run_backtest_v5.py \
+            --start 2025-08-19 \
+            --end 2025-08-20 \
+            --warmup-days 7 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 \
+            --stop-slippage-ticks 2
+      - name: Preserve actual trades, missed journeys, traces and charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-auction-control-v5-pr-${{ github.sha }}
+          path: artifacts/structural-auction-control-v5-pr/**
+          if-no-files-found: warn
+          retention-days: 30
