@@ -13,16 +13,17 @@ but changes the executable plan itself:
 * only plans whose actual structural route pays at least 1R before costs are emitted;
 * future bars label an already immutable order and never create the candidate.
 
-The latest episode branch contained an import-contract error: its v6 generator called
-``direction_sources(..., minimum_timeframe=...)`` although semantic_liquidity_v4 did
-not expose that keyword.  The adapter below fixes the contract without changing the
-underlying semantic-liquidity definition.
+The latest episode branch contained import-contract errors: its v6 generator requested
+``direction_sources(..., minimum_timeframe=...)`` and ``core._atr_price`` although the
+inherited v5 core exposed neither.  The adapters below repair those contracts without
+changing candidate causality.
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 import auction_episode_harvest as episode
@@ -50,6 +51,31 @@ def direction_sources(
         for level in semantic.direction_sources(levels, metadata)
         if int(level.timeframe_minutes) >= floor
     ]
+
+
+def atr_price(data: pd.DataFrame, position: int, lookback: int = 30) -> float:
+    """Causal robust one-minute ATR used only to normalize event-state features."""
+    position = min(max(int(position), 0), len(data) - 1)
+    start = max(0, position - max(int(lookback), 2) + 1)
+    frame = data.iloc[start:position + 1]
+    high = pd.to_numeric(frame.high, errors="coerce").to_numpy(float)
+    low = pd.to_numeric(frame.low, errors="coerce").to_numpy(float)
+    close = pd.to_numeric(frame.close, errors="coerce").to_numpy(float)
+    previous = np.empty_like(close)
+    if start > 0:
+        previous[0] = float(data.close.iloc[start - 1])
+    else:
+        previous[0] = close[0]
+    if len(close) > 1:
+        previous[1:] = close[:-1]
+    true_range = np.maximum.reduce(
+        [high - low, np.abs(high - previous), np.abs(low - previous)]
+    )
+    finite = true_range[np.isfinite(true_range) & (true_range > 0.0)]
+    if finite.size:
+        return float(np.median(finite))
+    fallback = abs(float(data.high.iloc[position]) - float(data.low.iloc[position]))
+    return max(fallback, EPS)
 
 
 def _sign(side: str) -> float:
@@ -86,7 +112,7 @@ def _target_plan(
     if risk <= EPS:
         return None
     gross_rr = abs(target - float(entry)) / risk
-    # The user rule is pre-cost planned RR >= 1R.  Costs are still included in labels.
+    # The user rule is pre-cost planned RR >= 1R. Costs are still included in labels.
     if gross_rr + 1e-12 < 1.0:
         return None
     economics = core._raw_economics(side, float(entry), float(stop), target, float(tick))
@@ -275,9 +301,10 @@ def generate_symbol(symbol, data, levels, metadata, trading_start):
     return frame, counts
 
 
-# Patch the import contract and the generator used by the inherited run_research/main.
+# Patch the import contracts and generator used by inherited run_research/main.
 core.direction_sources = direction_sources
 core.MINIMUM_SOURCE_TIMEFRAME = MINIMUM_SOURCE_TIMEFRAME
+core._atr_price = atr_price
 core.POLICY = POLICY
 core.generate_symbol = generate_symbol
 
