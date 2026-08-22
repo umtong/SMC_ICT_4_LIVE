@@ -1,0 +1,273 @@
+name: Export derivatives research data
+
+on:
+  push:
+    branches: ["research_causal_liquidity_route_system"]
+    paths:
+      - ".github/workflows/export-derivatives-research-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_causal_liquidity_route_system
+
+      - name: Record run id
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-derivatives-data-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-derivatives-data-export
+          git commit -m "Record derivatives data export $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_causal_liquidity_route_system
+
+      - name: Install data packages
+        run: python -m pip install --disable-pip-version-check --quiet pandas==2.3.1 numpy==2.3.1
+
+      - name: Download, verify, and aggregate Binance Vision derivatives data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/build_derivatives_data.py <<'PY'
+          from __future__ import annotations
+
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import date, timedelta
+          from pathlib import Path
+          import calendar
+          import gzip
+          import hashlib
+          import json
+          import os
+          import random
+          import shutil
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+
+          import numpy as np
+          import pandas as pd
+
+          SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          START = date(2024, 1, 1)
+          END = date(2026, 6, 30)
+          BASE = "https://data.binance.vision/data/futures/um"
+          ROOT = Path("derivatives_download")
+          OUT = Path("derivatives_export")
+          ROOT.mkdir(parents=True, exist_ok=True)
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          METRICS_COLUMNS = [
+              "create_time", "symbol", "sum_open_interest", "sum_open_interest_value",
+              "count_toptrader_long_short_ratio", "sum_toptrader_long_short_ratio",
+              "count_long_short_ratio", "sum_taker_long_short_vol_ratio",
+          ]
+          KLINE_COLUMNS = [
+              "open_time", "open", "high", "low", "close", "volume", "close_time",
+              "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore",
+          ]
+          FUNDING_COLUMNS = ["calc_time", "funding_interval_hours", "last_funding_rate"]
+
+          def months(start: date, end: date):
+              y, m = start.year, start.month
+              while (y, m) <= (end.year, end.month):
+                  yield y, m
+                  if m == 12:
+                      y, m = y + 1, 1
+                  else:
+                      m += 1
+
+          def days(start: date, end: date):
+              d = start
+              while d <= end:
+                  yield d
+                  d += timedelta(days=1)
+
+          tasks: list[tuple[str, Path]] = []
+          for symbol in SYMBOLS:
+              for d in days(START, END):
+                  stamp = d.isoformat()
+                  name = f"{symbol}-metrics-{stamp}.zip"
+                  rel = Path("metrics") / symbol / name
+                  tasks.append((f"{BASE}/daily/metrics/{symbol}/{name}", ROOT / rel))
+              for y, m in months(START, END):
+                  stamp = f"{y:04d}-{m:02d}"
+                  for kind in ("indexPriceKlines", "markPriceKlines", "premiumIndexKlines"):
+                      name = f"{symbol}-5m-{stamp}.zip"
+                      rel = Path(kind) / symbol / name
+                      tasks.append((f"{BASE}/monthly/{kind}/{symbol}/5m/{name}", ROOT / rel))
+                  name = f"{symbol}-fundingRate-{stamp}.zip"
+                  rel = Path("fundingRate") / symbol / name
+                  tasks.append((f"{BASE}/monthly/fundingRate/{symbol}/{name}", ROOT / rel))
+
+          def fetch_bytes(url: str, attempts: int = 7) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": "SMC-ICT-research/1.0"})
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          return response.read()
+                  except Exception as exc:
+                      error = exc
+                      time.sleep(min(20.0, 0.75 * (2 ** attempt)) + random.random())
+              raise RuntimeError(f"download failed after {attempts} attempts: {url}: {error}")
+
+          def download_verified(item: tuple[str, Path]) -> tuple[str, int]:
+              url, path = item
+              path.parent.mkdir(parents=True, exist_ok=True)
+              checksum_path = path.with_suffix(path.suffix + ".CHECKSUM")
+              if path.exists() and checksum_path.exists():
+                  expected = checksum_path.read_text(encoding="utf-8").strip().split()[0].lower()
+                  actual = hashlib.sha256(path.read_bytes()).hexdigest()
+                  if actual == expected:
+                      return str(path), path.stat().st_size
+              payload = fetch_bytes(url)
+              checksum = fetch_bytes(url + ".CHECKSUM")
+              expected = checksum.decode("utf-8").strip().split()[0].lower()
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch {url}: {actual} != {expected}")
+              tmp = path.with_suffix(path.suffix + ".tmp")
+              tmp.write_bytes(payload)
+              os.replace(tmp, path)
+              checksum_path.write_bytes(checksum)
+              return str(path), len(payload)
+
+          total_bytes = 0
+          with ThreadPoolExecutor(max_workers=40) as executor:
+              futures = {executor.submit(download_verified, task): task for task in tasks}
+              for completed, future in enumerate(as_completed(futures), 1):
+                  path, size = future.result()
+                  total_bytes += size
+                  if completed % 250 == 0 or completed == len(tasks):
+                      print(f"downloaded {completed}/{len(tasks)} archives, {total_bytes / 1e6:.1f} MB", flush=True)
+
+          def read_zip_csv(path: Path, columns: list[str]) -> pd.DataFrame:
+              try:
+                  raw = pd.read_csv(path, compression="zip")
+              except Exception:
+                  raw = pd.read_csv(path, compression="zip", header=None)
+              if set(columns).issubset(raw.columns):
+                  return raw[columns].copy()
+              raw = pd.read_csv(path, compression="zip", header=None)
+              if raw.shape[1] != len(columns):
+                  raise RuntimeError(f"unexpected schema {path}: {raw.shape[1]} columns")
+              raw.columns = columns
+              if not raw.empty and str(raw.iloc[0, 0]).strip().lower() == columns[0]:
+                  raw = raw.iloc[1:].copy()
+              return raw
+
+          def parse_epoch(values: pd.Series) -> pd.DatetimeIndex:
+              numeric = pd.to_numeric(values, errors="raise")
+              first = abs(int(numeric.iloc[0]))
+              unit = "us" if first >= 10**15 else "ms" if first >= 10**12 else "s"
+              return pd.DatetimeIndex(pd.to_datetime(numeric, unit=unit, utc=True))
+
+          manifest: dict[str, object] = {
+              "source": "Binance Vision USD-M futures",
+              "start": START.isoformat(),
+              "end": END.isoformat(),
+              "symbols": list(SYMBOLS),
+              "archives": len(tasks),
+              "download_bytes": total_bytes,
+              "files": {},
+          }
+
+          for symbol in SYMBOLS:
+              metric_frames = []
+              for d in days(START, END):
+                  path = ROOT / "metrics" / symbol / f"{symbol}-metrics-{d.isoformat()}.zip"
+                  raw = read_zip_csv(path, METRICS_COLUMNS)
+                  raw["time"] = pd.to_datetime(raw["create_time"], utc=True, errors="raise")
+                  for column in METRICS_COLUMNS[2:]:
+                      raw[column] = pd.to_numeric(raw[column], errors="raise")
+                  metric_frames.append(raw[["time", *METRICS_COLUMNS[2:]]])
+              metrics = pd.concat(metric_frames, ignore_index=True)
+              metrics = metrics.sort_values("time").drop_duplicates("time", keep="last")
+
+              references: dict[str, pd.DataFrame] = {}
+              for kind, prefix in (
+                  ("indexPriceKlines", "index"),
+                  ("markPriceKlines", "mark"),
+                  ("premiumIndexKlines", "premium"),
+              ):
+                  frames = []
+                  for y, m in months(START, END):
+                      stamp = f"{y:04d}-{m:02d}"
+                      path = ROOT / kind / symbol / f"{symbol}-5m-{stamp}.zip"
+                      raw = read_zip_csv(path, KLINE_COLUMNS)
+                      raw["time"] = parse_epoch(raw["open_time"])
+                      keep = ["time", "open", "high", "low", "close"]
+                      for column in keep[1:]:
+                          raw[column] = pd.to_numeric(raw[column], errors="raise")
+                      frames.append(raw[keep])
+                  reference = pd.concat(frames, ignore_index=True)
+                  reference = reference.sort_values("time").drop_duplicates("time", keep="last")
+                  reference = reference.rename(columns={c: f"{prefix}_{c}" for c in reference.columns if c != "time"})
+                  references[prefix] = reference
+
+              funding_frames = []
+              for y, m in months(START, END):
+                  stamp = f"{y:04d}-{m:02d}"
+                  path = ROOT / "fundingRate" / symbol / f"{symbol}-fundingRate-{stamp}.zip"
+                  raw = read_zip_csv(path, FUNDING_COLUMNS)
+                  raw["funding_time"] = parse_epoch(raw["calc_time"])
+                  raw["funding_interval_hours"] = pd.to_numeric(raw["funding_interval_hours"], errors="raise")
+                  raw["last_funding_rate"] = pd.to_numeric(raw["last_funding_rate"], errors="raise")
+                  funding_frames.append(raw[["funding_time", "funding_interval_hours", "last_funding_rate"]])
+              funding = pd.concat(funding_frames, ignore_index=True)
+              funding = funding.sort_values("funding_time").drop_duplicates("funding_time", keep="last")
+
+              combined = metrics
+              for prefix in ("index", "mark", "premium"):
+                  combined = pd.merge(combined, references[prefix], on="time", how="inner", validate="one_to_one")
+              combined = pd.merge_asof(
+                  combined.sort_values("time"), funding.sort_values("funding_time"),
+                  left_on="time", right_on="funding_time", direction="backward",
+                  allow_exact_matches=True,
+              )
+              start_ts = pd.Timestamp(START, tz="UTC")
+              end_ts = pd.Timestamp(END + timedelta(days=1), tz="UTC")
+              combined = combined[(combined["time"] >= start_ts) & (combined["time"] < end_ts)].copy()
+              expected = (END - START).days + 1
+              if len(metrics) < expected * 270:
+                  raise RuntimeError(f"incomplete metrics {symbol}: {len(metrics)}")
+              if len(combined) < expected * 270:
+                  raise RuntimeError(f"incomplete joined derivatives {symbol}: {len(combined)}")
+              if combined["time"].duplicated().any():
+                  raise RuntimeError(f"duplicate joined timestamps {symbol}")
+
+              out_path = OUT / f"{symbol}_derivatives_5m.csv.gz"
+              combined.to_csv(out_path, index=False, compression={"method": "gzip", "compresslevel": 6}, float_format="%.12g")
+              digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
+              manifest["files"][out_path.name] = {
+                  "rows": int(len(combined)),
+                  "first_time": combined["time"].iloc[0].isoformat(),
+                  "last_time": combined["time"].iloc[-1].isoformat(),
+                  "sha256": digest,
+                  "bytes": out_path.stat().st_size,
+              }
+              print(symbol, manifest["files"][out_path.name], flush=True)
+
+          manifest_path = OUT / "manifest.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(manifest, indent=2, sort_keys=True), flush=True)
+          PY
+          python /tmp/build_derivatives_data.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: derivatives-research-data-2024-2026h1
+          path: derivatives_export/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
