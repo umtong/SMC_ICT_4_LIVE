@@ -1,0 +1,49 @@
+name: Export research summaries
+
+on:
+  push:
+    branches: ["research_causal_liquidity_route_system"]
+    paths:
+      - ".github/workflows/export-research-summaries.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_causal_liquidity_route_system
+      - name: Record run id
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-research-summary-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-research-summary-export
+          git commit -m "Record research summary export $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_causal_liquidity_route_system
+      - name: Collect compact research summaries
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot
+          if [ -d research_results ]; then
+            while IFS= read -r -d '' file; do
+              dest="snapshot/$file"
+              mkdir -p "$(dirname "$dest")"
+              cp "$file" "$dest"
+            done < <(find research_results -type f \
+              \( -name '*.json' -o -name '*.md' -o -name '*.txt' -o -name 'run.log' -o -name 'status.json' \) \
+              -size -2M -print0)
+          fi
+          find snapshot -type f -printf '%P\n' | sort > snapshot/MANIFEST.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-summaries
+          path: snapshot/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
