@@ -149,6 +149,42 @@ class JourneyClaim:
     owner_id: str
 
 
+@dataclass(slots=True)
+class _IncrementalJourneyState:
+    """Derived, non-authoritative state for one monotonic evaluation stream."""
+
+    key: tuple[object, ...]
+    start_seq: int
+    last_seq: int
+    endpoint_seq: int
+    break_seq: int | None = None
+    retest_seq: int | None = None
+    response_seq: int | None = None
+    impulse_seq: int | None = None
+    reclaim_seq: int | None = None
+    outside_after_reclaim: bool = False
+    any_touch: bool = False
+    any_outside_extreme: bool = False
+    terminal_outside: bool = False
+    minimum: float = math.inf
+    maximum: float = -math.inf
+    activity_known: bool = True
+    flow_known: bool = True
+    activity_total: float = 0.0
+    structural_total: float = 0.0
+    phase_basis: str = "TRADED_ACTIVITY"
+    boundary_one_seq: int = 0
+    boundary_two_seq: int = 0
+    boundary_one_prefix: float = 0.0
+    boundary_two_prefix: float = 0.0
+    boundaries_initialized: bool = False
+    impulse_range_median: float | None = None
+    impulse_body_median: float | None = None
+    impulse_activity_median: float | None = None
+    impulse_activity_known: bool = False
+    impulse_summary_seq: int = -1
+
+
 class CausalJourneyRegistry:
     """Give one exact structure interaction one completed journey owner.
 
@@ -232,6 +268,26 @@ class EventTimeAuctionJourney:
         self._buffer: list[TapeBar | None] = [None] * self._history_bars
         self._start = 0
         self._size = 0
+        self._next_seq = 0
+        self._slot_seq: list[int] = [-1] * self._history_bars
+        capacity = 1
+        while capacity < self._history_bars:
+            capacity <<= 1
+        self._tree_capacity = capacity
+        tree_size = capacity * 2
+        self._tree_activity = [0.0] * tree_size
+        self._tree_activity_known = [0] * tree_size
+        self._tree_flow = [0.0] * tree_size
+        self._tree_abs_flow = [0.0] * tree_size
+        self._tree_flow_known = [0] * tree_size
+        self._tree_structural = [0.0] * tree_size
+        self._tree_edge = [0.0] * tree_size
+        self._tree_min_low = [math.inf] * tree_size
+        self._tree_max_high = [-math.inf] * tree_size
+        self._states: dict[tuple[object, ...], _IncrementalJourneyState] = {}
+        self._baseline_cache: dict[
+            tuple[int, int, int], tuple[float | None, float | None, float | None]
+        ] = {}
 
     @property
     def bars(self) -> tuple[TapeBar, ...]:
@@ -244,6 +300,123 @@ class EventTimeAuctionJourney:
         if item is None:  # pragma: no cover - protected by ring invariants
             raise RuntimeError("journey tape ring contains an empty live slot")
         return item
+
+    @property
+    def _oldest_seq(self) -> int:
+        return self._next_seq - self._size
+
+    def _bar_by_seq(self, seq: int) -> TapeBar:
+        if seq < self._oldest_seq or seq >= self._next_seq:
+            raise IndexError("journey tape sequence is outside retained history")
+        slot = seq % self._history_bars
+        if self._slot_seq[slot] != seq:
+            raise RuntimeError("journey tape sequence tag mismatch")
+        item = self._buffer[slot]
+        if item is None:  # pragma: no cover - protected by ring invariants
+            raise RuntimeError("journey tape ring contains an empty live slot")
+        return item
+
+    def _set_tree_leaf(self, slot: int, bar: TapeBar, edge: float) -> None:
+        node = self._tree_capacity + slot
+        activity_known = int(bar.activity is not None)
+        flow_known = int(bar.signed_flow is not None)
+        self._tree_activity[node] = float(bar.activity or 0.0)
+        self._tree_activity_known[node] = activity_known
+        self._tree_flow[node] = float(bar.signed_flow or 0.0)
+        self._tree_abs_flow[node] = abs(float(bar.signed_flow or 0.0))
+        self._tree_flow_known[node] = flow_known
+        self._tree_structural[node] = max(bar.high - bar.low, self.tick_size)
+        self._tree_edge[node] = edge
+        self._tree_min_low[node] = bar.low
+        self._tree_max_high[node] = bar.high
+        node //= 2
+        while node:
+            left = node * 2
+            right = left + 1
+            self._tree_activity[node] = self._tree_activity[left] + self._tree_activity[right]
+            self._tree_activity_known[node] = (
+                self._tree_activity_known[left] + self._tree_activity_known[right]
+            )
+            self._tree_flow[node] = self._tree_flow[left] + self._tree_flow[right]
+            self._tree_abs_flow[node] = self._tree_abs_flow[left] + self._tree_abs_flow[right]
+            self._tree_flow_known[node] = (
+                self._tree_flow_known[left] + self._tree_flow_known[right]
+            )
+            self._tree_structural[node] = (
+                self._tree_structural[left] + self._tree_structural[right]
+            )
+            self._tree_edge[node] = self._tree_edge[left] + self._tree_edge[right]
+            self._tree_min_low[node] = min(
+                self._tree_min_low[left], self._tree_min_low[right]
+            )
+            self._tree_max_high[node] = max(
+                self._tree_max_high[left], self._tree_max_high[right]
+            )
+            node //= 2
+
+    def _physical_query(self, left: int, right: int) -> tuple[float, int, float, float, int, float, float, float, float]:
+        if right < left:
+            return (0.0, 0, 0.0, 0.0, 0, 0.0, 0.0, math.inf, -math.inf)
+        left += self._tree_capacity
+        right += self._tree_capacity + 1
+        activity = flow = abs_flow = structural = edge = 0.0
+        activity_known = flow_known = 0
+        minimum = math.inf
+        maximum = -math.inf
+        while left < right:
+            if left & 1:
+                activity += self._tree_activity[left]
+                activity_known += self._tree_activity_known[left]
+                flow += self._tree_flow[left]
+                abs_flow += self._tree_abs_flow[left]
+                flow_known += self._tree_flow_known[left]
+                structural += self._tree_structural[left]
+                edge += self._tree_edge[left]
+                minimum = min(minimum, self._tree_min_low[left])
+                maximum = max(maximum, self._tree_max_high[left])
+                left += 1
+            if right & 1:
+                right -= 1
+                activity += self._tree_activity[right]
+                activity_known += self._tree_activity_known[right]
+                flow += self._tree_flow[right]
+                abs_flow += self._tree_abs_flow[right]
+                flow_known += self._tree_flow_known[right]
+                structural += self._tree_structural[right]
+                edge += self._tree_edge[right]
+                minimum = min(minimum, self._tree_min_low[right])
+                maximum = max(maximum, self._tree_max_high[right])
+            left //= 2
+            right //= 2
+        return (
+            activity, activity_known, flow, abs_flow, flow_known,
+            structural, edge, minimum, maximum,
+        )
+
+    @staticmethod
+    def _merge_query(
+        left: tuple[float, int, float, float, int, float, float, float, float],
+        right: tuple[float, int, float, float, int, float, float, float, float],
+    ) -> tuple[float, int, float, float, int, float, float, float, float]:
+        return (
+            left[0] + right[0], left[1] + right[1], left[2] + right[2],
+            left[3] + right[3], left[4] + right[4], left[5] + right[5],
+            left[6] + right[6], min(left[7], right[7]), max(left[8], right[8]),
+        )
+
+    def _range_query(self, start_seq: int, end_seq: int) -> tuple[float, int, float, float, int, float, float, float, float]:
+        if end_seq < start_seq:
+            return self._physical_query(0, -1)
+        if start_seq < self._oldest_seq or end_seq >= self._next_seq:
+            raise IndexError("journey range query is outside retained history")
+        left = start_seq % self._history_bars
+        right = end_seq % self._history_bars
+        if left <= right:
+            return self._physical_query(left, right)
+        return self._merge_query(
+            self._physical_query(left, self._history_bars - 1),
+            self._physical_query(0, right),
+        )
 
     def _bisect_time(self, time_ns: int, *, right: bool = False) -> int:
         """Locate one timestamp in chronological ring order in O(log history)."""
@@ -301,6 +474,8 @@ class EventTimeAuctionJourney:
             activity=activity,
             signed_flow=signed_flow,
         )
+        seq = self._next_seq
+        previous = self._bar_by_seq(seq - 1) if self._size else None
         if self._size < self._history_bars:
             write_index = (self._start + self._size) % self._history_bars
             self._size += 1
@@ -308,6 +483,26 @@ class EventTimeAuctionJourney:
             write_index = self._start
             self._start = (self._start + 1) % self._history_bars
         self._buffer[write_index] = item
+        self._slot_seq[write_index] = seq
+        self._next_seq += 1
+        self._set_tree_leaf(
+            write_index,
+            item,
+            0.0 if previous is None else abs(item.close - previous.close),
+        )
+        oldest = self._oldest_seq
+        if self._states and seq % 256 == 0:
+            self._states = {
+                key: state
+                for key, state in self._states.items()
+                if state.start_seq >= oldest
+            }
+        if self._baseline_cache and seq % 256 == 0:
+            self._baseline_cache = {
+                key: value
+                for key, value in self._baseline_cache.items()
+                if key[1] >= oldest
+            }
 
     @staticmethod
     def _known_median(values: Iterable[float | None]) -> float | None:
@@ -317,13 +512,24 @@ class EventTimeAuctionJourney:
     def _baseline(self, interaction_time_ns: int) -> tuple[float | None, float | None, float | None]:
         end = self._bisect_time(interaction_time_ns)
         start = max(0, end - self.BASELINE_BARS)
+        absolute_start = self._oldest_seq + start
+        absolute_end = self._oldest_seq + end
+        # Absolute interval identity is sufficient: retained bars are
+        # immutable, and truncation changes ``absolute_start``.  Including the
+        # moving oldest sequence would defeat the cache after the ring fills.
+        cache_key = (absolute_start, absolute_end, 0)
+        cached = self._baseline_cache.get(cache_key)
+        if cached is not None:
+            return cached
         prior = [self._bar_at(index) for index in range(start, end)]
         if not prior:
             return None, None, None
         baseline_range = self._known_median(max(bar.high - bar.low, self.tick_size) for bar in prior)
         baseline_body = self._known_median(max(abs(bar.close - bar.open), self.tick_size) for bar in prior)
         baseline_activity = self._known_median(bar.activity for bar in prior)
-        return baseline_range, baseline_body, baseline_activity
+        result = (baseline_range, baseline_body, baseline_activity)
+        self._baseline_cache[cache_key] = result
+        return result
 
     @staticmethod
     def _split_by_weight(bars: list[TapeBar], weights: list[float], blocks: int = 3) -> list[list[TapeBar]]:
@@ -474,6 +680,456 @@ class EventTimeAuctionJourney:
             reason=reason,
         )
 
+    @staticmethod
+    def _state_key(interaction: StructureInteraction) -> tuple[object, ...]:
+        return (
+            interaction.symbol,
+            interaction.structure_id,
+            interaction.source_side,
+            interaction.lower.hex(),
+            interaction.upper.hex(),
+            interaction.interaction_time_ns,
+        )
+
+    def _advance_incremental_state(
+        self,
+        interaction: StructureInteraction,
+        end_seq: int,
+    ) -> _IncrementalJourneyState | None:
+        key = self._state_key(interaction)
+        state = self._states.get(key)
+        start_seq = self._oldest_seq + self._bisect_time(interaction.interaction_time_ns)
+        if state is not None and state.start_seq != start_seq:
+            # The retained baseline/episode boundary changed after ring wrap.
+            state = None
+            self._states.pop(key, None)
+        if state is not None and end_seq < state.last_seq:
+            # The public API permits historical/out-of-order observations.
+            # Keep that rare path on the reference implementation.
+            return None
+        if state is None:
+            state = _IncrementalJourneyState(
+                key=key,
+                start_seq=start_seq,
+                last_seq=start_seq - 1,
+                endpoint_seq=start_seq - 1,
+                boundary_one_seq=start_seq,
+                boundary_two_seq=start_seq,
+            )
+            self._states[key] = state
+        if state.response_seq is not None:
+            return state
+        process_end = end_seq
+        for seq in range(state.last_seq + 1, process_end + 1):
+            item = self._bar_by_seq(seq)
+            outside_close = (
+                item.close > interaction.upper
+                if interaction.outward_sign > 0
+                else item.close < interaction.lower
+            )
+            outside_extreme = (
+                item.high > interaction.upper
+                if interaction.source_side == "HIGH"
+                else item.low < interaction.lower
+            )
+            touched = item.low <= interaction.upper and item.high >= interaction.lower
+
+            prior_break = state.break_seq
+            prior_impulse = state.impulse_seq
+            prior_reclaim = state.reclaim_seq
+            if state.break_seq is None and outside_close:
+                state.break_seq = seq
+            if (
+                state.retest_seq is None
+                and prior_break is not None
+                and seq > prior_break
+                and touched
+                and outside_close
+            ):
+                state.retest_seq = seq
+            if state.impulse_seq is None and outside_extreme:
+                state.impulse_seq = seq
+            if (
+                state.reclaim_seq is None
+                and prior_impulse is not None
+                and seq > prior_impulse
+                and not outside_close
+            ):
+                state.reclaim_seq = seq
+            if prior_reclaim is not None and seq >= prior_reclaim and outside_close:
+                state.outside_after_reclaim = True
+
+            state.any_touch = state.any_touch or touched
+            state.any_outside_extreme = state.any_outside_extreme or outside_extreme
+            state.terminal_outside = outside_close
+            state.minimum = min(state.minimum, item.low)
+            state.maximum = max(state.maximum, item.high)
+            state.activity_known = state.activity_known and item.activity is not None
+            state.flow_known = state.flow_known and item.signed_flow is not None
+            if item.activity is not None:
+                state.activity_total += float(item.activity)
+            state.structural_total += max(item.high - item.low, self.tick_size)
+            state.endpoint_seq = seq
+            state.last_seq = seq
+
+            if state.retest_seq is not None and seq == state.retest_seq + 1:
+                state.response_seq = seq
+                break
+
+        new_basis = "TRADED_ACTIVITY" if state.activity_known else "STRUCTURAL_RANGE"
+        if new_basis != state.phase_basis:
+            state.phase_basis = new_basis
+            state.boundaries_initialized = False
+        return state
+
+    def _weight(self, seq: int, basis: str) -> float:
+        bar = self._bar_by_seq(seq)
+        if basis == "TRADED_ACTIVITY":
+            if bar.activity is None:  # pragma: no cover - guarded by phase basis
+                raise RuntimeError("activity phase contains an unknown activity bar")
+            return float(bar.activity)
+        return max(bar.high - bar.low, self.tick_size)
+
+    def _incremental_groups(
+        self,
+        state: _IncrementalJourneyState,
+    ) -> list[tuple[int, int]]:
+        count = state.endpoint_seq - state.start_seq + 1
+        if count <= 3:
+            return [
+                (seq, seq) for seq in range(state.start_seq, state.endpoint_seq + 1)
+            ]
+        total = (
+            state.activity_total
+            if state.phase_basis == "TRADED_ACTIVITY"
+            else state.structural_total
+        )
+        if not state.boundaries_initialized:
+            state.boundary_one_seq = state.start_seq
+            state.boundary_two_seq = state.start_seq
+            state.boundary_one_prefix = 0.0
+            state.boundary_two_prefix = 0.0
+            state.boundaries_initialized = True
+
+        while state.boundary_one_seq <= state.endpoint_seq:
+            weight = self._weight(state.boundary_one_seq, state.phase_basis)
+            midpoint = state.boundary_one_prefix + weight / 2.0
+            group = min(2, int(midpoint / total * 3))
+            if group > 0:
+                break
+            state.boundary_one_prefix += weight
+            state.boundary_one_seq += 1
+        while state.boundary_two_seq <= state.endpoint_seq:
+            weight = self._weight(state.boundary_two_seq, state.phase_basis)
+            midpoint = state.boundary_two_prefix + weight / 2.0
+            group = min(2, int(midpoint / total * 3))
+            if group > 1:
+                break
+            state.boundary_two_prefix += weight
+            state.boundary_two_seq += 1
+
+        groups = [
+            (state.start_seq, state.boundary_one_seq - 1),
+            (state.boundary_one_seq, state.boundary_two_seq - 1),
+            (state.boundary_two_seq, state.endpoint_seq),
+        ]
+        for index, (start, end) in enumerate(groups):
+            if start <= end:
+                continue
+            position = min(
+                count - 1,
+                round((index + 0.5) * count / 3 - 0.5),
+            )
+            seq = state.start_seq + position
+            groups[index] = (seq, seq)
+        return groups
+
+    def _block_range(
+        self,
+        start_seq: int,
+        end_seq: int,
+        sign: int,
+        baseline_range: float | None,
+        baseline_activity: float | None,
+    ) -> ActivityBlock:
+        first = self._bar_by_seq(start_seq)
+        last = self._bar_by_seq(end_seq)
+        stats = self._range_query(start_seq, end_seq)
+        count = end_seq - start_seq + 1
+        scale = baseline_range or self.tick_size
+        displacement = sign * (last.close - first.open)
+        edge = (
+            self._range_query(start_seq + 1, end_seq)[6]
+            if end_seq > start_seq else 0.0
+        )
+        travel = abs(first.close - first.open) + edge
+        activity_ratio = (
+            stats[0] / (baseline_activity * count)
+            if baseline_activity is not None and stats[1] == count
+            else None
+        )
+        flow_sum = stats[2]
+        absolute_flow = stats[3]
+        # Tree association can move the last ulp of a floating sum.  Preserve
+        # the reference branch exactly whenever that error could change the
+        # sign used by control-transfer admission.
+        if (
+            stats[4] == count
+            and abs(flow_sum) <= absolute_flow * math.ulp(1.0) * max(count, 1)
+        ):
+            known_flow = [
+                self._bar_by_seq(seq).signed_flow
+                for seq in range(start_seq, end_seq + 1)
+            ]
+            flow_sum = sum(float(value) for value in known_flow if value is not None)
+            absolute_flow = sum(
+                abs(float(value)) for value in known_flow if value is not None
+            )
+        flow_share = (
+            sign * flow_sum / absolute_flow
+            if stats[4] == count and absolute_flow > 0.0
+            else 0.0
+            if stats[4] == count
+            else None
+        )
+        favorable = (
+            stats[8] - first.open if sign > 0 else first.open - stats[7]
+        )
+        adverse = (
+            first.open - stats[7] if sign > 0 else stats[8] - first.open
+        )
+        return ActivityBlock(
+            start_ns=first.close_time_ns,
+            end_ns=last.close_time_ns,
+            bars=count,
+            progress=displacement / scale,
+            path_efficiency=displacement / max(travel, self.tick_size),
+            close_location=self._close_location(last, sign),
+            favorable_excursion=max(favorable, 0.0) / scale,
+            adverse_excursion=max(adverse, 0.0) / scale,
+            activity_ratio=activity_ratio,
+            flow_share=flow_share,
+        )
+
+    def _materialize_incremental(
+        self,
+        interaction: StructureInteraction,
+        observed_time_ns: int,
+        state: _IncrementalJourneyState,
+        baseline_range: float | None,
+        baseline_body: float | None,
+        baseline_activity: float | None,
+        stop: float | None,
+        target: float | None,
+    ) -> JourneyEvidence:
+        inward = interaction.inward_sign
+        outward = interaction.outward_sign
+        groups = self._incremental_groups(state)
+        inward_blocks = tuple(
+            self._block_range(start, end, inward, baseline_range, baseline_activity)
+            for start, end in groups
+        )
+        outward_blocks = tuple(
+            self._block_range(start, end, outward, baseline_range, baseline_activity)
+            for start, end in groups
+        )
+        late = inward_blocks[-1]
+        late_outward = outward_blocks[-1]
+        price_transfer = (
+            late.progress > 0.0
+            and late.path_efficiency > 0.0
+            and late.close_location >= 0.5
+        )
+        flow_share = late.flow_share
+        control_transfer = price_transfer and (flow_share is None or flow_share >= 0.0)
+
+        retest_bar = (
+            self._bar_by_seq(state.retest_seq) if state.retest_seq is not None else None
+        )
+        response_bar = (
+            self._bar_by_seq(state.response_seq) if state.response_seq is not None else None
+        )
+        accepted_resolution: str | None = None
+        accepted_completed = False
+        response_confirms = False
+        accepted_stop_intact: bool | None = None
+        accepted_target_fresh: bool | None = None
+        if retest_bar is not None and response_bar is None:
+            accepted_resolution = "ACCEPTANCE_WAITING_FIRST_RESPONSE"
+        elif retest_bar is not None and response_bar is not None:
+            target_touched = (
+                response_bar.high >= target if outward > 0 else response_bar.low <= target
+            ) if target is not None else False
+            stop_touched = (
+                response_bar.low <= stop if outward > 0 else response_bar.high >= stop
+            ) if stop is not None else False
+            accepted_target_fresh = None if target is None else not target_touched
+            accepted_stop_intact = None if stop is None else not stop_touched
+            response_confirms = (
+                response_bar.close > retest_bar.high
+                if outward > 0 else response_bar.close < retest_bar.low
+            )
+            if target_touched:
+                accepted_resolution = "ACCEPTANCE_TARGET_SPENT_ON_FIRST_RESPONSE"
+            elif stop_touched:
+                accepted_resolution = "ACCEPTANCE_STOP_TOUCHED_ON_FIRST_RESPONSE"
+            elif not response_confirms:
+                accepted_resolution = "ACCEPTANCE_FIRST_RESPONSE_FAILED"
+            else:
+                accepted_resolution = "ACCEPTED_AUCTION_FIRST_RESPONSE_COMPLETED"
+                accepted_completed = True
+
+        impulse_end = state.impulse_seq if state.impulse_seq is not None else state.start_seq
+        if state.impulse_summary_seq != impulse_end:
+            impulse = [
+                self._bar_by_seq(seq) for seq in range(state.start_seq, impulse_end + 1)
+            ]
+            state.impulse_range_median = max(
+                median(bar.high - bar.low for bar in impulse), self.tick_size
+            )
+            state.impulse_body_median = max(
+                median(abs(bar.close - bar.open) for bar in impulse), self.tick_size
+            )
+            activities = [bar.activity for bar in impulse if bar.activity is not None]
+            state.impulse_activity_known = len(activities) == len(impulse)
+            state.impulse_activity_median = (
+                median(float(value) for value in activities)
+                if state.impulse_activity_known else None
+            )
+            state.impulse_summary_seq = impulse_end
+        components: list[float] = []
+        if baseline_range is not None:
+            components.append(math.log(state.impulse_range_median / baseline_range))
+        if baseline_body is not None and state.impulse_body_median is not None:
+            components.append(math.log(state.impulse_body_median / baseline_body))
+        if (
+            baseline_activity is not None
+            and state.impulse_activity_known
+            and state.impulse_activity_median is not None
+        ):
+            components.append(
+                math.log(max(state.impulse_activity_median, 1e-12) / baseline_activity)
+            )
+        impulse_energy = sum(components) / len(components) if components else None
+
+        terminal_inside = not state.terminal_outside
+        failed_complete = (
+            state.impulse_seq is not None
+            and state.reclaim_seq is not None
+            and not state.outside_after_reclaim
+            and terminal_inside
+            and control_transfer
+        )
+        defended_complete = (
+            state.any_touch
+            and not state.any_outside_extreme
+            and terminal_inside
+            and control_transfer
+        )
+        family: JourneyFamily | None = None
+        states: list[str] = []
+        settlement = "UNSETTLED"
+        completed = False
+        if accepted_resolution is not None:
+            family = "ACCEPTED_AUCTION_CONTINUATION"
+            completed = accepted_completed
+            states.extend(("OUTSIDE_BREAK", "FIRST_RETEST"))
+            if response_bar is None:
+                states.append("WAITING_FIRST_RESPONSE")
+                settlement = "WAITING_FIRST_RESPONSE"
+            elif accepted_resolution == "ACCEPTANCE_TARGET_SPENT_ON_FIRST_RESPONSE":
+                states.append("TARGET_SPENT_ON_FIRST_RESPONSE")
+                settlement = "DESTINATION_SPENT"
+            elif accepted_resolution == "ACCEPTANCE_STOP_TOUCHED_ON_FIRST_RESPONSE":
+                states.append("STOP_TOUCHED_ON_FIRST_RESPONSE")
+                settlement = "INVALIDATED"
+            elif accepted_resolution == "ACCEPTANCE_FIRST_RESPONSE_FAILED":
+                states.append("FIRST_RESPONSE_FAILED")
+                settlement = "TERMINAL_NO_TRADE"
+            else:
+                states.extend(("FIRST_RESPONSE_CONFIRMED", "CONTROL_TRANSFER"))
+                settlement = "SETTLED_OUTSIDE"
+        elif failed_complete:
+            family = "FAILED_AUCTION_REVERSAL"
+            completed = True
+            states.extend(("OUTWARD_SWEEP", "RECLAIM", "HELD_INSIDE", "CONTROL_TRANSFER"))
+            settlement = "SETTLED_INSIDE"
+        elif defended_complete:
+            family = "DEFENDED_AUCTION_CONTINUATION"
+            completed = True
+            states.extend(("BOUNDARY_TOUCH", "COMPLETED_RESPONSE", "CONTROL_TRANSFER"))
+            settlement = "DEFENDED_INSIDE"
+        elif state.terminal_outside:
+            states.append("OUTSIDE_UNSETTLED")
+            settlement = "OUTSIDE_UNSETTLED"
+        elif state.impulse_seq is not None:
+            states.append("SWEEP_UNRESOLVED")
+            settlement = "INSIDE_UNRESOLVED"
+        elif state.any_touch:
+            states.append("TOUCH_UNRESOLVED")
+            settlement = "INSIDE_UNRESOLVED"
+
+        side_sign = outward if family == "ACCEPTED_AUCTION_CONTINUATION" else inward
+        blocks = outward_blocks if family == "ACCEPTED_AUCTION_CONTINUATION" else inward_blocks
+        if family == "ACCEPTED_AUCTION_CONTINUATION":
+            control_transfer = response_confirms and accepted_completed
+            flow_share = late_outward.flow_share
+        stop_intact = accepted_stop_intact if accepted_resolution is not None else None
+        if accepted_resolution is None and stop is not None:
+            stop_intact = state.minimum > stop if side_sign > 0 else state.maximum < stop
+        target_fresh = accepted_target_fresh if accepted_resolution is not None else None
+        if accepted_resolution is None and target is not None:
+            target_fresh = state.maximum < target if side_sign > 0 else state.minimum > target
+        if accepted_resolution is None and completed and stop_intact is False:
+            completed = False
+            states.append("STOP_INVALIDATED")
+            settlement = "INVALIDATED"
+        elif accepted_resolution is None and completed and target_fresh is False:
+            completed = False
+            states.append("DESTINATION_SPENT")
+            settlement = "DESTINATION_SPENT"
+        terminal = (
+            accepted_resolution
+            if accepted_resolution is not None
+            else f"{family}_COMPLETED"
+            if completed and family is not None
+            else "STOP_ALREADY_INVALIDATED"
+            if stop_intact is False and family is not None
+            else "DESTINATION_ALREADY_SPENT"
+            if target_fresh is False and family is not None
+            else "AUCTION_JOURNEY_UNRESOLVED"
+        )
+        reason = " -> ".join(states) if states else "no completed structural response"
+        return JourneyEvidence(
+            family=family,
+            completed=completed,
+            terminal_state=terminal,
+            completed_states=tuple(states),
+            interaction_time_ns=interaction.interaction_time_ns,
+            observed_time_ns=response_bar.close_time_ns if response_bar is not None else observed_time_ns,
+            phase_basis=state.phase_basis,  # type: ignore[arg-type]
+            blocks=blocks,
+            baseline_range=baseline_range,
+            baseline_body=baseline_body,
+            baseline_activity=baseline_activity,
+            activity_input_known=state.activity_known,
+            flow_input_known=state.flow_known,
+            impulse_energy=impulse_energy,
+            settlement=settlement,
+            control_transfer=control_transfer,
+            control_flow_share=flow_share,
+            retest_time_ns=retest_bar.close_time_ns if retest_bar is not None else None,
+            response_time_ns=response_bar.close_time_ns if response_bar is not None else None,
+            response_close=response_bar.close if response_bar is not None else None,
+            response_required_extreme=(
+                retest_bar.high if retest_bar is not None and outward > 0
+                else retest_bar.low if retest_bar is not None else None
+            ),
+            stop_intact=stop_intact,
+            target_fresh=target_fresh,
+            reason=reason,
+        )
+
     def evaluate(
         self,
         interaction: StructureInteraction,
@@ -499,6 +1155,25 @@ class EventTimeAuctionJourney:
                 "HISTORY_UNAVAILABLE",
                 "the memory bound truncated the requested structure interaction",
             )
+        start_index = self._bisect_time(interaction.interaction_time_ns)
+        end_index = self._bisect_time(observed_time_ns, right=True)
+        if end_index > start_index:
+            end_seq = self._oldest_seq + end_index - 1
+            incremental = self._advance_incremental_state(interaction, end_seq)
+            if incremental is not None:
+                baseline_range, baseline_body, baseline_activity = self._baseline(
+                    interaction.interaction_time_ns
+                )
+                return self._materialize_incremental(
+                    interaction,
+                    observed_time_ns,
+                    incremental,
+                    baseline_range,
+                    baseline_body,
+                    baseline_activity,
+                    stop,
+                    target,
+                )
         episode = list(
             self.bars_between(interaction.interaction_time_ns, observed_time_ns)
         )

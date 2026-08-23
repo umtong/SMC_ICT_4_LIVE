@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import random
 
 import pytest
 
@@ -432,3 +433,130 @@ def test_ring_truncation_preserves_history_unavailable_contract() -> None:
     assert available.terminal_state != "HISTORY_UNAVAILABLE"
     # The prior baseline is absent exactly as in the bounded-deque contract.
     assert available.baseline_range is None
+
+
+class _ReferenceJourney(EventTimeAuctionJourney):
+    def _advance_incremental_state(self, interaction, end_seq):  # type: ignore[no-untyped-def]
+        del interaction, end_seq
+        return None
+
+
+def _assert_incremental_semantics_equal(actual, expected) -> None:  # type: ignore[no-untyped-def]
+    assert replace(
+        actual,
+        blocks=expected.blocks,
+        control_flow_share=expected.control_flow_share,
+    ) == expected
+    assert len(actual.blocks) == len(expected.blocks)
+    for left, right in zip(actual.blocks, expected.blocks, strict=True):
+        assert (left.start_ns, left.end_ns, left.bars) == (
+            right.start_ns, right.end_ns, right.bars,
+        )
+        for name in (
+            "progress", "path_efficiency", "close_location",
+            "favorable_excursion", "adverse_excursion", "activity_ratio",
+            "flow_share",
+        ):
+            left_value = getattr(left, name)
+            right_value = getattr(right, name)
+            if left_value is None or right_value is None:
+                assert left_value is right_value
+            else:
+                assert left_value == pytest.approx(right_value, rel=1e-14, abs=1e-14)
+    if actual.control_flow_share is None or expected.control_flow_share is None:
+        assert actual.control_flow_share is expected.control_flow_share
+    else:
+        assert actual.control_flow_share == pytest.approx(
+            expected.control_flow_share, rel=1e-14, abs=1e-14,
+        )
+
+
+def test_incremental_evaluation_is_reference_semantics_equivalent() -> None:
+    rng = random.Random(771_204)
+    fast = EventTimeAuctionJourney("BTCUSDT", 0.1, history_bars=500)
+    reference = _ReferenceJourney("BTCUSDT", 0.1, history_bars=500)
+    observed = []
+    price = 100.0
+    for minute in range(220):
+        move = rng.uniform(-0.8, 0.8)
+        close = price + move
+        item = bar(
+            minute,
+            open_=price,
+            high=max(price, close) + rng.uniform(0.0, 0.5),
+            low=min(price, close) - rng.uniform(0.0, 0.5),
+            close=close,
+            quote=0.0 if minute == 87 else rng.uniform(20.0, 500.0),
+            buy=0.0 if minute == 87 else rng.uniform(0.0, 20.0),
+            volume=0.0 if minute == 87 else 1.0,
+        )
+        # Keep generated taker buy quote physically valid.
+        if item.quote_volume and item.taker_buy_quote_volume > item.quote_volume:
+            item = replace(item, taker_buy_quote_volume=item.quote_volume / 2.0)
+        observed.append(item)
+        fast.observe(item)
+        reference.observe(item)
+        price = close
+
+    cases = (
+        StructureInteraction("A", "BTCUSDT", "HIGH", 99.8, 100.2, observed[20].close_time_ns),
+        StructureInteraction("B", "BTCUSDT", "LOW", 98.8, 99.1, observed[45].close_time_ns),
+        StructureInteraction("C", "BTCUSDT", "HIGH", 101.0, 101.3, observed[80].close_time_ns),
+    )
+    for source in cases:
+        for item in observed:
+            if item.close_time_ns < source.interaction_time_ns:
+                continue
+            _assert_incremental_semantics_equal(
+                fast.evaluate(source, item.close_time_ns),
+                reference.evaluate(source, item.close_time_ns),
+            )
+
+
+def test_incremental_cache_key_includes_band_and_side() -> None:
+    fast = tape()
+    reference = _ReferenceJourney("BTCUSDT", 0.1)
+    for item in fast.bars:
+        reference.observe(
+            Bar(
+                symbol="BTCUSDT", interval_minutes=1,
+                open_time_ns=item.close_time_ns - MINUTE + 1,
+                close_time_ns=item.close_time_ns,
+                open=item.open, high=item.high, low=item.low, close=item.close,
+                volume=1.0, quote_volume=item.activity or 0.0,
+                taker_buy_quote_volume=(
+                    ((item.signed_flow or 0.0) + (item.activity or 0.0)) / 2.0
+                ),
+                trade_count=10,
+            )
+        )
+    last = bar(6, open_=99.8, high=100.6, low=99.7, close=100.4, buy=80.0)
+    fast.observe(last)
+    reference.observe(last)
+    sources = (
+        interaction(),
+        replace(interaction(), lower=100.2, upper=100.3),
+        replace(interaction(), source_side="LOW"),
+    )
+    for source in sources:
+        assert fast.evaluate(source, last.close_time_ns) == reference.evaluate(
+            source, last.close_time_ns
+        )
+    assert len(fast._states) == len(sources)
+
+
+def test_incremental_cache_does_not_survive_history_truncation() -> None:
+    journey = EventTimeAuctionJourney("BTCUSDT", 0.1, history_bars=361)
+    source = StructureInteraction(
+        "CACHE:OLD", "BTCUSDT", "HIGH", 99.9, 100.0, 7 * MINUTE - 1,
+    )
+    for minute in range(20):
+        journey.observe(bar(minute, open_=99.5, high=99.8, low=99.2, close=99.5))
+    journey.evaluate(source, 20 * MINUTE - 1)
+    assert journey._state_key(source) in journey._states
+
+    for minute in range(20, 520):
+        journey.observe(bar(minute, open_=99.5, high=99.8, low=99.2, close=99.5))
+    unavailable = journey.evaluate(source, 520 * MINUTE - 1)
+    assert unavailable.terminal_state == "HISTORY_UNAVAILABLE"
+    assert journey._state_key(source) not in journey._states
