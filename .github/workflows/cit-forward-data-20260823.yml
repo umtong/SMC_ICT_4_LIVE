@@ -1,0 +1,89 @@
+name: Export CIT fresh forward data 2026-07 to 2026-08-22
+
+on:
+  push:
+    branches: ["research_candidate_4_causal_inventory_transfer"]
+    paths:
+      - ".github/workflows/cit-forward-data-20260823.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4_causal_inventory_transfer
+      - name: Record immutable forward-data run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s","period":"2026-07-01..2026-08-22"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-cit-forward-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-cit-forward-export
+          git commit -m "Record CIT fresh forward export $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_candidate_4_causal_inventory_transfer
+      - name: Download official Binance Vision 1m futures bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q pandas pyarrow requests
+          python - <<'PY'
+          from pathlib import Path
+          import io, zipfile, hashlib, json, requests
+          import pandas as pd
+
+          OUT=Path('cit_forward_data'); OUT.mkdir(exist_ok=True)
+          symbols=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
+          cols=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_volume','taker_buy_quote_volume','ignore']
+          base='https://data.binance.vision/data/futures/um'
+          manifest={'period':'2026-07-01..2026-08-22','source':'Binance Vision USD-M futures','symbols':{},'files':[]}
+
+          def get_zip(url):
+              r=requests.get(url,timeout=90)
+              if r.status_code!=200: return None
+              z=zipfile.ZipFile(io.BytesIO(r.content))
+              names=[n for n in z.namelist() if n.endswith('.csv')]
+              if not names: return None
+              raw=z.read(names[0])
+              df=pd.read_csv(io.BytesIO(raw),header=None,names=cols)
+              manifest['files'].append({'url':url,'sha256':hashlib.sha256(r.content).hexdigest(),'rows':len(df)})
+              return df
+
+          for sym in symbols:
+              chunks=[]
+              url=f'{base}/monthly/klines/{sym}/1m/{sym}-1m-2026-07.zip'
+              q=get_zip(url)
+              if q is None:
+                  for day in range(1,32):
+                      u=f'{base}/daily/klines/{sym}/1m/{sym}-1m-2026-07-{day:02d}.zip'
+                      z=get_zip(u)
+                      if z is not None: chunks.append(z)
+              else: chunks.append(q)
+              for day in range(1,23):
+                  u=f'{base}/daily/klines/{sym}/1m/{sym}-1m-2026-08-{day:02d}.zip'
+                  z=get_zip(u)
+                  if z is not None: chunks.append(z)
+              if not chunks: raise RuntimeError(f'No data for {sym}')
+              df=pd.concat(chunks,ignore_index=True)
+              for c in ['open','high','low','close','volume','quote_volume','taker_buy_volume','taker_buy_quote_volume']:
+                  df[c]=pd.to_numeric(df[c],errors='coerce')
+              df['timestamp']=pd.to_datetime(pd.to_numeric(df.open_time,errors='coerce'),unit='ms',utc=True)
+              df=df[(df.timestamp>=pd.Timestamp('2026-07-01',tz='UTC'))&(df.timestamp<pd.Timestamp('2026-08-23',tz='UTC'))]
+              df=df.sort_values('timestamp').drop_duplicates('timestamp')
+              keep=['timestamp','open','high','low','close','volume','quote_volume','trades','taker_buy_volume','taker_buy_quote_volume']
+              df[keep].to_parquet(OUT/f'{sym}_1m.parquet',index=False)
+              manifest['symbols'][sym]={'rows':len(df),'first':str(df.timestamp.min()),'last':str(df.timestamp.max())}
+          (OUT/'MANIFEST.json').write_text(json.dumps(manifest,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cit-forward-data-2026-07-01-2026-08-22
+          path: cit_forward_data/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
