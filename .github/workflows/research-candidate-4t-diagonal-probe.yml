@@ -1,0 +1,63 @@
+name: research-candidate-4t-diagonal-probe
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - 'research/candidate-4t-diagonal-integration/**'
+      - '.github/workflows/research-candidate-4t-diagonal-probe.yml'
+      - '.dispatch-candidate-4t-diagonal-probe'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: research-candidate-4t-diagonal-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned repository runtime dependencies needed for import help
+        run: |
+          python -m pip install --disable-pip-version-check \
+            'numpy>=2.0,<3' 'pandas>=2.2,<3' 'scipy>=1.13,<2' 'scikit-learn>=1.5,<2' pyyaml
+      - name: Map existing implementation and run its self checks
+        run: |
+          set -euo pipefail
+          output=research_results/candidate_4t/diagonal_probe
+          rm -rf "$output"
+          mkdir -p "$output"
+          python research/candidate-4t-diagonal-integration/probe_existing.py "$output/api_map.json"
+          : > "$output/self_checks.txt"
+          shopt -s nullglob
+          for file in research/candidate-diagonal-channel-auction-v1/self_check*.py; do
+            echo "=== $file" | tee -a "$output/self_checks.txt"
+            PYTHONPATH=research/candidate-diagonal-channel-auction-v1 python "$file" 2>&1 | tee -a "$output/self_checks.txt"
+          done
+          printf '%s\n' "source_commit=${GITHUB_SHA}" "source_run=${GITHUB_RUN_ID}" > "$output/source.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-diagonal-probe-${{ github.sha }}
+          path: research_results/candidate_4t/diagonal_probe/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the reproducible reuse map
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research_results/candidate_4t/diagonal_probe
+          if ! git diff --cached --quiet; then
+            git commit -m "Record existing diagonal auction API ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
