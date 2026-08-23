@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from nautilus_trader.adapters.binance import BinanceBar
+from nautilus_trader.model.data import BarType
+from nautilus_trader.model.objects import Price, Quantity
 
 from smc_ict_4.episode_policy_live.live import (
     LiquidityEpisodeStrategy,
     LiquidityEpisodeStrategyConfig,
-    MinuteTradeBuilder,
     bootstrap_store,
     fetch_recent_binance_bars,
     native_restart_block_reason,
     native_restart_capabilities,
+    policy_bar_from_native_binance_bar,
     run_node,
     run_node_blocking,
 )
@@ -69,7 +73,7 @@ class _Response:
         return json.dumps(self.payload).encode()
 
 
-def test_rest_and_tick_bars_share_the_exact_exclusive_right_edge(monkeypatch) -> None:
+def test_rest_and_native_binance_bars_share_the_exact_policy_semantics(monkeypatch) -> None:
     import smc_ict_4.episode_policy_live.live as live_module
 
     delegated = _clock_bar("BTCUSDT", close_time_ns=MINUTE)
@@ -83,17 +87,24 @@ def test_rest_and_tick_bars_share_the_exact_exclusive_right_edge(monkeypatch) ->
     )
     rest = fetch_recent_binance_bars("BTCUSDT", limit=1, clock_ns=lambda: 123)[0]
 
-    builder = MinuteTradeBuilder("BTCUSDT")
-    assert builder.push(ts_ns=1, price=100.0, quantity=1.0, buyer_aggressor=True) is None
-    tick = builder.push(
-        ts_ns=MINUTE + 1,
-        price=101.0,
-        quantity=1.0,
-        buyer_aggressor=False,
+    native = policy_bar_from_native_binance_bar(
+        BinanceBar(
+            bar_type=BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL"),
+            open=Price.from_str("100.0"),
+            high=Price.from_str("101.0"),
+            low=Price.from_str("99.0"),
+            close=Price.from_str("100.5"),
+            volume=Quantity.from_str("10.0"),
+            quote_volume=Decimal("1000.0"),
+            count=10,
+            taker_buy_base_volume=Decimal("5.5"),
+            taker_buy_quote_volume=Decimal("550.0"),
+            # Binance's closed kline T is the inclusive final millisecond.
+            ts_event=MINUTE - 1_000_000,
+            ts_init=MINUTE,
+        )
     )
-    assert tick is not None
-    assert (rest.open_time_ns, rest.close_time_ns) == (0, MINUTE)
-    assert (tick.open_time_ns, tick.close_time_ns) == (0, MINUTE)
+    assert rest == native
     assert calls == [("BTCUSDT", 1, 123)]
 
 

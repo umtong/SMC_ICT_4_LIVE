@@ -62,6 +62,82 @@ def canonicalize_completed_policy_bar(bar: PolicyBar) -> PolicyBar:
     return replace(bar, close_time_ns=expected_close_ns)
 
 
+def _canonical_external_close_ns(raw_close_ns: int, *, interval_minutes: int) -> int:
+    """Normalize a completed external bar to its exclusive right edge.
+
+    Binance WebSocket klines timestamp the final inclusive millisecond, while
+    replay and policy state use the exclusive minute boundary.  Legacy stored
+    rows may also use the final inclusive nanosecond.  No other clock shape is
+    accepted because rounding an arbitrary timestamp could admit a partial or
+    incorrectly configured candle.
+    """
+
+    span_ns = interval_minutes * NS_PER_MINUTE
+    for increment in (0, 1, 1_000_000):
+        candidate = raw_close_ns + increment
+        if candidate % span_ns == 0:
+            return candidate
+    raise RuntimeError(
+        "non-canonical completed external bar clock: "
+        f"close={raw_close_ns} interval_minutes={interval_minutes}"
+    )
+
+
+def policy_bar_from_native_binance_bar(
+    bar: Any,
+    *,
+    expected_bar_type: Any | None = None,
+) -> PolicyBar:
+    """Map one native, exchange-completed Binance kline without reconstruction."""
+
+    bar_type = bar.bar_type
+    if expected_bar_type is not None and str(bar_type) != str(expected_bar_type):
+        raise RuntimeError(
+            "unexpected native Binance bar type: "
+            f"actual={bar_type} expected={expected_bar_type}"
+        )
+    if not bar_type.is_externally_aggregated() or not bar_type.spec.is_time_aggregated():
+        raise RuntimeError(f"native Binance policy bar must be external time bar: {bar_type}")
+    if int(bar_type.spec.step) != 1 or not str(bar_type).endswith(
+        "-1-MINUTE-LAST-EXTERNAL"
+    ):
+        raise RuntimeError(f"native Binance policy bar must be external 1-minute LAST: {bar_type}")
+
+    symbol = _symbol_from_instrument(str(bar_type.instrument_id))
+    close_ns = _canonical_external_close_ns(
+        int(bar.ts_event),
+        interval_minutes=1,
+    )
+    count = int(bar.count)
+    if isinstance(bar.count, bool) or count != bar.count or count < 0:
+        raise RuntimeError(f"invalid native Binance trade count: {bar.count!r}")
+    taker_buy_base = Decimal(bar.taker_buy_base_volume)
+    taker_buy_quote = Decimal(bar.taker_buy_quote_volume)
+    quote_volume = Decimal(bar.quote_volume)
+    base_volume = Decimal(str(bar.volume))
+    if min(base_volume, quote_volume, taker_buy_base, taker_buy_quote) < 0:
+        raise RuntimeError("native Binance bar volumes must be non-negative")
+    if taker_buy_base > base_volume or taker_buy_quote > quote_volume:
+        raise RuntimeError("native Binance taker-buy volume exceeds total volume")
+
+    return PolicyBar(
+        symbol=symbol,
+        interval_minutes=1,
+        open_time_ns=close_ns - NS_PER_MINUTE,
+        close_time_ns=close_ns,
+        open=float(bar.open),
+        high=float(bar.high),
+        low=float(bar.low),
+        close=float(bar.close),
+        volume=float(base_volume),
+        quote_volume=float(quote_volume),
+        taker_buy_quote_volume=float(taker_buy_quote),
+        # BinanceBar.count is the kline's raw `n` field.  It is intentionally
+        # not the number of aggTrade websocket messages observed locally.
+        trade_count=count,
+    )
+
+
 def _canonical_stored_bars(
     bars: Iterable[PolicyBar],
 ) -> tuple[list[PolicyBar], dict[str, int]]:
@@ -266,6 +342,14 @@ def apply_live_inventory_results(
 
 @dataclass(slots=True)
 class MinuteTradeBuilder:
+    """Focused test fixture for legacy aggTrade reconstruction.
+
+    Production does not instantiate this builder.  Binance ``aggTrade``
+    messages count aggregate executions, whereas the exchange kline ``n``
+    field counts underlying trades; reconstructing policy bars here therefore
+    cannot preserve the historical/live ``trade_count`` contract.
+    """
+
     symbol: str
     minute_open_ns: int | None = None
     open: float = 0.0
@@ -325,6 +409,7 @@ class MinuteTradeBuilder:
 
 def _load_nautilus() -> dict[str, Any]:
     from nautilus_trader.adapters.binance import BINANCE
+    from nautilus_trader.adapters.binance import BinanceBar
     from nautilus_trader.adapters.binance import BinanceAccountType
     from nautilus_trader.adapters.binance import BinanceDataClientConfig
     from nautilus_trader.adapters.binance import BinanceExecClientConfig
@@ -340,12 +425,11 @@ def _load_nautilus() -> dict[str, Any]:
     from nautilus_trader.config import LiveExecEngineConfig
     from nautilus_trader.config import LoggingConfig
     from nautilus_trader.config import TradingNodeConfig
+    from nautilus_trader.core import nautilus_pyo3
     from nautilus_trader.live.node import TradingNode
     from nautilus_trader.model.data import Bar
     from nautilus_trader.model.data import BarType
     from nautilus_trader.model.data import DataType
-    from nautilus_trader.model.data import TradeTick
-    from nautilus_trader.model.enums import AggressorSide
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.enums import OrderType
     from nautilus_trader.model.enums import TimeInForce
@@ -356,6 +440,8 @@ def _load_nautilus() -> dict[str, Any]:
     from nautilus_trader.model.objects import Money
     from nautilus_trader.trading import Strategy
     from nautilus_trader.trading.config import StrategyConfig
+
+    BinanceBarPyo3 = nautilus_pyo3.binance.BinanceBar
 
     return locals()
 
@@ -375,7 +461,6 @@ if NT is not None:
     OrderSide = NT["OrderSide"]
     OrderType = NT["OrderType"]
     TimeInForce = NT["TimeInForce"]
-    AggressorSide = NT["AggressorSide"]
 
     class LiquidityEpisodeStrategyConfig(StrategyConfig, frozen=True):
         instrument_ids: tuple[InstrumentId, ...]
@@ -385,7 +470,6 @@ if NT is not None:
         initial_nav: float = 100_000.0
         bootstrap_lookback_minutes: int = DEFAULT_WARMUP_MINUTES
         live_inventory_poll_seconds: float = 15.0
-        build_bars_from_ticks: bool = False
         execution_start_ns: int = 0
         execution_end_ns: int | None = None
 
@@ -423,7 +507,6 @@ if NT is not None:
                     for symbol, instrument_id in self.instrument_ids.items()
                 }
             self.instruments: dict[str, Any] = {}
-            self.builders = {symbol: MinuteTradeBuilder(symbol) for symbol in SYMBOLS}
             policies = {
                 symbol: SymbolEpisodePolicy(symbol, float(DEFAULT_CONTRACTS[symbol].tick_size), PolicyConfig())
                 for symbol in SYMBOLS
@@ -512,10 +595,10 @@ if NT is not None:
                     self.stop()
                     return
                 self.instruments[symbol] = instrument
-                if self.config.build_bars_from_ticks:
-                    self.subscribe_trade_ticks(instrument_id)
-                else:
-                    self.subscribe_bars(self.bar_types[symbol])
+                # Binance's adapter emits BinanceBar only after the exchange
+                # kline says x=true.  This preserves the exchange OHLCV,
+                # quote/taker flow and underlying trade count in one payload.
+                self.subscribe_bars(self.bar_types[symbol])
                 if self.config.execution_mode != "BACKTEST":
                     self.subscribe_data(
                         data_type=NT["DataType"](
@@ -750,11 +833,37 @@ if NT is not None:
         def on_bar(self, bar) -> None:
             """Consume the same completed external 1-minute bars in backtest and live."""
             symbol = _symbol_from_instrument(str(bar.bar_type.instrument_id))
+            expected_bar_type = self.bar_types[symbol]
+            if str(bar.bar_type) != str(expected_bar_type):
+                raise RuntimeError(
+                    "unexpected policy bar type: "
+                    f"actual={bar.bar_type} expected={expected_bar_type}"
+                )
+
+            if isinstance(bar, (NT["BinanceBar"], NT["BinanceBarPyo3"])):
+                # The live adapter keeps all raw exchange kline fields on its
+                # BinanceBar subclass.  No tick reconstruction or sidecar is
+                # permitted on this production path.
+                self._process_completed_bar(
+                    policy_bar_from_native_binance_bar(
+                        bar,
+                        expected_bar_type=expected_bar_type,
+                    )
+                )
+                return
+
+            if self.config.execution_mode != "BACKTEST":
+                raise RuntimeError(
+                    "production policy requires native BinanceBar payloads; "
+                    f"received {type(bar).__module__}.{type(bar).__name__}"
+                )
+
             close_ns = int(bar.ts_event)
             flow = self.policy_flow_by_key.pop((symbol, close_ns), None)
             if flow is None:
-                # Nautilus Bar has no quote/taker split.  Treating the missing
-                # field as 50/50 manufactures neutral evidence, so abstain.
+                # Historical backtests use ordinary Nautilus Bar plus an exact
+                # PolicyBar flow sidecar.  A non-Binance live Bar must never
+                # silently degrade to reconstructed or neutral flow.
                 self.missing_flow_bars += 1
                 self.store.append_event(
                     time_ns=close_ns,
@@ -788,19 +897,6 @@ if NT is not None:
                 if prior is not None and prior != flow:
                     raise RuntimeError(f"policy flow mutation for {key}")
                 self.policy_flow_by_key[key] = flow
-
-        def on_trade_tick(self, tick) -> None:
-            symbol = _symbol_from_instrument(str(tick.instrument_id))
-            buyer = tick.aggressor_side == AggressorSide.BUYER
-            completed = self.builders[symbol].push(
-                ts_ns=int(tick.ts_event),
-                price=float(tick.price),
-                quantity=float(tick.size),
-                buyer_aggressor=buyer,
-            )
-            if completed is None:
-                return
-            self._process_completed_bar(completed)
 
         def _process_completed_bar(self, completed: PolicyBar) -> None:
             completed = canonicalize_completed_policy_bar(completed)
@@ -2092,10 +2188,7 @@ if NT is not None:
 
         def on_stop(self) -> None:
             for instrument_id in self.config.instrument_ids:
-                if self.config.build_bars_from_ticks:
-                    self.unsubscribe_trade_ticks(instrument_id)
-                else:
-                    self.unsubscribe_bars(self.bar_types[_symbol_from_instrument(str(instrument_id))])
+                self.unsubscribe_bars(self.bar_types[_symbol_from_instrument(str(instrument_id))])
                 if self.config.execution_mode != "BACKTEST":
                     self.unsubscribe_data(
                         data_type=NT["DataType"](
@@ -2204,6 +2297,10 @@ def build_node(
         account_type=NT["BinanceAccountType"].USDT_FUTURES,
         environment=data_environment,
         instrument_provider=instrument_provider,
+        # The policy consumes exchange-completed kline BinanceBar objects.
+        # Never substitute aggregate trade ticks for this market-data stream.
+        use_agg_trade_ticks=False,
+        handle_revised_bars=False,
     )
     exec_clients: dict[str, Any]
     exec_factory: Any
@@ -2268,9 +2365,6 @@ def build_node(
             initial_nav=initial_nav,
             bootstrap_lookback_minutes=bootstrap_lookback_minutes,
             live_inventory_poll_seconds=live_inventory_poll_seconds,
-            # Binance live OHLCV bars omit taker-buy quote flow.  Trade ticks
-            # preserve that policy input instead of fabricating neutral flow.
-            build_bars_from_ticks=True,
             external_order_claims=list(instrument_ids),
         )
     )
