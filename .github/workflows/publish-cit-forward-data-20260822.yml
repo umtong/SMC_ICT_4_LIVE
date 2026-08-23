@@ -1,0 +1,75 @@
+name: Publish immutable CIT forward dataset 2026-07-01 to 2026-08-22
+
+on:
+  push:
+    branches: ["research_candidate_4_causal_inventory_transfer"]
+    paths:
+      - ".github/workflows/publish-cit-forward-data-20260822.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4_causal_inventory_transfer
+      - name: Download official Binance Vision fresh bars
+        run: |
+          set -euo pipefail
+          python -m pip install -q pandas pyarrow requests
+          python - <<'PY'
+          from pathlib import Path
+          import io, zipfile, hashlib, json, requests
+          import pandas as pd
+          out=Path('cit_forward_data'); out.mkdir(exist_ok=True)
+          syms=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
+          cols=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_volume','taker_buy_quote_volume','ignore']
+          base='https://data.binance.vision/data/futures/um'
+          manifest={'period':'2026-07-01T00:00:00Z/2026-08-23T00:00:00Z','source':'https://data.binance.vision','symbols':{},'archives':[]}
+          def read_zip(url):
+              r=requests.get(url,timeout=90)
+              if r.status_code!=200:return None
+              z=zipfile.ZipFile(io.BytesIO(r.content)); names=[n for n in z.namelist() if n.endswith('.csv')]
+              if not names:return None
+              q=pd.read_csv(io.BytesIO(z.read(names[0])),header=None,names=cols)
+              manifest['archives'].append({'url':url,'sha256':hashlib.sha256(r.content).hexdigest(),'rows':len(q)})
+              return q
+          for sym in syms:
+              chunks=[]
+              q=read_zip(f'{base}/monthly/klines/{sym}/1m/{sym}-1m-2026-07.zip')
+              if q is not None:chunks.append(q)
+              else:
+                  for day in range(1,32):
+                      q=read_zip(f'{base}/daily/klines/{sym}/1m/{sym}-1m-2026-07-{day:02d}.zip')
+                      if q is not None:chunks.append(q)
+              for day in range(1,23):
+                  q=read_zip(f'{base}/daily/klines/{sym}/1m/{sym}-1m-2026-08-{day:02d}.zip')
+                  if q is not None:chunks.append(q)
+              if not chunks:raise RuntimeError(f'No fresh files for {sym}')
+              df=pd.concat(chunks,ignore_index=True)
+              df['timestamp']=pd.to_datetime(pd.to_numeric(df.open_time,errors='coerce'),unit='ms',utc=True)
+              for c in ['open','high','low','close','volume','quote_volume','trades','taker_buy_volume','taker_buy_quote_volume']:
+                  df[c]=pd.to_numeric(df[c],errors='coerce')
+              df=df[(df.timestamp>=pd.Timestamp('2026-07-01',tz='UTC'))&(df.timestamp<pd.Timestamp('2026-08-23',tz='UTC'))]
+              df=df.sort_values('timestamp').drop_duplicates('timestamp')
+              keep=['timestamp','open','high','low','close','volume','quote_volume','trades','taker_buy_volume','taker_buy_quote_volume']
+              df[keep].to_parquet(out/f'{sym}_1m.parquet',index=False)
+              manifest['symbols'][sym]={'rows':len(df),'first':str(df.timestamp.min()),'last':str(df.timestamp.max())}
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2))
+          PY
+          zip -qr cit-forward-data-20260822.zip cit_forward_data
+          sha256sum cit-forward-data-20260822.zip > cit-forward-data-20260822.sha256
+      - name: Publish fixed public research-data release
+        run: |
+          set -euo pipefail
+          gh release delete cit-forward-20260822 --cleanup-tag -y >/dev/null 2>&1 || true
+          git tag -d cit-forward-20260822 >/dev/null 2>&1 || true
+          git push origin :refs/tags/cit-forward-20260822 >/dev/null 2>&1 || true
+          gh release create cit-forward-20260822 cit-forward-data-20260822.zip cit-forward-data-20260822.sha256 --target research_candidate_4_causal_inventory_transfer --title "CIT immutable forward data through 2026-08-22" --notes "Official Binance Vision USD-M 1-minute bars for BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT. This period was acquired only after the candidate policy was frozen locally."
