@@ -312,6 +312,144 @@ class BoundaryBook:
 
 
 @dataclass(slots=True)
+class ObjectiveBook:
+    """Horizontal, causal, first-touch objective registry.
+
+    EasyChart RE1's objective experiments deliberately separated the profit
+    objective from the richer source/context book.  Only already-confirmed
+    horizontal pivots enter this registry; diagonal structures and prior-day
+    levels therefore cannot be silently promoted to ordinary take-profit
+    destinations.
+    """
+
+    symbol: str
+    tick_size: float
+    objectives: dict[str, LiquidityBoundary] = field(default_factory=dict)
+    source_boundary_by_objective: dict[str, str] = field(default_factory=dict)
+    _active_ids: set[str] = field(default_factory=set, repr=False)
+
+    def register(
+        self,
+        objective: LiquidityBoundary,
+        *,
+        source_boundary_id: str,
+    ) -> bool:
+        if objective.symbol != self.symbol:
+            raise ValueError("objective symbol mismatch")
+        if objective.timeframe_minutes not in {1, 5, 15}:
+            raise ValueError("ordinary objectives must be 1m, 5m or 15m pivots")
+        existing = self.objectives.get(objective.boundary_id)
+        if existing is not None:
+            if existing != objective:
+                raise ValueError("objective identity was reused with different geometry")
+            return False
+        self.objectives[objective.boundary_id] = objective
+        self.source_boundary_by_objective[objective.boundary_id] = source_boundary_id
+        if objective.consumed_time_ns is None:
+            self._active_ids.add(objective.boundary_id)
+        return True
+
+    def add_pivots(self, pivots: Iterable[Pivot]) -> list[LiquidityBoundary]:
+        created: list[LiquidityBoundary] = []
+        for pivot in pivots:
+            objective_id = stable_id(pivot.pivot_id, prefix="OBJECTIVE:")
+            objective = LiquidityBoundary(
+                boundary_id=objective_id,
+                symbol=pivot.symbol,
+                side=pivot.side,
+                kind=f"HORIZONTAL_OBJECTIVE_{pivot.timeframe_minutes}M",
+                timeframe_minutes=pivot.timeframe_minutes,
+                observed_time_ns=pivot.observed_time_ns,
+                lower=pivot.price,
+                upper=pivot.price,
+                price=pivot.price,
+                strength=pivot.strength,
+            )
+            # A 15m pivot can simultaneously be a source in BoundaryBook.  Its
+            # objective identity is separate, but the current source itself is
+            # never a destination for the same episode.
+            if self.register(
+                objective,
+                source_boundary_id=stable_id(
+                    pivot.pivot_id,
+                    prefix="BOUNDARY:",
+                ),
+            ):
+                created.append(objective)
+        return created
+
+    def observe_price(self, bar: Bar) -> None:
+        """Consume a pivot only on a touch strictly after it became known."""
+
+        for objective_id in list(self._active_ids):
+            objective = self.objectives[objective_id]
+            if (
+                bar.close_time_ns <= objective.observed_time_ns
+            ):
+                continue
+            touched = (
+                bar.high >= objective.price
+                if objective.side == "HIGH"
+                else bar.low <= objective.price
+            )
+            if touched:
+                self.objectives[objective_id] = replace(
+                    objective,
+                    consumed_time_ns=bar.close_time_ns,
+                )
+                self._active_ids.remove(objective_id)
+
+    def active(
+        self,
+        decision_time_ns: int,
+        *,
+        source_boundary_id: str | None = None,
+    ) -> list[LiquidityBoundary]:
+        return [
+            objective
+            for objective_id in self._active_ids
+            for objective in (self.objectives[objective_id],)
+            # Strictly-before is the RE1 contract: a pivot confirmed at this
+            # close becomes usable by a later decision, never retroactively by
+            # the close which supplied its final confirmation bar.
+            if objective.observed_time_ns < decision_time_ns
+            and self.source_boundary_by_objective.get(objective_id)
+            != source_boundary_id
+        ]
+
+    def destination_candidates(
+        self,
+        *,
+        side: str,
+        entry: float,
+        decision_time_ns: int,
+        source_boundary_id: str | None = None,
+    ) -> list[LiquidityBoundary]:
+        wanted = "HIGH" if side == "LONG" else "LOW"
+        direction = 1.0 if side == "LONG" else -1.0
+        output = [
+            objective
+            for objective in self.active(
+                decision_time_ns,
+                source_boundary_id=source_boundary_id,
+            )
+            if objective.side == wanted
+            and direction * (objective.price - entry) > self.tick_size
+        ]
+        # Price owns the first absorbing objective.  For an exact price tie,
+        # preserve the more established timeframe, then make identity stable.
+        return sorted(
+            output,
+            key=lambda item: (
+                direction * (item.price - entry),
+                -item.timeframe_minutes,
+                -item.strength,
+                item.boundary_id,
+            ),
+        )
+
+
+@dataclass(slots=True)
 class SymbolMarketState:
     symbol: str
     tick_size: float
@@ -323,9 +461,12 @@ class SymbolMarketState:
     _agg_5: BarAggregator = field(init=False, repr=False)
     _agg_15: BarAggregator = field(init=False, repr=False)
     _agg_60: BarAggregator = field(init=False, repr=False)
+    _pivot_1: PivotTracker = field(init=False, repr=False)
+    _pivot_5: PivotTracker = field(init=False, repr=False)
     _pivot_15: PivotTracker = field(init=False, repr=False)
     _pivot_60: PivotTracker = field(init=False, repr=False)
     boundary_book: BoundaryBook = field(init=False)
+    objective_book: ObjectiveBook = field(init=False)
     _day_key: int | None = field(default=None, init=False, repr=False)
     _day_bars: list[Bar] = field(default_factory=list, init=False, repr=False)
 
@@ -333,18 +474,30 @@ class SymbolMarketState:
         self._agg_5 = BarAggregator(self.symbol, 1, 5)
         self._agg_15 = BarAggregator(self.symbol, 5, 15)
         self._agg_60 = BarAggregator(self.symbol, 15, 60)
+        self._pivot_1 = PivotTracker(self.symbol, 1, 6)
+        self._pivot_5 = PivotTracker(self.symbol, 5, 2)
         self._pivot_15 = PivotTracker(self.symbol, 15, 2)
         self._pivot_60 = PivotTracker(self.symbol, 60, 2)
         self.boundary_book = BoundaryBook(self.symbol, self.tick_size)
+        self.objective_book = ObjectiveBook(self.symbol, self.tick_size)
 
     def push_one_minute(self, bar: Bar) -> tuple[Bar | None, list[LiquidityBoundary]]:
         self.one_minute.append(bar)
+        self.objective_book.add_pivots(self._pivot_1.push(bar))
         five = self._agg_5.push(bar)
         if five is None:
+            self.objective_book.observe_price(bar)
             return None, []
-        return five, self.push_five_minute(five)
+        created = self.push_five_minute(five, observe_objectives=False)
+        self.objective_book.observe_price(bar)
+        return five, created
 
-    def push_five_minute(self, five: Bar) -> list[LiquidityBoundary]:
+    def push_five_minute(
+        self,
+        five: Bar,
+        *,
+        observe_objectives: bool = True,
+    ) -> list[LiquidityBoundary]:
         if five.symbol != self.symbol or five.interval_minutes != 5:
             raise ValueError("bar does not match five-minute market state")
         if self.five_minute and five.close_time_ns <= self.five_minute[-1].close_time_ns:
@@ -354,17 +507,22 @@ class SymbolMarketState:
         self.five_minute.append(five)
         self.serial_5m += 1
         created: list[LiquidityBoundary] = []
+        self.objective_book.add_pivots(self._pivot_5.push(five))
         created.extend(self._update_prior_day(five))
         fifteen = self._agg_15.push(five)
         if fifteen is not None:
             self.fifteen_minute.append(fifteen)
             atr_15 = self.atr(self.fifteen_minute)
-            created.extend(self.boundary_book.add_pivots(self._pivot_15.push(fifteen), self.serial_5m, atr_15))
+            pivots_15 = self._pivot_15.push(fifteen)
+            self.objective_book.add_pivots(pivots_15)
+            created.extend(self.boundary_book.add_pivots(pivots_15, self.serial_5m, atr_15))
             sixty = self._agg_60.push(fifteen)
             if sixty is not None:
                 self.sixty_minute.append(sixty)
                 atr_60 = self.atr(self.sixty_minute)
                 created.extend(self.boundary_book.add_pivots(self._pivot_60.push(sixty), self.serial_5m, atr_60))
+        if observe_objectives:
+            self.objective_book.observe_price(five)
         return created
 
     def _update_prior_day(self, five: Bar) -> list[LiquidityBoundary]:

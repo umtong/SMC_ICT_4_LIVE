@@ -9,8 +9,8 @@ Piece``:
   one owner for one structure interaction;
 * directional-liquidity-policy v2 supplies direction/liquidity context;
 * EasyChart RE1 supplies accepted-break first response, complete-episode
-  invalidation, first live opposing objective, FVG-with-OB responsibility and
-  latest-accepted-level ownership; and
+  invalidation, its causal pivot-only 1m/5m/15m objective book, FVG-with-OB
+  responsibility and latest-accepted-level ownership; and
 * candidate 3b supplies delivery proof, retained here as completion evidence
   rather than a target cap or a separate entry family.
 
@@ -19,7 +19,7 @@ The executable law is one causal chain::
     pre-existing structural source
     -> completed auction ownership transfer
     -> one future first-return location
-    -> complete-episode stop and first live opposing destination
+    -> complete-episode stop and first live horizontal day-trade objective
 
 An FVG cannot originate an episode.  Control observations are not accumulated
 into an age-dependent quality score.  A completed delivery proof cannot replace
@@ -59,7 +59,7 @@ from .structural_liquidity import (
 
 MAX_CAUSAL_ORDER_TIME_NS = (1 << 63) - 1
 POLICY_DECISION_SCHEMA_VERSION = 1
-POLICY_FINGERPRINT = "liquidity-episode-source-transfer-v1"
+POLICY_FINGERPRINT = "liquidity-episode-source-transfer-v2-horizontal-objective"
 
 
 @dataclass(slots=True)
@@ -134,7 +134,7 @@ class SymbolEpisodePolicy:
         self._proposals: dict[str, TradePlan] = {}
         self._used_episodes: set[str] = set()
         self._claimed_plans: dict[str, str] = {}
-        self._claimed_plan_metadata: dict[str, dict[str, str | int]] = {}
+        self._claimed_plan_metadata: dict[str, dict[str, str | int | float]] = {}
         self._invalidated_claimed_plans: dict[str, dict[str, str | int]] = {}
         self._terminalized_episodes: dict[str, str] = {}
         self._started_episodes: dict[str, dict[str, object]] = {}
@@ -656,6 +656,7 @@ class SymbolEpisodePolicy:
         self._invalidate_superseded_claimed_structures(
             bar, live_structural_ids,
         )
+        self._invalidate_claimed_objective_routes(bar)
         for episode_id, proposal in list(self._proposals.items()):
             reason = ""
             if episode_id in self._used_episodes:
@@ -674,6 +675,15 @@ class SymbolEpisodePolicy:
                 and proposal.destination_boundary_id not in live_structural_ids
             ):
                 reason = "STRUCTURAL_DESTINATION_VERSION_SUPERSEDED"
+            elif self._has_new_closer_objective(
+                side=proposal.side,
+                entry=proposal.entry,
+                target=proposal.target,
+                destination_boundary_id=proposal.destination_boundary_id,
+                source_boundary_id=proposal.source_boundary_id,
+                decision_time_ns=bar.close_time_ns,
+            ):
+                reason = "ROUTE_CHANGED_BY_NEW_CLOSER_OBJECTIVE"
             elif bar.close_time_ns > proposal.decision_time_ns:
                 if proposal.side == "LONG" and bar.low <= proposal.stop or proposal.side == "SHORT" and bar.high >= proposal.stop:
                     reason = "COMPLETE_EPISODE_INVALIDATED_BEFORE_ENTRY"
@@ -758,6 +768,85 @@ class SymbolEpisodePolicy:
             }
             self._diagnostic_counts[reason] = self._diagnostic_counts.get(reason, 0) + 1
 
+    def _has_new_closer_objective(
+        self,
+        *,
+        side: str,
+        entry: float,
+        target: float,
+        destination_boundary_id: str,
+        source_boundary_id: str,
+        decision_time_ns: int,
+    ) -> bool:
+        candidates = self.market.objective_book.destination_candidates(
+            side=side,
+            entry=entry,
+            decision_time_ns=decision_time_ns,
+            source_boundary_id=source_boundary_id,
+        )
+        if not candidates:
+            return False
+        nearest = candidates[0]
+        if nearest.boundary_id == destination_boundary_id:
+            return False
+        planned_distance = abs(target - entry)
+        nearest_distance = abs(
+            self._objective_execution_price(side, nearest.price) - entry,
+        )
+        return nearest_distance < planned_distance - 0.5 * self.tick_size
+
+    def _objective_execution_price(self, side: str, pivot_price: float) -> float:
+        """Place TP one tick inside the actual horizontal liquidity price."""
+
+        if side == "LONG":
+            return pivot_price - self.tick_size
+        if side == "SHORT":
+            return pivot_price + self.tick_size
+        raise ValueError("side must be LONG or SHORT")
+
+    def _invalidate_claimed_objective_routes(self, bar: Bar) -> None:
+        """Signal cancellation when an unfilled route gains a closer objective.
+
+        Claimed plans may already be filled.  As with every claimed-plan
+        invalidation in this class, the execution layer applies this signal to
+        a pending entry only and never moves or exits a filled position.
+        """
+
+        for episode_id, metadata in self._claimed_plan_metadata.items():
+            plan_id = str(metadata["plan_id"])
+            if plan_id in self._invalidated_claimed_plans:
+                continue
+            entry = metadata.get("entry")
+            target = metadata.get("target")
+            if not isinstance(entry, (float, int)) or not isinstance(
+                target,
+                (float, int),
+            ):
+                # Backward-compatible restored metadata predating the
+                # objective registry cannot be safely reinterpreted.
+                continue
+            if not self._has_new_closer_objective(
+                side=str(metadata["side"]),
+                entry=float(entry),
+                target=float(target),
+                destination_boundary_id=str(
+                    metadata.get("destination_boundary_id", ""),
+                ),
+                source_boundary_id=str(metadata.get("source_boundary_id", "")),
+                decision_time_ns=bar.close_time_ns,
+            ):
+                continue
+            reason = "ROUTE_CHANGED_BY_NEW_CLOSER_OBJECTIVE"
+            self._invalidated_claimed_plans[plan_id] = {
+                "episode_id": episode_id,
+                "reason": reason,
+                "time_ns": bar.close_time_ns,
+                "superseding_episode_id": "OBJECTIVE_FIRST_ABSORBING_ROUTE",
+            }
+            self._diagnostic_counts[reason] = (
+                self._diagnostic_counts.get(reason, 0) + 1
+            )
+
     @staticmethod
     def _arbitration_key(
         plan: TradePlan,
@@ -812,6 +901,9 @@ class SymbolEpisodePolicy:
             "destination_kind": str(
                 plan.evidence.get("destination_kind", "UNKNOWN")
             ),
+            "entry": plan.entry,
+            "stop": plan.stop,
+            "target": plan.target,
         }
         self._last_plan_time_ns = plan.decision_time_ns
         self._proposals.pop(plan.episode_id, None)
@@ -990,6 +1082,9 @@ class SymbolEpisodePolicy:
                 "destination_kind": str(
                     plan.evidence.get("destination_kind", "UNKNOWN"),
                 ),
+                "entry": plan.entry,
+                "stop": plan.stop,
+                "target": plan.target,
             }
             last_plan_time_ns = max(last_plan_time_ns, plan.decision_time_ns)
         state["used_episode_ids"] = sorted(used)
@@ -2194,40 +2289,57 @@ class SymbolEpisodePolicy:
         )
 
     def _route_nodes(
-        self, watch: EpisodeWatch, decision_time_ns: int, serial: int,
+        self,
+        watch: EpisodeWatch,
+        decision_time_ns: int,
+        serial: int,
+        entry: float | None = None,
     ) -> list[StructuralNode]:
         wanted = "HIGH" if watch.side == "LONG" else "LOW"
         output: list[StructuralNode] = []
-        for boundary in self.market.boundary_book.active(decision_time_ns):
-            if boundary.boundary_id == watch.source.boundary_id:
-                continue
-            if any(
-                token in boundary.kind
-                for token in ("UPTREND_LINE", "DOWNTREND_LINE", "DIAGONAL_LIQUIDITY")
-            ):
-                continue
-            lower, upper = boundary.band_at(serial)
-            role = StructureRole.DESTINATION if boundary.side == wanted else StructureRole.ROUTE_OBSTACLE
-            if role is StructureRole.DESTINATION:
-                if watch.side == "LONG":
-                    lower -= self.tick_size
-                    upper -= self.tick_size
-                else:
-                    lower += self.tick_size
-                    upper += self.tick_size
+        objectives = (
+            self.market.objective_book.active(
+                decision_time_ns,
+                source_boundary_id=watch.source.boundary_id,
+            )
+            if entry is None
+            else self.market.objective_book.destination_candidates(
+                side=watch.side,
+                entry=entry,
+                decision_time_ns=decision_time_ns,
+                source_boundary_id=watch.source.boundary_id,
+            )
+        )
+        if entry is None:
+            objectives = sorted(
+                (item for item in objectives if item.side == wanted),
+                key=lambda item: (
+                    -item.timeframe_minutes,
+                    -item.strength,
+                    item.boundary_id,
+                ),
+            )
+        for boundary in objectives:
+            execution_price = self._objective_execution_price(
+                watch.side,
+                boundary.price,
+            )
             output.append(
                 StructuralNode(
                     node_id=boundary.boundary_id,
                     symbol=self.symbol,
                     side=boundary.side,
                     kind=boundary.kind,
-                    role=role,
+                    role=StructureRole.DESTINATION,
                     timeframe_minutes=boundary.timeframe_minutes,
                     observed_time_ns=boundary.observed_time_ns,
-                    lower=lower,
-                    upper=upper,
+                    # Objective identity and first-touch consumption stay at
+                    # the actual pivot; the executable TP sits one instrument
+                    # tick inside it so a fill does not require trading exactly
+                    # at the liquidity line.
+                    lower=execution_price,
+                    upper=execution_price,
                     anchor_serial=serial,
-                    slope_per_bar=boundary.dynamic_slope_per_bar,
                     consumed_time_ns=boundary.consumed_time_ns,
                 )
             )
@@ -2238,23 +2350,15 @@ class SymbolEpisodePolicy:
             ):
                 continue
             lower, upper = projected.band_at(serial)
-            if projected.side == wanted:
-                role = StructureRole.DESTINATION
-                if watch.side == "LONG":
-                    lower -= self.tick_size
-                    upper -= self.tick_size
-                else:
-                    lower += self.tick_size
-                    upper += self.tick_size
-            else:
-                role = StructureRole.ROUTE_OBSTACLE
             output.append(
                 StructuralNode(
                     node_id=projected.node_id,
                     symbol=projected.symbol,
                     side=projected.side,
                     kind=projected.kind,
-                    role=role,
+                    # Lines and channels interpret the route.  They are not an
+                    # implicit full-position rotation target.
+                    role=StructureRole.ROUTE_OBSTACLE,
                     timeframe_minutes=projected.timeframe_minutes,
                     observed_time_ns=projected.observed_time_ns,
                     lower=lower,
@@ -2381,7 +2485,12 @@ class SymbolEpisodePolicy:
         route = destination_first_geometry(
             side=watch.side,
             source=source,
-            nodes=self._route_nodes(watch, decision_bar.close_time_ns, serial),
+            nodes=self._route_nodes(
+                watch,
+                decision_bar.close_time_ns,
+                serial,
+                entry,
+            ),
             entry=entry,
             stop=stop,
             decision_time_ns=decision_bar.close_time_ns,
@@ -2452,7 +2561,9 @@ class SymbolEpisodePolicy:
                 "IMMEDIATE_MARKETABLE_FIRST_RESPONSE"
                 if immediate_acceptance_response else "RESTING_FUTURE_FIRST_RETURN_LIMIT"
             ),
-            "completion_target_origin": "FIRST_LIVE_OPPOSING_5M_OR_15M_STRUCTURE",
+            "completion_target_origin": (
+                "FIRST_LIVE_OPPOSING_HORIZONTAL_1M_SPAN6_OR_5M_15M_SPAN2_OBJECTIVE"
+            ),
             "complete_episode_invalidation": stop,
             "higher_timeframe_regime": str(htf["higher_timeframe_regime"]),
         }

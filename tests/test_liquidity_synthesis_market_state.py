@@ -7,6 +7,7 @@ from smc_ict_4.episode_policy_live.market_state import (
     NS_PER_MINUTE,
     BarAggregator,
     BoundaryBook,
+    ObjectiveBook,
     SymbolMarketState,
 )
 
@@ -141,6 +142,58 @@ class PriorDayBoundaryTests(unittest.TestCase):
             state.push_five_minute(bar(minute, interval=5))
         created = state.push_five_minute(bar(1440, interval=5))
         self.assertFalse(any(item.kind.startswith("PRIOR_DAY_") for item in created))
+
+
+class HorizontalObjectiveBookTests(unittest.TestCase):
+    def test_confirmation_close_is_not_retroactive_and_later_first_touch_consumes(self) -> None:
+        book = ObjectiveBook("BTCUSDT", 0.1)
+        pivot = Pivot(
+            "P:1M:HIGH",
+            "BTCUSDT",
+            1,
+            "HIGH",
+            110.0,
+            6 * NS_PER_MINUTE,
+            13 * NS_PER_MINUTE - 1,
+            12,
+            2.0,
+        )
+        objective = book.add_pivots([pivot])[0]
+        confirmation = bar(12, high=111.0, low=99.0)
+
+        book.observe_price(confirmation)
+
+        self.assertIsNone(book.objectives[objective.boundary_id].consumed_time_ns)
+        self.assertEqual(book.active(confirmation.close_time_ns), [])
+        # The executable LONG target would be one tick inside at 109.9, but
+        # lifecycle identity is the actual 110.0 pivot and is not consumed yet.
+        later = bar(13, high=109.9, low=99.0)
+        book.observe_price(later)
+        self.assertEqual(
+            [item.boundary_id for item in book.active(later.close_time_ns)],
+            [objective.boundary_id],
+        )
+        touch = bar(14, high=110.0, low=99.0)
+        book.observe_price(touch)
+        self.assertEqual(book.active(touch.close_time_ns), [])
+
+    def test_market_state_builds_only_declared_objective_pivot_scales(self) -> None:
+        state = SymbolMarketState("BTCUSDT", 0.1)
+        self.assertEqual(state._pivot_1.span, 6)
+        self.assertEqual(state._pivot_5.span, 2)
+        self.assertEqual(state._pivot_15.span, 2)
+
+        for index in range(15):
+            high = 120.0 if index == 6 else 105.0 if index == 2 else 101.0
+            state.push_five_minute(
+                bar(index * 5, interval=5, high=high, low=99.0),
+            )
+
+        kinds = {item.kind for item in state.objective_book.objectives.values()}
+        self.assertIn("HORIZONTAL_OBJECTIVE_5M", kinds)
+        self.assertIn("HORIZONTAL_OBJECTIVE_15M", kinds)
+        self.assertNotIn("HORIZONTAL_OBJECTIVE_60M", kinds)
+        self.assertFalse(any("PRIOR_DAY" in kind for kind in kinds))
 
 
 if __name__ == "__main__":

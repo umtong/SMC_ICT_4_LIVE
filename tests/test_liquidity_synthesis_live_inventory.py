@@ -375,17 +375,20 @@ class LiveInventoryCollectorTests(unittest.TestCase):
                 boundary_id="DEST:PARITY",
                 symbol="BTCUSDT",
                 side="HIGH",
-                kind="SWING_15M",
+                kind="HORIZONTAL_OBJECTIVE_15M",
                 timeframe_minutes=15,
                 observed_time_ns=BASE_NS,
-                lower=109.8,
-                upper=110.2,
+                lower=110.0,
+                upper=110.0,
                 price=110.0,
                 strength=3.0,
             )
             policy.market.serial_5m = 20
             policy.market.five_minute.append(decision_bar)
-            policy.market.boundary_book.boundaries[destination.boundary_id] = destination
+            policy.market.objective_book.register(
+                destination,
+                source_boundary_id="",
+            )
             watch = EpisodeWatch(
                 episode_id="EP:PARITY",
                 family="FAILED_AUCTION_REVERSAL",

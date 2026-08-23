@@ -31,6 +31,7 @@ from smc_ict_4.episode_policy_live.structural_liquidity import (
     StructuralNode,
     StructureRole,
     TrendLineVersion,
+    destination_first_geometry,
 )
 
 MIN = 60_000_000_000
@@ -85,6 +86,35 @@ def boundary(
         strength=3.0,
         anchor_serial=0,
     )
+
+
+def add_objective(
+    policy: SymbolEpisodePolicy,
+    objective_id: str,
+    side: str,
+    price: float,
+    *,
+    observed: int,
+    timeframe: int = 5,
+    source_boundary_id: str = "",
+) -> LiquidityBoundary:
+    objective = LiquidityBoundary(
+        boundary_id=objective_id,
+        symbol=policy.symbol,
+        side=side,
+        kind=f"HORIZONTAL_OBJECTIVE_{timeframe}M",
+        timeframe_minutes=timeframe,
+        observed_time_ns=observed,
+        lower=price,
+        upper=price,
+        price=price,
+        strength=1.0,
+    )
+    policy.market.objective_book.register(
+        objective,
+        source_boundary_id=source_boundary_id,
+    )
+    return objective
 
 
 def test_control_is_local_evidence_residualized_by_common_market() -> None:
@@ -173,8 +203,13 @@ def test_delivery_proof_does_not_cap_first_live_structural_target() -> None:
     decision = bar(100, open_=101.0, high=103.37, low=100.8, close=102.0)
     policy.market.five_minute.append(decision)
     policy.market.serial_5m = 20
-    destination = boundary("DEST", "HIGH", 110.0, observed=decision.open_time_ns - MIN)
-    policy.market.boundary_book.boundaries["DEST"] = destination
+    destination = add_objective(
+        policy,
+        "DEST",
+        "HIGH",
+        110.0,
+        observed=decision.open_time_ns - MIN,
+    )
     watch = EpisodeWatch(
         episode_id="EP:PROOF",
         family="FAILED_AUCTION_REVERSAL",
@@ -195,10 +230,12 @@ def test_delivery_proof_does_not_cap_first_live_structural_target() -> None:
     plan = policy._build_plan(watch, decision, 20, 1.0, {"control_score": 1.0}, zone)
 
     assert plan is not None
-    assert abs(plan.target - 109.8) < 1e-9
+    assert plan.target == 109.9
     assert plan.target > watch.proof_extreme
     assert plan.gross_rr >= 1.0
-    assert plan.evidence["completion_target_origin"] == "FIRST_LIVE_OPPOSING_5M_OR_15M_STRUCTURE"
+    assert plan.evidence["completion_target_origin"] == (
+        "FIRST_LIVE_OPPOSING_HORIZONTAL_1M_SPAN6_OR_5M_15M_SPAN2_OBJECTIVE"
+    )
     assert plan.evidence["delivery_proof_role"] == "SEQUENCE_COMPLETION_EVIDENCE_ONLY"
 
 
@@ -209,10 +246,13 @@ def test_failed_completion_bar_crossing_source_still_places_future_first_return(
     )
     policy.market.serial_5m = 20
     source = boundary("SOURCE:FAILED-RETURN", "LOW", 99.0)
-    destination = boundary(
-        "DEST:FAILED-RETURN", "HIGH", 110.0, observed=decision.open_time_ns - MIN,
+    destination = add_objective(
+        policy,
+        "DEST:FAILED-RETURN",
+        "HIGH",
+        110.0,
+        observed=decision.open_time_ns - MIN,
     )
-    policy.market.boundary_book.boundaries[destination.boundary_id] = destination
     watch = EpisodeWatch(
         episode_id="EP:FAILED-RETURN",
         family="FAILED_AUCTION_REVERSAL",
@@ -258,16 +298,20 @@ def test_completed_episode_cannot_revive_farther_target_after_first_route_reject
     )
     policy.journey.observe(decision)
     source = boundary("SOURCE:IMMUTABLE-ROUTE", "LOW", 99.0)
-    nearest = boundary(
-        "DEST:NEAREST-SUB-R", "HIGH", 101.6, observed=decision.open_time_ns - MIN,
+    nearest = add_objective(
+        policy,
+        "DEST:NEAREST-SUB-R",
+        "HIGH",
+        101.5,
+        observed=decision.open_time_ns - MIN,
     )
-    farther = boundary(
-        "DEST:FARTHER", "HIGH", 110.0, observed=decision.open_time_ns - MIN,
+    farther = add_objective(
+        policy,
+        "DEST:FARTHER",
+        "HIGH",
+        110.0,
+        observed=decision.open_time_ns - MIN,
     )
-    policy.market.boundary_book.boundaries = {
-        nearest.boundary_id: nearest,
-        farther.boundary_id: farther,
-    }
     watch = EpisodeWatch(
         episode_id="EP:IMMUTABLE-ROUTE",
         family="FAILED_AUCTION_REVERSAL",
@@ -325,7 +369,8 @@ def test_completed_episode_cannot_revive_farther_target_after_first_route_reject
 
     assert watch.episode_id not in policy._watches
     assert policy.diagnostics["counts"]["DESTINATION_BELOW_ONE_R"] == 1
-    policy.market.boundary_book.boundaries.pop(nearest.boundary_id)
+    policy.market.objective_book.objectives.pop(nearest.boundary_id)
+    policy.market.objective_book._active_ids.discard(nearest.boundary_id)
     later = bar(101, interval=1, open_=101.2, high=101.5, low=101.0, close=101.4)
     assert policy._advance_watches(later, 20, 1.0, 0.0, peers) == []
 
@@ -458,8 +503,13 @@ def test_accepted_journey_enters_first_response_close_not_second_return() -> Non
         proof_extreme=sequence[-1].high,
         ownership_balance=0.01,
     )
-    destination = boundary("DEST", "HIGH", 110.0, observed=sequence[0].open_time_ns - MIN)
-    policy.market.boundary_book.boundaries[destination.boundary_id] = destination
+    destination = add_objective(
+        policy,
+        "DEST",
+        "HIGH",
+        110.0,
+        observed=sequence[0].open_time_ns - MIN,
+    )
     policy.market.serial_5m = 20
     journey = policy.journey.evaluate(policy._interaction(watch), sequence[-1].close_time_ns)
     zone = EntryZone("TRANSFERRED_SOURCE", 99.9, 100.1, source.observed_time_ns, sequence[0].open_time_ns)
@@ -508,10 +558,13 @@ def test_accepted_journey_rejects_destination_spent_on_initial_breakout() -> Non
         proof_extreme=sequence[-1].high,
         ownership_balance=0.01,
     )
-    destination = boundary(
-        "DEST:SPENT", "HIGH", 102.0, observed=sequence[0].open_time_ns - MIN,
+    destination = add_objective(
+        policy,
+        "DEST:SPENT",
+        "HIGH",
+        102.0,
+        observed=sequence[0].open_time_ns - MIN,
     )
-    policy.market.boundary_book.boundaries[destination.boundary_id] = destination
     policy.market.serial_5m = 20
     journey = policy.journey.evaluate(policy._interaction(watch), sequence[-1].close_time_ns)
     zone = EntryZone(
@@ -1286,6 +1339,185 @@ def test_previously_owned_projected_source_cannot_reappear_as_route_destination(
         route = policy._route_nodes(watch, 20 * MIN, 10)
 
     assert spent.node_id not in {item.node_id for item in route}
+
+
+def test_objective_roles_ties_and_current_source_exclusion_are_deterministic() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision_time_ns = 30 * MIN
+    source = boundary("SOURCE:15M", "LOW", 99.0)
+    source_objective = add_objective(
+        policy,
+        "OBJECTIVE:CURRENT-SOURCE",
+        "HIGH",
+        102.0,
+        observed=10 * MIN,
+        timeframe=15,
+        source_boundary_id=source.boundary_id,
+    )
+    objective_1m = add_objective(
+        policy, "OBJECTIVE:1M", "HIGH", 105.0, observed=10 * MIN, timeframe=1,
+    )
+    objective_15m = add_objective(
+        policy, "OBJECTIVE:15M", "HIGH", 105.0, observed=10 * MIN, timeframe=15,
+    )
+    objective_5m = add_objective(
+        policy, "OBJECTIVE:5M", "HIGH", 107.0, observed=10 * MIN, timeframe=5,
+    )
+    policy.market.boundary_book.boundaries["CONTEXT:60M"] = boundary(
+        "CONTEXT:60M", "HIGH", 104.0, observed=10 * MIN,
+    )
+    prior_day = replace(
+        boundary("CONTEXT:PRIOR-DAY", "HIGH", 108.0, observed=10 * MIN),
+        kind="PRIOR_DAY_HIGH",
+        timeframe_minutes=1440,
+    )
+    policy.market.boundary_book.boundaries[prior_day.boundary_id] = prior_day
+    line = StructuralNode(
+        node_id="LINE:ROUTE-ONLY",
+        symbol="BTCUSDT",
+        side="HIGH",
+        kind="DOWNTREND_LINE_15M",
+        role=StructureRole.DESTINATION,
+        timeframe_minutes=15,
+        observed_time_ns=10 * MIN,
+        lower=102.9,
+        upper=103.1,
+        anchor_serial=6,
+    )
+    watch = EpisodeWatch(
+        episode_id="EP:OBJECTIVE-ROLES",
+        family="FAILED_AUCTION_REVERSAL",
+        source=source,
+        side="LONG",
+        state="COMPLETED",
+        interaction_serial=5,
+        interaction_time_ns=20 * MIN,
+        event_extreme=98.0,
+        last_update_serial=6,
+        last_update_time_ns=decision_time_ns,
+    )
+
+    with patch.object(policy, "_projected_structural_nodes", return_value=[line]):
+        nodes = policy._route_nodes(watch, decision_time_ns, 6, 100.0)
+
+    by_id = {node.node_id: node for node in nodes}
+    assert source_objective.boundary_id not in by_id
+    assert "CONTEXT:60M" not in by_id
+    assert prior_day.boundary_id not in by_id
+    assert by_id[line.node_id].role is StructureRole.ROUTE_OBSTACLE
+    assert by_id[objective_1m.boundary_id].role is StructureRole.DESTINATION
+    assert by_id[objective_5m.boundary_id].role is StructureRole.DESTINATION
+    assert by_id[objective_15m.boundary_id].lower == 104.9
+    assert policy.market.objective_book.objectives[
+        objective_15m.boundary_id
+    ].price == 105.0
+    route = destination_first_geometry(
+        side="LONG",
+        source=policy._source_node(watch, 6),
+        nodes=nodes,
+        entry=100.0,
+        stop=99.0,
+        decision_time_ns=decision_time_ns,
+        serial=6,
+    )
+    assert route.destination is not None
+    assert route.destination.node_id == objective_15m.boundary_id
+    assert route.target == 104.9
+    assert route.route_obstacle is not None
+    assert route.route_obstacle.node_id == line.node_id
+
+
+def test_horizontal_objective_tp_buffer_is_symmetric_by_side() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision_time_ns = 30 * MIN
+    high = add_objective(
+        policy, "OBJECTIVE:HIGH-BUFFER", "HIGH", 105.0,
+        observed=10 * MIN, timeframe=5,
+    )
+    low = add_objective(
+        policy, "OBJECTIVE:LOW-BUFFER", "LOW", 95.0,
+        observed=10 * MIN, timeframe=5,
+    )
+
+    for side, source_side, expected_id, expected_target in (
+        ("LONG", "LOW", high.boundary_id, 104.9),
+        ("SHORT", "HIGH", low.boundary_id, 95.1),
+    ):
+        watch = EpisodeWatch(
+            episode_id=f"EP:{side}-BUFFER",
+            family="FAILED_AUCTION_REVERSAL",
+            source=boundary(f"SOURCE:{side}-BUFFER", source_side, 100.0),
+            side=side,
+            state="COMPLETED",
+            interaction_serial=5,
+            interaction_time_ns=20 * MIN,
+            event_extreme=99.0 if side == "LONG" else 101.0,
+            last_update_serial=6,
+            last_update_time_ns=decision_time_ns,
+        )
+        nodes = policy._route_nodes(
+            watch,
+            decision_time_ns,
+            6,
+            100.0,
+        )
+        destination = next(node for node in nodes if node.node_id == expected_id)
+        assert destination.lower == expected_target
+        assert destination.upper == expected_target
+
+    assert policy.market.objective_book.objectives[high.boundary_id].price == 105.0
+    assert policy.market.objective_book.objectives[low.boundary_id].price == 95.0
+
+
+def test_new_closer_objective_invalidates_pending_route_across_restart_only() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    plan = replace(
+        _plan("BTCUSDT", "EP:OBJECTIVE-RESTART", 10 * MIN),
+        evidence={
+            "interaction_time_ns": 10 * MIN,
+            "source_kind": "SWING_15M",
+            "destination_kind": "HORIZONTAL_OBJECTIVE_5M",
+        },
+    )
+    policy._proposals[plan.episode_id] = plan
+    policy.claim(plan)
+    saved = policy.export_state()
+
+    restored = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    restored.restore_state(saved)
+    add_objective(
+        restored,
+        plan.destination_boundary_id,
+        "HIGH",
+        plan.target,
+        observed=5 * MIN,
+        timeframe=5,
+    )
+    closer = add_objective(
+        restored,
+        "OBJECTIVE:NEW-CLOSER",
+        "HIGH",
+        100.8,
+        observed=20 * MIN,
+        timeframe=1,
+    )
+
+    restored._refresh_proposals(
+        [],
+        bar(30, interval=1, open_=100.3, high=100.5, low=100.2, close=100.4),
+    )
+
+    assert restored.claimed_plan_validity(plan.plan_id) == (
+        False,
+        "ROUTE_CHANGED_BY_NEW_CLOSER_OBJECTIVE",
+    )
+    assert restored.invalidated_claimed_plans[plan.plan_id][
+        "superseding_episode_id"
+    ] == "OBJECTIVE_FIRST_ABSORBING_ROUTE"
+    selected = restored._terminal_decisions[plan.episode_id]
+    assert selected["plan"]["target"] == plan.target
+    assert selected["plan"]["destination_boundary_id"] == plan.destination_boundary_id
+    assert closer.price != selected["plan"]["target"]
 
 
 def test_consumed_projected_node_is_not_converted_back_into_source() -> None:

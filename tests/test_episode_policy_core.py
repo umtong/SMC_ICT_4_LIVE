@@ -127,16 +127,19 @@ class PolicyGeometryTests(unittest.TestCase):
             boundary_id="DST",
             symbol="BTCUSDT",
             side="HIGH",
-            kind="SWING_60M",
-            timeframe_minutes=60,
+            kind="HORIZONTAL_OBJECTIVE_15M",
+            timeframe_minutes=15,
             observed_time_ns=decision.close_time_ns - 120 * MIN,
-            lower=105.0,
-            upper=105.2,
+            lower=105.1,
+            upper=105.1,
             price=105.1,
             strength=3.0,
             anchor_serial=99,
         )
-        policy.market.boundary_book.boundaries[destination.boundary_id] = destination
+        policy.market.objective_book.register(
+            destination,
+            source_boundary_id="",
+        )
         watch = EpisodeWatch(
             episode_id="EP",
             family="FAILED_AUCTION_REVERSAL",
@@ -168,16 +171,20 @@ class PolicyGeometryTests(unittest.TestCase):
             boundary_id="FUTURE",
             symbol="BTCUSDT",
             side="HIGH",
-            kind="SWING_60M",
-            timeframe_minutes=60,
+            kind="HORIZONTAL_OBJECTIVE_5M",
+            timeframe_minutes=5,
             observed_time_ns=decision.close_time_ns + MIN,
-            lower=103.0,
-            upper=103.2,
+            lower=103.1,
+            upper=103.1,
             price=103.1,
             strength=10.0,
             anchor_serial=99,
         )
-        policy.market.boundary_book.boundaries = {future.boundary_id: future}
+        policy.market.objective_book = type(policy.market.objective_book)(
+            "BTCUSDT",
+            0.1,
+        )
+        policy.market.objective_book.register(future, source_boundary_id="")
         self.assertIsNone(
             policy._build_plan(
                 watch,
