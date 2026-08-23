@@ -1,0 +1,44 @@
+name: research-candidate-3b-bootstrap
+
+on:
+  push:
+    branches: [research_candidate_3b]
+    paths:
+      - '.github/workflows/research-candidate-3b-bootstrap.yml'
+      - 'research/candidate-3b-synthesis/**'
+      - '.research-candidate-3b-run'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record reproducible source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD | tee source_commit_sha.txt
+          git ls-files -z | tar --null --files-from=- -czf research_candidate_3b_source.tgz
+          python --version | tee python_version.txt
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-candidate-3b-source
+          path: |
+            research_candidate_3b_source.tgz
+            source_commit_sha.txt
+            python_version.txt
+          if-no-files-found: error
+          retention-days: 7
