@@ -1,0 +1,101 @@
+name: research-candidate-4t-short-v3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-short-v3.yml'
+      - '.dispatch-candidate-4t-short-v3'
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: research-candidate-4t-short-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  route-existing-exact-actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4t
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependency-light policy runtime
+        run: python -m pip install --upgrade 'numpy>=2.0' 'pandas>=2.2'
+      - name: Download immutable candidate 1k exact-route action universes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded
+          gh run download 32592363635 --repo "$GITHUB_REPOSITORY" --dir downloaded
+      - name: Flatten each artifact into exactly one evaluation window
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p collected/development collected/fresh
+          artifacts=0
+          for directory in downloaded/*; do
+            [ -d "$directory" ] || continue
+            name="$(basename "$directory")"
+            case "$name" in
+              *fresh*) root="collected/fresh/$name" ;;
+              *dev*) root="collected/development/$name" ;;
+              *) continue ;;
+            esac
+            mkdir -p "$root"
+            while IFS= read -r -d '' file; do
+              relative="${file#"$directory"/}"
+              flat="$(printf '%s' "$relative" | tr '/ ' '__')"
+              cp "$file" "$root/$flat"
+            done < <(find "$directory" -type f -name '*.csv' -print0)
+            artifacts=$((artifacts+1))
+          done
+          test "$artifacts" -ge 4
+          test "$(find collected/development -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 3
+          test "$(find collected/fresh -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1
+      - name: Counterfactual ownership, sequential belief and one-account route
+        run: |
+          set -euo pipefail
+          python research/candidate-4t-synthesis/candidate_4t_periodfix.py \
+            --development-root collected/development \
+            --fresh-root collected/fresh \
+            --output candidate_4t_result
+          printf '%s\n' "$GITHUB_SHA" > candidate_4t_result/source_sha.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > candidate_4t_result/workflow_run_id.txt
+          printf '%s\n' '32592363635' > candidate_4t_result/action_universe_run_id.txt
+      - name: Upload complete diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-short-v3-result-${{ github.sha }}
+          path: candidate_4t_result
+          retention-days: 30
+      - name: Record reproducible result on branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          target=research_results/candidate_4t/short_diagnostic_v3
+          rm -rf "$target"
+          mkdir -p "$target"
+          cp candidate_4t_result/RESULT.md "$target/"
+          cp candidate_4t_result/summary.json "$target/"
+          cp candidate_4t_result/source_sha.txt "$target/"
+          cp candidate_4t_result/workflow_run_id.txt "$target/"
+          cp candidate_4t_result/action_universe_run_id.txt "$target/"
+          for file in development_orders.csv development_trades.csv development_replacements.csv fresh_orders.csv fresh_trades.csv fresh_replacements.csv; do
+            [ ! -f "candidate_4t_result/$file" ] || cp "candidate_4t_result/$file" "$target/"
+          done
+          git add "$target"
+          git commit -m "Record candidate 4t short v3 diagnostic ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_4t
