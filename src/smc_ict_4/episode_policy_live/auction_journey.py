@@ -23,7 +23,6 @@ range may segment the path but is explicitly named as such.
 """
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 import math
 from statistics import median
@@ -229,18 +228,51 @@ class EventTimeAuctionJourney:
         # This bound controls memory only.  If it truncates the requested
         # interaction, evaluation returns HISTORY_UNAVAILABLE rather than
         # treating the truncation as a journey expiry.
-        self._bars: deque[TapeBar] = deque(maxlen=history_bars)
+        self._history_bars = int(history_bars)
+        self._buffer: list[TapeBar | None] = [None] * self._history_bars
+        self._start = 0
+        self._size = 0
 
     @property
     def bars(self) -> tuple[TapeBar, ...]:
-        return tuple(self._bars)
+        return tuple(self._bar_at(index) for index in range(self._size))
+
+    def _bar_at(self, logical_index: int) -> TapeBar:
+        if logical_index < 0 or logical_index >= self._size:
+            raise IndexError("journey tape index out of range")
+        item = self._buffer[(self._start + logical_index) % self._history_bars]
+        if item is None:  # pragma: no cover - protected by ring invariants
+            raise RuntimeError("journey tape ring contains an empty live slot")
+        return item
+
+    def _bisect_time(self, time_ns: int, *, right: bool = False) -> int:
+        """Locate one timestamp in chronological ring order in O(log history)."""
+
+        low, high = 0, self._size
+        while low < high:
+            middle = (low + high) // 2
+            close_time_ns = self._bar_at(middle).close_time_ns
+            if close_time_ns < time_ns or (right and close_time_ns == time_ns):
+                low = middle + 1
+            else:
+                high = middle
+        return low
+
+    def bars_between(self, start_time_ns: int, end_time_ns: int) -> tuple[TapeBar, ...]:
+        """Return only completed bars in the inclusive causal time range."""
+
+        if end_time_ns < start_time_ns or not self._size:
+            return ()
+        start = self._bisect_time(start_time_ns)
+        end = self._bisect_time(end_time_ns, right=True)
+        return tuple(self._bar_at(index) for index in range(start, end))
 
     def observe(self, bar: Bar) -> None:
         if bar.symbol != self.symbol:
             raise ValueError("bar symbol does not match journey tape")
         if bar.interval_minutes != 1:
             raise ValueError("event-time journey requires completed one-minute bars")
-        if self._bars and bar.close_time_ns <= self._bars[-1].close_time_ns:
+        if self._size and bar.close_time_ns <= self._bar_at(self._size - 1).close_time_ns:
             raise RuntimeError("journey bars must be strictly increasing")
 
         activity: float | None
@@ -260,17 +292,22 @@ class EventTimeAuctionJourney:
             and 0.0 <= bar.taker_buy_quote_volume <= bar.quote_volume
             else None
         )
-        self._bars.append(
-            TapeBar(
-                close_time_ns=bar.close_time_ns,
-                open=bar.open,
-                high=bar.high,
-                low=bar.low,
-                close=bar.close,
-                activity=activity,
-                signed_flow=signed_flow,
-            )
+        item = TapeBar(
+            close_time_ns=bar.close_time_ns,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            activity=activity,
+            signed_flow=signed_flow,
         )
+        if self._size < self._history_bars:
+            write_index = (self._start + self._size) % self._history_bars
+            self._size += 1
+        else:
+            write_index = self._start
+            self._start = (self._start + 1) % self._history_bars
+        self._buffer[write_index] = item
 
     @staticmethod
     def _known_median(values: Iterable[float | None]) -> float | None:
@@ -278,8 +315,9 @@ class EventTimeAuctionJourney:
         return float(median(known)) if known else None
 
     def _baseline(self, interaction_time_ns: int) -> tuple[float | None, float | None, float | None]:
-        prior = [bar for bar in self._bars if bar.close_time_ns < interaction_time_ns]
-        prior = prior[-self.BASELINE_BARS :]
+        end = self._bisect_time(interaction_time_ns)
+        start = max(0, end - self.BASELINE_BARS)
+        prior = [self._bar_at(index) for index in range(start, end)]
         if not prior:
             return None, None, None
         baseline_range = self._known_median(max(bar.high - bar.low, self.tick_size) for bar in prior)
@@ -454,18 +492,16 @@ class EventTimeAuctionJourney:
             raise ValueError("stop must be finite when provided")
         if target is not None and not math.isfinite(target):
             raise ValueError("target must be finite when provided")
-        if self._bars and interaction.interaction_time_ns < self._bars[0].close_time_ns:
+        if self._size and interaction.interaction_time_ns < self._bar_at(0).close_time_ns:
             return self._empty(
                 interaction,
                 observed_time_ns,
                 "HISTORY_UNAVAILABLE",
                 "the memory bound truncated the requested structure interaction",
             )
-        episode = [
-            bar
-            for bar in self._bars
-            if interaction.interaction_time_ns <= bar.close_time_ns <= observed_time_ns
-        ]
+        episode = list(
+            self.bars_between(interaction.interaction_time_ns, observed_time_ns)
+        )
         if not episode:
             return self._empty(
                 interaction,

@@ -1555,10 +1555,12 @@ class SymbolEpisodePolicy:
         return "SHORT" if source_side == "HIGH" else "LONG"
 
     def _episode_tape(self, watch: EpisodeWatch, observed_time_ns: int):
-        return [
-            item for item in self.journey.bars
-            if watch.interaction_time_ns <= item.close_time_ns <= observed_time_ns
-        ]
+        return list(
+            self.journey.bars_between(
+                watch.interaction_time_ns,
+                observed_time_ns,
+            )
+        )
 
     def _event_ownership(
         self,
@@ -2279,13 +2281,10 @@ class SymbolEpisodePolicy:
         ordering when both prices occur in one candle.
         """
 
-        for event_bar in self.journey.bars:
-            if not (
-                watch.interaction_time_ns
-                <= event_bar.close_time_ns
-                <= decision_time_ns
-            ):
-                continue
+        for event_bar in self.journey.bars_between(
+            watch.interaction_time_ns,
+            decision_time_ns,
+        ):
             target_touched = (
                 event_bar.high >= target
                 if watch.side == "LONG"

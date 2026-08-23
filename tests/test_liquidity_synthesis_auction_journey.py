@@ -362,3 +362,73 @@ def test_unresolved_observation_cannot_consume_structure_ownership() -> None:
     with pytest.raises(ValueError, match="completed journey"):
         registry.claim(interaction(), evidence, "PLAN:UNRESOLVED")
     assert registry.claims == ()
+
+
+def test_ring_time_slice_is_inclusive_and_chronological_after_wrap() -> None:
+    journey = EventTimeAuctionJourney("BTCUSDT", 0.1, history_bars=361)
+    observed = [
+        bar(
+            minute,
+            open_=99.0 + minute / 100.0,
+            high=99.2 + minute / 100.0,
+            low=98.8 + minute / 100.0,
+            close=99.1 + minute / 100.0,
+        )
+        for minute in range(400)
+    ]
+    for item in observed:
+        journey.observe(item)
+
+    assert tuple(item.close_time_ns for item in journey.bars) == tuple(
+        item.close_time_ns for item in observed[-361:]
+    )
+    selected = journey.bars_between(
+        observed[100].close_time_ns,
+        observed[103].close_time_ns,
+    )
+    assert tuple(item.close_time_ns for item in selected) == tuple(
+        item.close_time_ns for item in observed[100:104]
+    )
+    assert journey.bars_between(
+        observed[0].close_time_ns,
+        observed[20].close_time_ns,
+    ) == ()
+    selected = journey.bars_between(
+        observed[200].close_time_ns + 1,
+        observed[202].close_time_ns - 1,
+    )
+    assert tuple(item.close_time_ns for item in selected) == (
+        observed[201].close_time_ns,
+    )
+
+
+def test_ring_truncation_preserves_history_unavailable_contract() -> None:
+    journey = EventTimeAuctionJourney("BTCUSDT", 0.1, history_bars=361)
+    observed = [
+        bar(minute, open_=99.4, high=99.7, low=99.2, close=99.5)
+        for minute in range(400)
+    ]
+    for item in observed:
+        journey.observe(item)
+
+    truncated = StructureInteraction(
+        structure_id="PUBLIC:HIGH:TRUNCATED",
+        symbol="BTCUSDT",
+        source_side="HIGH",
+        lower=99.9,
+        upper=100.0,
+        interaction_time_ns=observed[38].close_time_ns,
+    )
+    at_oldest = replace(
+        truncated,
+        structure_id="PUBLIC:HIGH:OLDEST",
+        interaction_time_ns=observed[39].close_time_ns,
+    )
+
+    unavailable = journey.evaluate(truncated, observed[-1].close_time_ns)
+    available = journey.evaluate(at_oldest, observed[-1].close_time_ns)
+
+    assert unavailable.terminal_state == "HISTORY_UNAVAILABLE"
+    assert available.terminal_state != "HISTORY_UNAVAILABLE"
+    # The prior baseline is absent exactly as in the bounded-deque contract.
+    assert available.baseline_range is None
