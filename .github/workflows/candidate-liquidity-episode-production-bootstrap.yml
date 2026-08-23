@@ -1,0 +1,53 @@
+name: Bootstrap complete liquidity episode production source
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["candidate-liquidity-episode-policy-v1"]
+    paths:
+      - ".bootstrap/episode-policy/**"
+      - ".github/workflows/candidate-liquidity-episode-production-bootstrap.yml"
+
+concurrency:
+  group: episode-policy-production-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  restore-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Reconstruct and verify the source archive
+        run: |
+          set -euo pipefail
+          cat .bootstrap/episode-policy/source.b64.* > /tmp/episode-policy-source.b64
+          base64 --decode /tmp/episode-policy-source.b64 > /tmp/episode-policy-source.tar.gz
+          expected=$(cat .bootstrap/episode-policy/archive.sha256)
+          actual=$(sha256sum /tmp/episode-policy-source.tar.gz | awk '{print $1}')
+          test "$actual" = "$expected"
+          tar -tzf /tmp/episode-policy-source.tar.gz >/tmp/archive-files.txt
+          grep -q '^src/smc_ict_4/episode_policy_live/live.py$' /tmp/archive-files.txt
+          grep -q '^tests/test_episode_policy_core.py$' /tmp/archive-files.txt
+      - name: Materialize the complete system on this branch
+        run: |
+          set -euo pipefail
+          tar -xzf /tmp/episode-policy-source.tar.gz -C .
+          rm -rf .bootstrap/episode-policy
+          rm -f .github/workflows/candidate-liquidity-episode-production-bootstrap.yml
+          PYTHONPATH=src python -m compileall -q src tests
+          PYTHONPATH=src python -m unittest discover -s tests -p 'test_episode_policy_core.py' -v
+          PYTHONPATH=src python -m smc_ict_4.episode_policy_live.cli verify \
+            --state artifacts/bootstrap/state.sqlite \
+            --output artifacts/bootstrap/verify.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Build complete liquidity episode production system"
+          git push origin HEAD:candidate-liquidity-episode-policy-v1
