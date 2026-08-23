@@ -4,8 +4,11 @@ The quantity contract is deliberately simple: planned entry-to-stop price loss
 is approximately 3% of current marked equity.  Fees, stop slippage and gaps are
 real economic losses on top of that structural risk; they are estimated and
 retained as evidence, but never smuggled into the denominator to shrink size.
-The function also never clips to quantity, notional, leverage or margin limits.
-An infeasible exact-risk quantity is rejected with an explicit reason.
+The resulting notional divided by NAV is the position's actual (effective)
+leverage.  Binance's integer ``initialLeverage`` is a separate margin setting:
+we use the smallest integer ceiling which can carry that notional.  The
+function never clips to quantity, notional, leverage or margin limits.  An
+infeasible exact-risk quantity is rejected with an explicit reason.
 """
 from __future__ import annotations
 
@@ -33,8 +36,6 @@ class SizingRejectionReason(str, Enum):
     MAX_NOTIONAL = "MAX_NOTIONAL"
     PRICE_BOUNDS = "PRICE_BOUNDS"
     RISK_TOLERANCE = "RISK_TOLERANCE"
-    MAX_LEVERAGE = "MAX_LEVERAGE"
-    INSUFFICIENT_FREE_MARGIN = "INSUFFICIENT_FREE_MARGIN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +53,6 @@ class SizingAccepted:
     adverse_stop_fill_price: Price
     notional: Money
     nav: Decimal
-    free_margin: Decimal
     structural_risk_budget: Decimal
     planned_structural_stop_loss: Decimal
     planned_structural_risk_fraction: Decimal
@@ -62,8 +62,7 @@ class SizingAccepted:
     estimated_all_in_stop_loss: Decimal
     estimated_all_in_risk_fraction: Decimal
     effective_leverage: Decimal
-    account_leverage: Decimal
-    initial_margin_required: Decimal
+    required_exchange_leverage: int
     entry_fee_rate: Decimal
     stop_fee_rate: Decimal
     accepted: bool = field(default=True, init=False)
@@ -89,6 +88,33 @@ def _round_increment(value: Decimal, increment: Decimal, rounding: str) -> Decim
     return units * increment
 
 
+def integer_exchange_leverage_ceiling(effective_leverage: Decimal | float | str) -> int:
+    """Return Binance's minimum integer margin setting for an exposure.
+
+    This must never be reported as the economic leverage of the trade.  The
+    economic value remains the unrounded ``notional / NAV`` ratio.
+    """
+
+    value = _decimal(effective_leverage)
+    if value <= 0 or not value.is_finite():
+        raise ValueError("effective_leverage must be finite and positive")
+    return max(1, int(value.to_integral_value(rounding=ROUND_CEILING)))
+
+
+def nautilus_account_leverage(effective_leverage: Decimal | float | str) -> Decimal:
+    """Return the exact leverage applied to a Nautilus ``MarginAccount``.
+
+    Nautilus accepts decimal leverage, unlike Binance's integer transport
+    setting.  Exposure below 1x remains economically unleveraged and uses the
+    API's minimum valid account setting of 1x.
+    """
+
+    value = _decimal(effective_leverage)
+    if value <= 0 or not value.is_finite():
+        raise ValueError("effective_leverage must be finite and positive")
+    return max(Decimal(1), value)
+
+
 def size_three_percent_stop_risk(
     instrument: Instrument,
     *,
@@ -96,9 +122,6 @@ def size_three_percent_stop_risk(
     entry: Decimal | Price | float | str,
     stop: Decimal | Price | float | str,
     nav: Decimal | Money | float | str,
-    free_margin: Decimal | Money | float | str,
-    max_leverage: Decimal | float | str = Decimal("20"),
-    account_leverage: Decimal | float | str | None = None,
     entry_post_only_guaranteed: bool = False,
     risk_fraction: Decimal = THREE_PERCENT,
     risk_tolerance: Decimal = DEFAULT_RISK_TOLERANCE,
@@ -107,13 +130,14 @@ def size_three_percent_stop_risk(
 ) -> SizingResult:
     """Return the exact native quantity or a structured rejection.
 
-    ``nav`` is current mark-to-market account equity. ``free_margin`` is only a
-    feasibility constraint; it never replaces NAV as the risk base. ``entry``
-    is the policy's planned entry price, not a market-order/IOC worst-price
-    guard.  Quantity is based only on the native planned entry-to-stop-trigger
-    distance. Entry fees are taker fees unless the caller guarantees a post-only
-    entry. This function supports the linear USD-M instruments used by the
-    episode policy; inverse contracts are rejected rather than approximated.
+    ``nav`` is current mark-to-market account equity. ``entry`` is the policy's
+    planned entry price, not a market-order/IOC worst-price guard. Quantity is
+    based only on the native planned entry-to-stop-trigger distance.  Margin
+    availability and venue leverage brackets belong to execution transport,
+    not sizing. Entry fees are taker fees unless the caller guarantees a
+    post-only entry. This function supports the linear USD-M instruments used
+    by the episode policy; inverse contracts are rejected rather than
+    approximated.
     """
 
     try:
@@ -130,20 +154,17 @@ def size_three_percent_stop_risk(
             )
 
         settlement_currency = instrument.settlement_currency or instrument.quote_currency
-        for label, amount in {"nav": nav, "free_margin": free_margin}.items():
-            if isinstance(amount, Money) and amount.currency != settlement_currency:
-                return _reject(
-                    SizingRejectionReason.INVALID_INPUT,
-                    field=label,
-                    currency=amount.currency,
-                    expected_currency=settlement_currency,
-                )
+        if isinstance(nav, Money) and nav.currency != settlement_currency:
+            return _reject(
+                SizingRejectionReason.INVALID_INPUT,
+                field="nav",
+                currency=nav.currency,
+                expected_currency=settlement_currency,
+            )
 
         entry_value = _decimal(entry)
         stop_value = _decimal(stop)
         nav_value = _decimal(nav)
-        free_margin_value = _decimal(free_margin)
-        max_leverage_value = _decimal(max_leverage)
         risk_fraction = _decimal(risk_fraction)
         risk_tolerance = _decimal(risk_tolerance)
         stop_slippage_bps = _decimal(stop_slippage_bps)
@@ -151,20 +172,10 @@ def size_three_percent_stop_risk(
         quantity_step = instrument.size_increment.as_decimal()
         multiplier = instrument.multiplier.as_decimal()
 
-        if account_leverage is None:
-            margin_init = _decimal(instrument.margin_init)
-            account_leverage_value = (
-                Decimal(1) / margin_init if margin_init > 0 else max_leverage_value
-            )
-        else:
-            account_leverage_value = _decimal(account_leverage)
-
         positive_values = {
             "entry": entry_value,
             "stop": stop_value,
             "nav": nav_value,
-            "max_leverage": max_leverage_value,
-            "account_leverage": account_leverage_value,
             "risk_fraction": risk_fraction,
             "tick": tick,
             "quantity_step": quantity_step,
@@ -173,12 +184,6 @@ def size_three_percent_stop_risk(
         for name, value in positive_values.items():
             if value <= 0 or not value.is_finite():
                 return _reject(SizingRejectionReason.INVALID_INPUT, field=name, value=value)
-        if free_margin_value < 0 or not free_margin_value.is_finite():
-            return _reject(
-                SizingRejectionReason.INVALID_INPUT,
-                field="free_margin",
-                value=free_margin_value,
-            )
         if risk_tolerance < 0 or not risk_tolerance.is_finite():
             return _reject(
                 SizingRejectionReason.INVALID_INPUT,
@@ -187,14 +192,6 @@ def size_three_percent_stop_risk(
             )
         if stop_slippage_ticks < 0 or stop_slippage_bps < 0:
             return _reject(SizingRejectionReason.INVALID_INPUT, field="stop_slippage")
-        if account_leverage_value > max_leverage_value:
-            return _reject(
-                SizingRejectionReason.INVALID_INPUT,
-                field="account_leverage",
-                value=account_leverage_value,
-                max_leverage=max_leverage_value,
-            )
-
         entry_rounded = _round_increment(entry_value, tick, ROUND_HALF_UP)
         if side == "LONG":
             stop_trigger = _round_increment(stop_value, tick, ROUND_FLOOR)
@@ -352,25 +349,7 @@ def size_three_percent_stop_risk(
             )
 
         effective_leverage = notional_value / nav_value
-        if effective_leverage > max_leverage_value:
-            return _reject(
-                SizingRejectionReason.MAX_LEVERAGE,
-                effective_leverage=effective_leverage,
-                maximum=max_leverage_value,
-                quantity=quantity,
-            )
-
-        # Nautilus MarginAccount.balance_impact uses notional/account leverage.
-        # This preflight mirrors that free-balance check without mutating account
-        # state or silently reducing the requested risk quantity.
-        initial_margin_required = notional_value / account_leverage_value
-        if initial_margin_required > free_margin_value:
-            return _reject(
-                SizingRejectionReason.INSUFFICIENT_FREE_MARGIN,
-                required=initial_margin_required,
-                available=free_margin_value,
-                quantity=quantity,
-            )
+        required_exchange_leverage = integer_exchange_leverage_ceiling(effective_leverage)
 
         return SizingAccepted(
             quantity=quantity,
@@ -379,7 +358,6 @@ def size_three_percent_stop_risk(
             adverse_stop_fill_price=adverse_stop_fill_price,
             notional=notional,
             nav=nav_value,
-            free_margin=free_margin_value,
             structural_risk_budget=structural_risk_budget,
             planned_structural_stop_loss=planned_structural_stop_loss,
             planned_structural_risk_fraction=planned_structural_risk_fraction,
@@ -389,8 +367,7 @@ def size_three_percent_stop_risk(
             estimated_all_in_stop_loss=estimated_all_in_stop_loss,
             estimated_all_in_risk_fraction=estimated_all_in_risk_fraction,
             effective_leverage=effective_leverage,
-            account_leverage=account_leverage_value,
-            initial_margin_required=initial_margin_required,
+            required_exchange_leverage=required_exchange_leverage,
             entry_fee_rate=entry_fee_rate,
             stop_fee_rate=stop_fee_rate,
         )

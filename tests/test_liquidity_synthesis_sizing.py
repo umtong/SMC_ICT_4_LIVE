@@ -12,6 +12,7 @@ from smc_ict_4.episode_policy_live.sizing import (
     SizingAccepted,
     SizingRejected,
     SizingRejectionReason,
+    nautilus_account_leverage,
     size_three_percent_stop_risk,
 )
 
@@ -65,9 +66,6 @@ def test_all_four_native_quantity_steps_land_near_three_percent(symbol: str, ent
         entry=entry_value,
         stop=entry_value * Decimal("0.99"),
         nav=Decimal("100000"),
-        free_margin=Decimal("100000"),
-        account_leverage=Decimal("20"),
-        max_leverage=Decimal("20"),
     )
 
     assert isinstance(result, SizingAccepted), result
@@ -85,9 +83,6 @@ def test_stop_distance_derives_effective_leverage_from_whole_nav() -> None:
         "side": "LONG",
         "entry": Decimal("100000"),
         "nav": Decimal("100000"),
-        "free_margin": Decimal("100000"),
-        "account_leverage": Decimal("20"),
-        "max_leverage": Decimal("20"),
     }
     narrow = size_three_percent_stop_risk(stop=Decimal("99500"), **common)
     wide = size_three_percent_stop_risk(stop=Decimal("98000"), **common)
@@ -96,7 +91,36 @@ def test_stop_distance_derives_effective_leverage_from_whole_nav() -> None:
     assert isinstance(wide, SizingAccepted)
     assert Decimal("5.9") < narrow.effective_leverage < Decimal("6.1")
     assert Decimal("1.3") < wide.effective_leverage < Decimal("1.6")
+    assert narrow.required_exchange_leverage == 6
+    assert wide.required_exchange_leverage == 2
+    narrow_account_leverage = nautilus_account_leverage(narrow.effective_leverage)
+    wide_account_leverage = nautilus_account_leverage(wide.effective_leverage)
+    assert narrow_account_leverage == Decimal("6.000")
+    assert wide_account_leverage == Decimal("1.50000")
+    assert narrow.notional.as_decimal() / narrow_account_leverage == Decimal("100000")
+    assert wide.notional.as_decimal() / wide_account_leverage == Decimal("100000")
     assert narrow.nav == wide.nav == Decimal("100000")
+
+
+@pytest.mark.parametrize(
+    ("stop", "expected_fraction"),
+    (("99.01", "0.0297"), ("98.99", "0.0303")),
+)
+def test_native_quantity_rounding_near_three_percent_is_not_overfit(
+    stop: str,
+    expected_fraction: str,
+) -> None:
+    result = size_three_percent_stop_risk(
+        _custom_instrument(size_increment="1", min_quantity="1"),
+        side="LONG",
+        entry=Decimal("100"),
+        stop=Decimal(stop),
+        nav=Decimal("100"),
+    )
+
+    assert isinstance(result, SizingAccepted)
+    assert result.quantity.as_decimal() == Decimal("3")
+    assert result.planned_structural_risk_fraction == Decimal(expected_fraction)
 
 
 def test_costs_and_adverse_stop_are_evidence_on_top_of_structural_three_percent() -> None:
@@ -105,9 +129,6 @@ def test_costs_and_adverse_stop_are_evidence_on_top_of_structural_three_percent(
         "instrument": instrument,
         "entry": Decimal("100000"),
         "nav": Decimal("100000"),
-        "free_margin": Decimal("100000"),
-        "account_leverage": Decimal("20"),
-        "max_leverage": Decimal("20"),
     }
     long = size_three_percent_stop_risk(side="LONG", stop=Decimal("99500.07"), **common)
     short = size_three_percent_stop_risk(side="SHORT", stop=Decimal("100500.03"), **common)
@@ -152,9 +173,6 @@ def test_fee_and_stop_slippage_assumptions_never_change_structural_quantity() ->
         "entry": Decimal("5000"),
         "stop": Decimal("4950"),
         "nav": Decimal("100000"),
-        "free_margin": Decimal("100000"),
-        "account_leverage": Decimal("20"),
-        "max_leverage": Decimal("20"),
     }
     ordinary = size_three_percent_stop_risk(**common)
     extreme_cost_evidence = size_three_percent_stop_risk(
@@ -206,9 +224,6 @@ def test_exchange_limits_reject_without_clipping(
     result = size_three_percent_stop_risk(
         instrument,
         side="LONG",
-        free_margin=Decimal("100000"),
-        account_leverage=Decimal("20"),
-        max_leverage=Decimal("20"),
         **kwargs,
     )
 
@@ -216,7 +231,7 @@ def test_exchange_limits_reject_without_clipping(
     assert result.reason is reason
 
 
-def test_unrepresentable_risk_leverage_and_margin_are_explicit_rejections() -> None:
+def test_unrepresentable_risk_is_rejected_but_leverage_is_not_an_alpha_cap() -> None:
     coarse = _custom_instrument(size_increment="1", min_quantity="1")
     risk_error = size_three_percent_stop_risk(
         coarse,
@@ -224,9 +239,6 @@ def test_unrepresentable_risk_leverage_and_margin_are_explicit_rejections() -> N
         entry=Decimal("1"),
         stop=Decimal("0.50"),
         nav=Decimal("10"),
-        free_margin=Decimal("10"),
-        account_leverage=Decimal("20"),
-        max_leverage=Decimal("20"),
     )
     high_leverage = size_three_percent_stop_risk(
         make_binance_usdm_instruments()["BTCUSDT"],
@@ -234,52 +246,25 @@ def test_unrepresentable_risk_leverage_and_margin_are_explicit_rejections() -> N
         entry=Decimal("100000"),
         stop=Decimal("99990"),
         nav=Decimal("100000"),
-        free_margin=Decimal("100000"),
-        account_leverage=Decimal("2"),
-        max_leverage=Decimal("2"),
-    )
-    no_margin = size_three_percent_stop_risk(
-        make_binance_usdm_instruments()["BTCUSDT"],
-        side="LONG",
-        entry=Decimal("100000"),
-        stop=Decimal("99500"),
-        nav=Decimal("100000"),
-        free_margin=Decimal("100"),
-        account_leverage=Decimal("20"),
-        max_leverage=Decimal("20"),
     )
 
     assert isinstance(risk_error, SizingRejected)
     assert risk_error.reason is SizingRejectionReason.RISK_TOLERANCE
-    assert isinstance(high_leverage, SizingRejected)
-    assert high_leverage.reason is SizingRejectionReason.MAX_LEVERAGE
-    assert isinstance(no_margin, SizingRejected)
-    assert no_margin.reason is SizingRejectionReason.INSUFFICIENT_FREE_MARGIN
+    assert isinstance(high_leverage, SizingAccepted)
+    assert high_leverage.effective_leverage == Decimal("300.000")
+    assert high_leverage.required_exchange_leverage == 300
 
 
-def test_zero_margin_and_wrong_nav_currency_fail_closed() -> None:
+def test_wrong_nav_currency_fails_closed() -> None:
     instrument = make_binance_usdm_instruments()["BTCUSDT"]
-    zero_margin = size_three_percent_stop_risk(
-        instrument,
-        side="LONG",
-        entry=Decimal("100000"),
-        stop=Decimal("99500"),
-        nav=Decimal("100000"),
-        free_margin=Decimal("0"),
-        account_leverage=Decimal("20"),
-    )
     wrong_currency = size_three_percent_stop_risk(
         instrument,
         side="LONG",
         entry=Decimal("100000"),
         stop=Decimal("99500"),
         nav=Money(Decimal("100000"), Currency.from_str("USD")),
-        free_margin=Decimal("100000"),
-        account_leverage=Decimal("20"),
     )
 
-    assert isinstance(zero_margin, SizingRejected)
-    assert zero_margin.reason is SizingRejectionReason.INSUFFICIENT_FREE_MARGIN
     assert isinstance(wrong_currency, SizingRejected)
     assert wrong_currency.reason is SizingRejectionReason.INVALID_INPUT
     assert wrong_currency.details["field"] == "nav"

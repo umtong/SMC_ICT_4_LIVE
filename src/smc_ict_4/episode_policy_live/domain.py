@@ -36,12 +36,11 @@ class ContractSpec:
     quantity_step: Decimal
     min_quantity: Decimal
     min_notional: Decimal
-    max_leverage: Decimal = Decimal("20")
 
     def __post_init__(self) -> None:
         if self.symbol not in SYMBOLS:
             raise PolicyError(f"unsupported symbol: {self.symbol}")
-        for name in ("tick_size", "quantity_step", "min_quantity", "min_notional", "max_leverage"):
+        for name in ("tick_size", "quantity_step", "min_quantity", "min_notional"):
             if getattr(self, name) <= 0:
                 raise PolicyError(f"{name} must be positive")
 

@@ -164,7 +164,10 @@ def make_binance_usdm_instruments(
             min_quantity=Quantity.from_str(str(contract.min_quantity)),
             min_notional=Money(contract.min_notional, usdt),
             min_price=Price.from_str(str(contract.tick_size)),
-            margin_init=Decimal(1) / contract.max_leverage,
+            # Position-specific leverage is applied to the MarginAccount when
+            # a plan is sized.  Keep the instrument fallback unleveraged so a
+            # fixed 20x metadata value cannot silently drive account margin.
+            margin_init=Decimal(1),
             maker_fee=maker_fee,
             taker_fee=taker_fee,
             ts_event=0,

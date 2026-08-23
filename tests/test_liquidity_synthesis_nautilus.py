@@ -1058,6 +1058,11 @@ def test_acceptance_first_response_is_bounded_ioc_not_later_return(tmp_path: Pat
     assert float(sizing["quantity"]) == 7500.0
     assert float(sizing["planned_structural_stop_loss"]) == 3000.0
     assert float(sizing["estimated_all_in_stop_loss"]) > 3000.0
+    assert float(sizing["effective_leverage"]) == 1.515
+    assert float(sizing["execution_bound_effective_leverage"]) == 1.5225
+    assert float(sizing["account_margin_leverage"]) == 1.5225
+    assert int(sizing["required_exchange_leverage"]) == 2
+    assert float(str(sizing["initial_margin_required"]).split()[0]) == 100000.0
     assert float(parent_event["sizing"]["native_gross_rr"]) >= 1.0
     ledger, diagnostics = build_closed_trade_ledger(
         result.positions,

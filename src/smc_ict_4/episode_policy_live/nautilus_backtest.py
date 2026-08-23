@@ -228,7 +228,10 @@ def make_binance_perpetuals() -> dict[str, CryptoPerpetual]:
             size_increment=Quantity.from_str(str(contract.quantity_step)),
             min_quantity=Quantity.from_str(str(contract.min_quantity)),
             min_notional=Money(contract.min_notional, USDT),
-            margin_init=Decimal("0.05"),
+            # MarginAccount leverage is set per submitted plan from its exact
+            # notional/NAV exposure.  A unit instrument margin prevents a
+            # second hidden 20x multiplier in Nautilus margin calculation.
+            margin_init=Decimal("1"),
             margin_maint=Decimal("0.025"),
             maker_fee=Decimal("0.0002"),
             taker_fee=Decimal("0.0005"),
@@ -383,7 +386,8 @@ def build_native_backtest(
         account_type=AccountType.MARGIN,
         starting_balances=[Money(initial_nav, USDT)],
         base_currency=USDT,
-        default_leverage=Decimal("20"),
+        # Every submitted parent sets its quantity-derived integer leverage.
+        default_leverage=Decimal("1"),
         fill_model=FillModel(prob_fill_on_limit=1.0, prob_slippage=1.0, random_seed=73),
         fee_model=MakerTakerFeeModel(),
         reject_stop_orders=reject_stop_orders,
@@ -467,7 +471,8 @@ def build_streaming_native_backtest(
         account_type=AccountType.MARGIN,
         starting_balances=[Money(initial_nav, USDT)],
         base_currency=USDT,
-        default_leverage=Decimal("20"),
+        # Every submitted parent sets its quantity-derived integer leverage.
+        default_leverage=Decimal("1"),
         fill_model=FillModel(prob_fill_on_limit=1.0, prob_slippage=1.0, random_seed=73),
         fee_model=MakerTakerFeeModel(),
         reject_stop_orders=reject_stop_orders,

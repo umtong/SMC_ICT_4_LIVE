@@ -30,7 +30,12 @@ from .live_inventory import (
     LiveInventoryPollResult,
 )
 from .policy import LiquidityEpisodeCoordinator, PolicyConfig, SymbolEpisodePolicy
-from .sizing import SizingAccepted, size_three_percent_stop_risk
+from .sizing import (
+    SizingAccepted,
+    integer_exchange_leverage_ceiling,
+    nautilus_account_leverage,
+    size_three_percent_stop_risk,
+)
 from .storage import StateStore
 
 
@@ -1300,7 +1305,6 @@ if NT is not None:
                         "missing_price_instruments": [str(item) for item in missing_prices],
                     },
                 )
-            account_leverage = account.leverage(instrument.id) or account.default_leverage
             immediate_acceptance = self._is_immediate_acceptance(plan)
             planned_entry = Decimal(str(plan.entry))
             execution_limit = planned_entry
@@ -1326,9 +1330,6 @@ if NT is not None:
                 entry=planned_entry,
                 stop=plan.stop,
                 nav=nav,
-                free_margin=free_margin,
-                max_leverage=DEFAULT_CONTRACTS[plan.symbol].max_leverage,
-                account_leverage=account_leverage,
                 # The parent is not declared post-only, so a marketable limit
                 # is risked at the taker rate rather than credited as maker.
                 entry_post_only_guaranteed=False,
@@ -1379,18 +1380,19 @@ if NT is not None:
                 execution_limit_price,
             )
             execution_effective_leverage = execution_notional.as_decimal() / sizing.nav
-            contract_max_leverage = DEFAULT_CONTRACTS[plan.symbol].max_leverage
-            if execution_effective_leverage > contract_max_leverage:
-                return self._terminal_reject_plan(
-                    plan,
-                    reason="EXECUTION_BOUND_MAX_LEVERAGE",
-                    event_type="PLAN_REJECTED_SIZING",
-                    details={
-                        "effective_leverage": str(execution_effective_leverage),
-                        "maximum": str(contract_max_leverage),
-                        "execution_limit_price": str(execution_limit_price),
-                    },
-                )
+            required_exchange_leverage = integer_exchange_leverage_ceiling(
+                execution_effective_leverage,
+            )
+            account_margin_leverage = nautilus_account_leverage(
+                execution_effective_leverage,
+            )
+            # Quantity creates the actual exposure.  The account leverage is
+            # set to that exact decimal exposure (Nautilus accepts decimals).
+            # Binance's separate integer ceiling is transport evidence only.
+            account.set_leverage(
+                instrument.id,
+                account_margin_leverage,
+            )
             native_margin = account.calculate_margin_init(
                 instrument,
                 sizing.quantity,
@@ -1453,6 +1455,8 @@ if NT is not None:
                 ),
                 "effective_leverage": str(sizing.effective_leverage),
                 "execution_bound_effective_leverage": str(execution_effective_leverage),
+                "account_margin_leverage": str(account_margin_leverage),
+                "required_exchange_leverage": str(required_exchange_leverage),
                 "initial_margin_required": str(native_margin),
             }
             order_id = str(order.client_order_id)
@@ -2368,7 +2372,9 @@ def build_node(
                 venue=str(BINANCE),
                 account_type="MARGIN",
                 starting_balances=[f"{initial_nav:.2f} USDT"],
-                default_leverage=Decimal(20),
+                # Parent submission replaces this with the exact exposure's
+                # minimum integer margin leverage before calculating margin.
+                default_leverage=Decimal(1),
             )
         }
         exec_factory = NT["SandboxLiveExecClientFactory"]

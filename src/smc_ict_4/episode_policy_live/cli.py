@@ -35,7 +35,6 @@ def command_verify(args: argparse.Namespace) -> int:
                 "quantity_step": str(contract.quantity_step),
                 "min_quantity": str(contract.min_quantity),
                 "min_notional": str(contract.min_notional),
-                "max_leverage": str(contract.max_leverage),
             }
             for symbol, contract in DEFAULT_CONTRACTS.items()
         },
