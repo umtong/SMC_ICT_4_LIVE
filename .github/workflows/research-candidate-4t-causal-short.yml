@@ -1,0 +1,135 @@
+name: research-candidate-4t-causal-short
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-causal-short.yml'
+      - 'research/candidate-4t-sequential-control-v1/**'
+      - '.dispatch-candidate-4t-causal-short'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-4t-causal-short
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: fresh-2026-jul, start: 2026-07-01, end: 2026-07-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-4t-sequential-control-v1:research/candidate-2c-synthesis:research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/candidate-4t/${{ matrix.period }}
+      OUT: artifacts/candidate-4t/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4t
+      - name: Harvest immutable causal episode actions
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-4t-sequential-control-v1/candidate_4t_harvest.py \
+            research/candidate-4t-sequential-control-v1/candidate_4t_policy.py
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-4t-sequential-control-v1/candidate_4t_harvest.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-${{ matrix.role }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-4t/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4t
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install transparent policy runtime
+        run: python -m pip install --disable-pip-version-check 'numpy>=2.0,<3' 'pandas>=2.2,<3'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-4t-dev-*
+          path: artifacts/candidate-4t/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-4t-fresh-*
+          path: artifacts/candidate-4t/fresh
+      - name: Self-check and route one continuous account
+        env:
+          PYTHONPATH: research/candidate-4t-sequential-control-v1
+        run: |
+          set -euo pipefail
+          python research/candidate-4t-sequential-control-v1/self_check.py
+          rm -rf artifacts/candidate-4t/result
+          python research/candidate-4t-sequential-control-v1/candidate_4t_policy.py \
+            --development-root artifacts/candidate-4t/development \
+            --fresh-root artifacts/candidate-4t/fresh \
+            --output artifacts/candidate-4t/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-causal-short-result-${{ github.sha }}
+          path: artifacts/candidate-4t/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Record reproducible research evidence
+        run: |
+          set -euo pipefail
+          destination=research_results/candidate_4t/causal_short
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp artifacts/candidate-4t/result/RESULT.md "$destination/"
+          cp artifacts/candidate-4t/result/summary.json "$destination/"
+          cp artifacts/candidate-4t/result/model_manifest.json "$destination/"
+          for file in \
+            development_orders.csv development_trades.csv development_replacements.csv \
+            development_loss_clinic.csv development_missed_opportunity_clinic.csv \
+            fresh_orders.csv fresh_trades.csv fresh_replacements.csv \
+            fresh_loss_clinic.csv fresh_missed_opportunity_clinic.csv; do
+            if [[ -f "artifacts/candidate-4t/result/$file" ]]; then
+              cp "artifacts/candidate-4t/result/$file" "$destination/$file"
+            fi
+          done
+          printf '%s\n' "source_commit=${GITHUB_SHA}" "source_run=${GITHUB_RUN_ID}" > "$destination/source.txt"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$destination"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record candidate 4t causal short research ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
