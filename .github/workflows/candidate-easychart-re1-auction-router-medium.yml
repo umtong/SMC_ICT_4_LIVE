@@ -1,0 +1,59 @@
+name: candidate-easychart-re1-auction-router-medium
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.auction_router_medium_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-auction-router-medium
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  medium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-auction-router/medium-2024-autumn
+      OUT: artifacts/candidate-easychart-re1-auction-router/medium-2024-autumn
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile integrated policy
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_local_auction_continuation.py \
+            research/candidate-easychart_re1/easychart_re1_local_auction_continuation_v2.py \
+            research/candidate-easychart_re1/easychart_re1_horizontal_flip_response.py \
+            research/candidate-easychart_re1/easychart_re1_macro_acceptance.py \
+            research/candidate-easychart_re1/easychart_re1_auction_router.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_auction_router.py
+      - name: Run fresh three-month four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_auction_router.py \
+            --start 2024-09-01 \
+            --end 2024-11-30 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-auction-router-medium-2024-autumn-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-auction-router/medium-2024-autumn/**
+          if-no-files-found: warn
+          retention-days: 30

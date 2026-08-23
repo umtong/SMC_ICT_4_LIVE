@@ -1,0 +1,100 @@
+name: Candidate liquidity episode connected shadow
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["production-candidate-liquidity-episode-policy-v1"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-connected-shadow.yml"
+      - "research/candidate-liquidity-episode-policy-v1/production/**"
+      - "research/candidate-liquidity-episode-policy-v1/configs/shadow.ci.json"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-connected-shadow.yml"
+      - "research/candidate-liquidity-episode-policy-v1/production/**"
+      - "research/candidate-liquidity-episode-policy-v1/configs/shadow.ci.json"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: episode-connected-shadow-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  two-process-public-shadow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install production dependencies
+        run: |
+          uv pip install --python "$VIRTUAL_ENV/bin/python" \
+            --requirement research/candidate-liquidity-episode-policy-v1/production-requirements.txt
+      - name: Verify no execution credentials are loaded
+        run: |
+          test -z "${BINANCE_API_KEY:-}"
+          test -z "${BINANCE_API_SECRET:-}"
+      - name: First connected shadow process
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          mkdir -p connected-shadow
+          unset BINANCE_API_KEY BINANCE_API_SECRET
+          python -m production.cli shadow \
+            --config configs/shadow.ci.json \
+            --duration-seconds 60 \
+            2>&1 | tee connected-shadow/phase-1.log
+          cp runtime/ci-shadow/evidence/runtime_status.json connected-shadow/phase-1-status.json
+      - name: Second process restart from the same durable state
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          unset BINANCE_API_KEY BINANCE_API_SECRET
+          python -m production.cli shadow \
+            --config configs/shadow.ci.json \
+            --duration-seconds 60 \
+            2>&1 | tee connected-shadow/phase-2.log
+          cp runtime/ci-shadow/evidence/runtime_status.json connected-shadow/phase-2-status.json
+      - name: Reconcile and verify physical no-order boundary
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          python -m production.cli reconcile \
+            --database runtime/ci-shadow/runtime.sqlite3 \
+            --output connected-shadow/reconciliation.json
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          db = Path('runtime/ci-shadow/runtime.sqlite3')
+          con = sqlite3.connect(db)
+          starts = con.execute("SELECT COUNT(*) FROM events WHERE event_type='PRODUCER_STARTED'").fetchone()[0]
+          forbidden = con.execute("SELECT COUNT(*) FROM events WHERE event_type LIKE 'ORDER_%' OR event_type LIKE 'NAUTILUS_%'").fetchone()[0]
+          statuses = dict(con.execute("SELECT status, COUNT(*) FROM decisions GROUP BY status"))
+          payload = {'producer_starts': starts, 'forbidden_order_events': forbidden, 'decision_statuses': statuses}
+          if starts < 2:
+              raise SystemExit(f'two independent producer starts were not observed: {payload}')
+          if forbidden:
+              raise SystemExit(f'shadow produced order-capable events: {payload}')
+          if any(key not in {'OBSERVED'} for key in statuses):
+              raise SystemExit(f'shadow decision escaped OBSERVED state: {payload}')
+          Path('connected-shadow/no-order-proof.json').write_text(json.dumps(payload, indent=2) + '\n')
+          PY
+          cp runtime/ci-shadow/runtime.sqlite3 connected-shadow/runtime.sqlite3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: episode-connected-shadow-${{ github.event.pull_request.head.sha || github.sha }}
+          path: research/candidate-liquidity-episode-policy-v1/connected-shadow/**
+          if-no-files-found: error
+          retention-days: 30

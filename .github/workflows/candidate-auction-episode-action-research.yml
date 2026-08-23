@@ -1,0 +1,117 @@
+name: candidate-auction-episode-action-research
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-auction-episode-policy/.action_universe_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-auction-episode-action-research
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-episode-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal auction research
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-auction-episode-policy/auction_episode_research.py \
+            research/candidate-auction-episode-policy/run_auction_episode_research.py \
+            research/candidate-auction-episode-policy/self_check_auction_episode.py
+          python research/candidate-auction-episode-policy/self_check_auction_episode.py
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-auction-episode-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-auction-episode-policy/${{ matrix.period }}
+      OUT: artifacts/candidate-auction-episode-policy/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enumerate causal actions and conditional fills
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-auction-episode-policy/run_auction_episode_research.py \
+            --start "$START" \
+            --end "$END" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Verify immutable decision and label separation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          path = Path(os.environ["OUT"]) / "auction_actions.csv"
+          frame = pd.read_csv(path)
+          if frame.empty:
+              raise RuntimeError("auction universe emitted no actions")
+          if frame["action_id"].duplicated().any():
+              raise RuntimeError("duplicate action identity")
+          filled = frame[frame["fill_state"].astype(str).str.startswith("FILLED")]
+          if not filled.empty:
+              if not (pd.to_numeric(filled["fill_time_ns"]) > pd.to_numeric(filled["emission_time_ns"])).all():
+                  raise RuntimeError("entry filled before or at action emission")
+          feature_names = {
+              column for column in frame.columns
+              if column.startswith(("approach_", "reclaim_", "break_", "hold_", "decision_", "retest_", "episode_"))
+          }
+          forbidden = {name for name in feature_names if any(token in name for token in ("outcome", "net_r", "mfe", "mae", "resolution", "fill_time"))}
+          if forbidden:
+              raise RuntimeError(f"future label fields entered feature namespace: {sorted(forbidden)}")
+          print({"actions": len(frame), "filled": len(filled), "feature_fields": len(feature_names)})
+          PY
+      - name: Preserve causal action universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auction-episode-actions-${{ matrix.period }}
+          path: artifacts/candidate-auction-episode-policy/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30

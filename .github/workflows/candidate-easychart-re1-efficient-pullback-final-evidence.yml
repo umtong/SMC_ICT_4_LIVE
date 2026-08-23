@@ -1,0 +1,142 @@
+name: candidate-easychart-re1-efficient-pullback-final-evidence
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.efficient_pullback_final_evidence_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-efficient-pullback-final-evidence
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: research/candidate-easychart_re1
+      SOURCE_WORKFLOW: candidate-easychart-re1-efficient-pullback-final-research.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+
+      - name: Wait for final strategy runs and download NautilusTrader evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .efficient-pullback-final-evidence
+          mkdir -p .efficient-pullback-final-evidence
+          run_id=""
+          for attempt in $(seq 1 240); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$SOURCE_WORKFLOW" --branch "$BRANCH" --limit 1 --json databaseId,status,conclusion --jq '.[0] // {}')"
+            run_id="$(python -c 'import json,sys; print(json.load(sys.stdin).get("databaseId", ""))' <<<"$row")"
+            status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$row")"
+            conclusion="$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion", ""))' <<<"$row")"
+            if [[ "$status" == "completed" ]]; then
+              [[ "$conclusion" == "success" ]] || { echo "$SOURCE_WORKFLOW completed with $conclusion" >&2; exit 1; }
+              break
+            fi
+            sleep 30
+          done
+          [[ -n "$run_id" ]] || { echo "No final efficient-pullback run found" >&2; exit 1; }
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --dir .efficient-pullback-final-evidence
+
+      - name: Summarize completed trades and continuous NAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/period-days.json <<'JSON'
+          {
+            "may-2024-guard": 14,
+            "february-2025-short": 10,
+            "live-examples-2025-short": 11,
+            "november-2025-guard": 14,
+            "february-2026-guard": 14,
+            "fresh-medium-2024-q1": 90
+          }
+          JSON
+          python research/candidate-easychart_re1/summarize_candidate_evidence.py \
+            --root .efficient-pullback-final-evidence \
+            --candidate candidate-easychart_re1_efficient_pullback_final \
+            --period-days-json /tmp/period-days.json \
+            --medium-period fresh-medium-2024-q1 \
+            --output-dir research/candidate-easychart_re1/evidence \
+            --prefix efficient_pullback_final
+
+      - name: Keep the stronger ready integrated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root=Path('research/candidate-easychart_re1')
+          evidence=root/'evidence'
+          current=json.loads((evidence/'efficient_pullback_final_evidence.json').read_text())
+          prior_path=evidence/'final_integrated_selection.json'
+          prior=json.loads(prior_path.read_text()) if prior_path.exists() else {}
+          prior_candidates=prior.get('candidates',[])
+          prior_score=max((float(item.get('selection_score') or -999) for item in prior_candidates),default=-999)
+          prior_ready=bool(prior.get('selected_ready'))
+          current_ready=bool(current.get('ready_for_long_continuous_and_paper'))
+          current_score=float(current.get('selection_score') or -999)
+          selected=bool(current_ready and (not prior_ready or current_score>prior_score))
+          decision={
+              'candidate':current['candidate'],
+              'current_ready':current_ready,
+              'current_score':current_score,
+              'prior_candidate':prior.get('selected_candidate'),
+              'prior_ready':prior_ready,
+              'prior_score':prior_score,
+              'selected_over_prior':selected,
+              'blockers':current.get('blockers',[]),
+          }
+          (evidence/'efficient_pullback_final_selection.json').write_text(json.dumps(decision,indent=2,ensure_ascii=False)+'\n')
+          if selected:
+              (evidence/'EFFICIENT_PULLBACK_FINAL_SELECTED').write_text(current['candidate']+'\n')
+          else:
+              (evidence/'EFFICIENT_PULLBACK_FINAL_RESEARCH_ONLY').write_text(('\n'.join(current.get('blockers',[])) or 'CURRENT_READY_INTEGRATED_BOT_RETAINED')+'\n')
+          PY
+
+          if [[ -f research/candidate-easychart_re1/evidence/EFFICIENT_PULLBACK_FINAL_SELECTED ]]; then
+            cat > research/candidate-easychart_re1/easychart_re1_bot.py <<'PY'
+          """Evidence-selected EasyChart RE1 production candidate."""
+          from easychart_re1_efficient_pullback_final import EasyChartRE1EfficientPullbackFinalBundle
+          from easychart_re1_local_auction_continuation import EasyChartRE1LocalAuctionStrategy
+
+          EasyChartRE1BotBundle = EasyChartRE1EfficientPullbackFinalBundle
+          EasyChartRE1BotStrategy = EasyChartRE1LocalAuctionStrategy
+          MultiScaleScenarioBundle = EasyChartRE1BotBundle
+          StrategyClass = EasyChartRE1BotStrategy
+          PY
+            cat > research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py <<'PY'
+          #!/usr/bin/env python3
+          """Run the evidence-selected EasyChart RE1 bot."""
+          import runpy
+          if __name__ == "__main__":
+              runpy.run_module("run_mtf_backtest_re1_efficient_pullback_final",run_name="__main__")
+          PY
+          fi
+
+      - name: Commit the trade evidence and optional selected bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-easychart_re1/evidence
+          git add research/candidate-easychart_re1/easychart_re1_bot.py research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research: publish final efficient-pullback trade evidence"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"

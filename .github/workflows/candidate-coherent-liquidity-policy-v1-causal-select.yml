@@ -1,0 +1,122 @@
+name: candidate-coherent-liquidity-policy-v1-causal-select
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-liquidity-policy-v1/.causal-select-dispatch"
+
+concurrency:
+  group: candidate-coherent-liquidity-policy-v1-causal-select
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        name: Read source run and wait for completion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-coherent-liquidity-policy-v1/.latest-run').read_text())['run_id'])
+          PY
+          )
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          for _ in $(seq 1 360); do
+            PAYLOAD=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+            STATUS=$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$PAYLOAD")
+            CONCLUSION=$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion"))' <<<"$PAYLOAD")
+            if [ "$STATUS" = completed ]; then
+              if [ "$CONCLUSION" != success ] && [ "$CONCLUSION" != failure ]; then
+                echo "source run completed with $CONCLUSION" >&2
+                exit 1
+              fi
+              break
+            fi
+            sleep 30
+          done
+      - name: Download every completed period universe
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: coherent-liquidity-*
+          path: downloaded
+          merge-multiple: false
+      - name: Run leakage-free blocked direction and action policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-coherent-liquidity-policy-v1/train_select.py \
+            research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py
+          mkdir -p result
+          python research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py \
+            --root downloaded --output result
+      - name: Verify selected chronology and feature contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          root=Path('result')
+          scored=pd.read_csv(root/'scored_action_universe.csv')
+          summary=json.loads((root/'summary.json').read_text())
+          forbidden=[c for c in summary['action_model']['features'] if c.startswith(('actual_','fill_','resolution_','destination_resolution_'))]
+          if forbidden:
+              raise RuntimeError(f'actual-fill leakage in features: {forbidden}')
+          for filename in ('development_oof_account_trades.csv','evaluation_account_trades.csv'):
+              frame=pd.read_csv(root/filename)
+              if frame.empty:
+                  continue
+              frame=frame.sort_values('fill_time_ns')
+              previous=-1
+              for row in frame.itertuples():
+                  if int(row.fill_time_ns) <= previous:
+                      raise RuntimeError(f'position overlap in {filename}')
+                  previous=int(row.resolution_time_ns)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+      - name: Preserve causal selector result
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-liquidity-policy-v1-causal-result
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve compact result on research branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-coherent-liquidity-policy-v1/LATEST_CAUSAL_RESULT.json
+          git add research/candidate-coherent-liquidity-policy-v1/LATEST_CAUSAL_RESULT.json
+          git commit -m "Preserve causal coherent-liquidity result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking

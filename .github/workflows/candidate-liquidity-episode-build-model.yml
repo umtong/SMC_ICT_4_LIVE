@@ -1,0 +1,67 @@
+name: Candidate liquidity episode build causal model
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Historical harvest start (inclusive)"
+        required: true
+        default: "2024-01-01"
+      development_end:
+        description: "Fixed development/model cutoff"
+        required: true
+        default: "2024-10-01"
+      end:
+        description: "Historical harvest end (exclusive)"
+        required: true
+        default: "2025-01-01"
+      name:
+        description: "Run name"
+        required: true
+        default: "model-2024"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  harvest-route-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 720
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: production-candidate-liquidity-episode-policy-v1
+      - name: Install production dependencies
+        run: |
+          uv pip install --python "$VIRTUAL_ENV/bin/python" \
+            --requirement research/candidate-liquidity-episode-policy-v1/production-requirements.txt
+      - name: Harvest monthly partitions and route one continuous account
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          mkdir -p model-build/cache model-build/output model-build/bundle
+          python -m production.cli historical-continuous \
+            --start "${{ inputs.start }}" \
+            --development-end "${{ inputs.development_end }}" \
+            --end "${{ inputs.end }}" \
+            --name "${{ inputs.name }}" \
+            --cache model-build/cache \
+            --output model-build/output
+          python -m production.cli build-model \
+            --root "model-build/output/${{ inputs.name }}/harvest" \
+            --cutoff "${{ inputs.development_end }}" \
+            --output model-build/bundle/model_bundle.joblib
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: episode-causal-model-${{ github.sha }}
+          path: research/candidate-liquidity-episode-policy-v1/model-build/**
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,111 @@
+name: candidate-easychart-re1-counterfactual-harvest-diagnostic
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths: ["research/candidate-easychart_re1/.counterfactual_harvest_dispatch_marker"]
+  workflow_dispatch:
+concurrency: {group: candidate-easychart-re1-counterfactual-harvest-diagnostic, cancel-in-progress: true}
+permissions: {contents: read, packages: read, actions: read}
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {period: may-2024-guard, start: 2024-05-01, end: 2024-05-14}
+          - {period: february-2025-guard, start: 2025-02-01, end: 2025-02-14}
+          - {period: live-examples-2025-guard, start: 2025-08-10, end: 2025-08-20}
+          - {period: february-2026-guard, start: 2026-02-01, end: 2026-02-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      CACHE: .cache/candidate-easychart-re1-counterfactual-harvest/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-counterfactual-harvest/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal first-passage research
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/counterfactual_plan_harvest.py \
+            research/candidate-easychart_re1/counterfactual_plan_harvest_fixed.py \
+            research/candidate-easychart_re1/counterfactual_sequential_features.py \
+            research/candidate-easychart_re1/first_passage_policy_study.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_candidate_harvest.py
+      - name: Run broad causal candidate and label all plans
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_candidate_harvest.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Verify identity-safe answer sheet
+        run: |
+          test -s "$OUT/counterfactual_plans.csv"
+          test -s "$OUT/counterfactual_summary.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          out = Path(os.environ["OUT"])
+          summary = json.loads((out / "counterfactual_summary.json").read_text())
+          assert summary["plans"] > 0, summary
+          assert "identity_policy" in summary, summary
+          assert "sequential_feature_policy" in summary, summary
+          assert "economic_geometry_policy" in summary, summary
+          PY
+      - name: Preserve regime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-counterfactual-harvest-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-counterfactual-harvest/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  cross-regime-study:
+    needs: diagnostic
+    if: ${{ always() && needs.diagnostic.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      GATHERED: artifacts/candidate-easychart-re1-first-passage-gathered
+      OUT: artifacts/candidate-easychart-re1-first-passage-study
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all four regime answer sheets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-easychart-re1-counterfactual-harvest-*-${{ github.sha }}
+          path: ${{ env.GATHERED }}
+      - name: Run leave-one-period-out selective coverage study
+        run: |
+          mkdir -p "$OUT"
+          python research/candidate-easychart_re1/first_passage_policy_study.py \
+            --root "$GATHERED" \
+            --output "$OUT"
+      - name: Verify cross-regime study
+        run: |
+          test -s "$OUT/first_passage_scope_summary.csv"
+          test -s "$OUT/first_passage_feature_stability.csv"
+          test -s "$OUT/first_passage_loo_risk_coverage.csv"
+          test -s "$OUT/first_passage_loo_aggregate.csv"
+          test -s "$OUT/first_passage_policy_summary.json"
+      - name: Preserve cross-regime study
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-first-passage-study-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-first-passage-study/**
+          if-no-files-found: error
+          retention-days: 30

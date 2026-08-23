@@ -1,0 +1,131 @@
+name: candidate-easychart-re1-final-smoke-publish-v13
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-final-smoke-publish-v13.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Import and instantiate final selected-only graphs
+        id: test
+        shell: bash
+        run: |
+          set +e
+          mkdir -p smoke-v13
+          python - <<'PY' > smoke-v13/output.log 2>&1
+          import importlib
+          import json
+          import os
+          from pathlib import Path
+
+          from research_variant_registry_v11 import VARIANTS as research
+          from variant_registry_v4 import VARIANTS as production
+
+          def load(path):
+              module, separator, name = path.partition(':')
+              if not separator:
+                  raise ValueError(path)
+              return getattr(importlib.import_module(module), name)
+
+          selected = sorted(
+              name for name in research
+              if '-v3-' in name or name.startswith('mechanism-v3-')
+          )
+          if not selected:
+              raise RuntimeError('no final v3 candidates registered')
+          checked = []
+          for name in selected:
+              r = research[name]
+              p = production[name]
+              rb = load(r.bundle)
+              pb = load(p.bundle)
+              if rb is not pb:
+                  raise RuntimeError(f'{name}: research/production bundle mismatch')
+              instance = pb('BTCUSDT', 0.1, 1.0)
+              if instance is None:
+                  raise RuntimeError(f'{name}: bundle construction returned None')
+              load(r.strategy)
+              load(p.venue_strategy)
+              load(p.paper_strategy)
+              checked.append(
+                  {
+                      'variant': name,
+                      'bundle': p.bundle,
+                      'research_strategy': r.strategy,
+                      'venue_strategy': p.venue_strategy,
+                      'paper_strategy': p.paper_strategy,
+                      'families': p.families,
+                      'mechanisms': p.mechanisms,
+                  }
+              )
+          Path('smoke-v13/details.json').write_text(
+              json.dumps({'checked': checked}, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          print(f'checked {len(checked)} final candidate graphs')
+          PY
+          status=$?
+          python - "$status" <<'PY'
+          import json
+          import sys
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          status = int(sys.argv[1])
+          log = Path('smoke-v13/output.log').read_text(encoding='utf-8', errors='replace')
+          details = Path('smoke-v13/details.json')
+          result = {
+              'generated_at_utc': datetime.now(UTC).isoformat(),
+              'pass': status == 0,
+              'exit_code': status,
+              'log_tail': log[-12000:],
+          }
+          if details.exists():
+              result.update(json.loads(details.read_text(encoding='utf-8')))
+          Path('research/candidate-easychart_re1/FINAL_SMOKE_V13.json').write_text(
+              json.dumps(result, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Commit smoke result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/FINAL_SMOKE_V13.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart_re1: publish final graph smoke result [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-easychart_re1 || true
+            git push origin HEAD:research/candidate-easychart_re1 && exit 0
+            sleep $((attempt * 5))
+          done
+          exit 1
+      - name: Fail workflow when graph smoke failed
+        if: steps.test.outputs.status != '0'
+        run: exit 1

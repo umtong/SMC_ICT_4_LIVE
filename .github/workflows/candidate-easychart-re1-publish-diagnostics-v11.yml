@@ -1,0 +1,98 @@
+name: candidate-easychart-re1-publish-diagnostics-v11
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-publish-diagnostics-v11.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONPATH: research/candidate-easychart_re1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Wait for and download final diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostic-inputs
+          workflows=(
+            candidate-easychart-re1-impulse-diagnostic.yml
+            candidate-easychart-re1-structural-ablation.yml
+            candidate-easychart-re1-liquidity-diagnostic.yml
+            candidate-easychart-re1-complete-diagnostic.yml
+            candidate-easychart-re1-breadth-diagnostic.yml
+            candidate-easychart-re1-adjacent-diagnostic.yml
+            candidate-easychart-re1-validated-structure-diagnostic.yml
+            candidate-easychart-re1-family-attribution.yml
+            candidate-easychart-re1-family-combinations.yml
+            candidate-easychart-re1-structural-v3-diagnostic.yml
+            candidate-easychart-re1-mechanism-v3-diagnostic.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            run_id=""
+            for attempt in $(seq 1 480); do
+              run_id=$(gh run list --workflow "$workflow" \
+                --branch research/candidate-easychart_re1 --status completed --limit 110 \
+                --json databaseId,conclusion,createdAt \
+                --jq '[.[] | select(.conclusion == "success")] | sort_by(.createdAt) | reverse | .[0].databaseId // empty')
+              [[ -n "$run_id" ]] && break
+              sleep 20
+            done
+            if [[ -z "$run_id" ]]; then
+              echo "No successful run for $workflow" >&2
+              continue
+            fi
+            mkdir -p "diagnostic-inputs/$workflow"
+            gh run download "$run_id" --dir "diagnostic-inputs/$workflow"
+          done
+      - name: Build final gate and trade-path diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf consolidated-v11
+          mkdir -p consolidated-v11
+          python research/candidate-easychart_re1/gate_re1_candidates_v11.py \
+            diagnostic-inputs --mode short --output consolidated-v11/gate
+          python research/candidate-easychart_re1/diagnose_re1_artifacts.py \
+            diagnostic-inputs --output consolidated-v11/diagnosis
+      - name: Publish branch reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-easychart_re1/reports
+          cp consolidated-v11/gate/gate.json \
+             research/candidate-easychart_re1/reports/latest_structural_gate_v11.json
+          cp consolidated-v11/gate/gate.md \
+             research/candidate-easychart_re1/reports/latest_structural_gate_v11.md
+          cp consolidated-v11/diagnosis/diagnosis.json \
+             research/candidate-easychart_re1/reports/latest_trade_diagnosis_v11.json
+          cp consolidated-v11/diagnosis/diagnosis.md \
+             research/candidate-easychart_re1/reports/latest_trade_diagnosis_v11.md
+          cp consolidated-v11/diagnosis/trades.csv \
+             research/candidate-easychart_re1/reports/latest_trade_diagnosis_v11.csv 2>/dev/null || true
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/reports
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart_re1: publish final structural diagnosis [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re1-consolidated-v11-${{ github.sha }}
+          path: consolidated-v11/**
+          retention-days: 90

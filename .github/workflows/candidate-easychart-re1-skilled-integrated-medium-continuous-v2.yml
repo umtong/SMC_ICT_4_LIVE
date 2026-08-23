@@ -1,0 +1,55 @@
+name: candidate-easychart-re1-skilled-integrated-medium-continuous-v2
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.skilled_medium_v2_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-skilled-integrated-medium-continuous-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-skilled-integrated/medium-2025h1-v2
+      OUT: artifacts/candidate-easychart-re1-skilled-integrated/medium-2025h1-v2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile selected policy
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_skilled_integrated.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_integrated.py
+      - name: Run six-month four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_skilled_integrated.py \
+            --start 2025-01-01 \
+            --end 2025-06-30 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve actual trade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-skilled-integrated-medium-2025h1-v2-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-skilled-integrated/medium-2025h1-v2/**
+          if-no-files-found: warn
+          retention-days: 30

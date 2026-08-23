@@ -1,0 +1,80 @@
+name: Candidate liquidity episode paper connectivity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["production-candidate-liquidity-episode-policy-v1"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-paper-connectivity.yml"
+      - "research/candidate-liquidity-episode-policy-v1/production/nautilus_execution.py"
+      - "research/candidate-liquidity-episode-policy-v1/production/nautilus_smoke.py"
+      - "research/candidate-liquidity-episode-policy-v1/configs/paper.ci.json"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-paper-connectivity.yml"
+      - "research/candidate-liquidity-episode-policy-v1/production/nautilus_execution.py"
+      - "research/candidate-liquidity-episode-policy-v1/production/nautilus_smoke.py"
+      - "research/candidate-liquidity-episode-policy-v1/configs/paper.ci.json"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  sandbox-node-and-order-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install production dependencies
+        run: |
+          uv pip install --python "$VIRTUAL_ENV/bin/python" \
+            --requirement research/candidate-liquidity-episode-policy-v1/production-requirements.txt
+      - name: Deterministic protected bracket lifecycle
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          mkdir -p paper-connectivity
+          python -m production.cli nautilus-smoke --output paper-connectivity/bracket-smoke
+      - name: Connect Binance live data to Nautilus sandbox execution node
+        working-directory: research/candidate-liquidity-episode-policy-v1
+        run: |
+          set -euo pipefail
+          unset BINANCE_API_KEY BINANCE_API_SECRET
+          set +e
+          timeout --signal=INT --kill-after=20s 120s \
+            python -m production.cli nautilus-node --config configs/paper.ci.json \
+            2>&1 | tee paper-connectivity/node.log
+          code=${PIPESTATUS[0]}
+          set -e
+          if [[ "$code" != "0" && "$code" != "124" && "$code" != "130" ]]; then
+            exit "$code"
+          fi
+          python -m production.cli reconcile \
+            --database runtime/ci-paper/runtime.sqlite3 \
+            --output paper-connectivity/reconciliation.json
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          con = sqlite3.connect('runtime/ci-paper/runtime.sqlite3')
+          starts = con.execute("SELECT COUNT(*) FROM events WHERE event_type='NAUTILUS_EXECUTION_STARTED'").fetchone()[0]
+          if starts < 1:
+              raise SystemExit('Nautilus strategy did not reach on_start')
+          Path('paper-connectivity/start-proof.json').write_text(json.dumps({'nautilus_starts': starts}, indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: episode-paper-connectivity-${{ github.event.pull_request.head.sha || github.sha }}
+          path: research/candidate-liquidity-episode-policy-v1/paper-connectivity/**
+          if-no-files-found: error
+          retention-days: 30

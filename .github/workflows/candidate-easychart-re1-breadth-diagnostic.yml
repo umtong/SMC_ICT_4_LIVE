@@ -1,0 +1,88 @@
+name: candidate-easychart-re1-breadth-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/execution_re1_breadth.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_complete_breadth.py"
+      - ".github/workflows/candidate-easychart-re1-breadth-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-breadth-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: dev-february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - period: dev-august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - period: dev-february-2025
+            start: 2025-02-01
+            end: 2025-02-14
+          - period: random-aug20-sep02-2024
+            start: 2024-08-20
+            end: 2024-09-02
+          - period: random-sep09-sep22-2024
+            start: 2024-09-09
+            end: 2024-09-22
+          - period: random-mar07-mar20-2025
+            start: 2025-03-07
+            end: 2025-03-20
+          - period: random-jun09-jun22-2025
+            start: 2025-06-09
+            end: 2025-06-22
+          - period: random-sep10-sep23-2025
+            start: 2025-09-10
+            end: 2025-09-23
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-breadth/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-breadth/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidate
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_complete.py \
+            research/candidate-easychart_re1/execution_re1_breadth.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_complete_breadth.py
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_complete_breadth.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-complete-breadth-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-breadth/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90

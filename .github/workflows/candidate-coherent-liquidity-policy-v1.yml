@@ -1,0 +1,218 @@
+name: candidate-coherent-liquidity-policy-v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-liquidity-policy-v1/**"
+      - "!research/candidate-coherent-liquidity-policy-v1/.latest-run"
+      - "!research/candidate-coherent-liquidity-policy-v1/LATEST_RESULT.json"
+      - ".github/workflows/candidate-coherent-liquidity-policy-v1.yml"
+
+concurrency:
+  group: candidate-coherent-liquidity-policy-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run identity without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > research/candidate-coherent-liquidity-policy-v1/.latest-run
+          git add research/candidate-coherent-liquidity-policy-v1/.latest-run
+          git commit -m "Record coherent liquidity run $GITHUB_RUN_ID" || true
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking
+
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile direction-first policy and blocked learner
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-coherent-liquidity-policy-v1/coherent_policy.py \
+            research/candidate-coherent-liquidity-policy-v1/run_research.py \
+            research/candidate-coherent-liquidity-policy-v1/train_select.py
+          python - <<'PY'
+          from coherent_policy import POLICY, MAX_HOLD_MINUTES
+          assert "DIRECTION_FIRST" in POLICY
+          assert "LIQUIDITY" in POLICY
+          assert MAX_HOLD_MINUTES == 360
+          from train_select import RISK_FRACTION
+          assert abs(RISK_FRACTION - 0.03) < 1e-12
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-may, start: 2023-05-01, end: 2023-05-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2023-nov, start: 2023-11-01, end: 2023-11-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: eval-2026-feb, start: 2026-02-01, end: 2026-02-08}
+          - {period: eval-2026-may, start: 2026-05-01, end: 2026-05-08}
+          - {period: eval-2026-aug, start: 2026-08-01, end: 2026-08-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-coherent-liquidity-policy-v1/${{ matrix.period }}
+      OUT: artifacts/candidate-coherent-liquidity-policy-v1/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest complete causal narratives
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-coherent-liquidity-policy-v1/run_research.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - name: Verify immutable geometry and information separation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT'])
+          actions=pd.read_csv(out/'coherent_actions.csv')
+          states=pd.read_csv(out/'destination_states.csv')
+          if actions.empty:
+              raise RuntimeError('coherent policy emitted no executable actions')
+          if actions.action_id.duplicated().any():
+              raise RuntimeError('duplicate action identity')
+          if not actions.gross_rr.ge(1.0).all():
+              raise RuntimeError('gross RR rule violated')
+          filled=actions[actions.fill_state.eq('FILLED_MARKET_NEXT_OPEN')]
+          if not (pd.to_numeric(filled.fill_time_ns) > pd.to_numeric(filled.emission_time_ns)).all():
+              raise RuntimeError('market fill did not occur after completed response')
+          if states.state_id.duplicated().any():
+              raise RuntimeError('duplicate destination state')
+          forbidden=[c for c in actions.columns if c.startswith(('event_','decision_','confirmation_','liquidity_','structure_','approach_')) and any(t in c for t in ('outcome','net_r','resolution','mfe','mae'))]
+          if forbidden:
+              raise RuntimeError(f'future labels in causal feature namespace: {forbidden}')
+          print(actions.groupby(['narrative_branch','setup_kind','location_kind','response_kind']).outcome.value_counts())
+          PY
+      - name: Preserve causal narrative universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-liquidity-${{ matrix.period }}
+          path: artifacts/candidate-coherent-liquidity-policy-v1/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  train-and-route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all period universes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coherent-liquidity-*
+          path: downloaded
+          merge-multiple: false
+      - name: Learn destination, choose actions and simulate one account
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-coherent-liquidity-policy-v1/train_select.py \
+            --root downloaded --output result
+      - name: Verify global account chronology
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          root=Path('result')
+          for name in ('development_oof_account_trades.csv','evaluation_account_trades.csv'):
+              frame=pd.read_csv(root/name)
+              if frame.empty:
+                  continue
+              ordered=frame.sort_values('fill_time_ns')
+              prior=-1
+              for row in ordered.itertuples():
+                  if int(row.fill_time_ns) <= prior:
+                      raise RuntimeError(f'overlapping global positions in {name}')
+                  prior=int(row.resolution_time_ns)
+          summary=json.loads((root/'summary.json').read_text())
+          if summary['symbol_in_model'] or summary['period_in_model']:
+              raise RuntimeError('asset or period identity entered model')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+      - name: Preserve unified policy result
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-liquidity-policy-v1-result
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve latest compact result on branch
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f result/summary.json ]; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-coherent-liquidity-policy-v1/LATEST_RESULT.json
+          git add research/candidate-coherent-liquidity-policy-v1/LATEST_RESULT.json
+          git commit -m "Preserve coherent liquidity policy result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking

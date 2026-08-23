@@ -1,0 +1,39 @@
+name: Publish liquidity auction v6 sequential fixed result
+
+on:
+  workflow_run:
+    workflows: ["Research liquidity auction v6 sequential commitment fixed"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: liquidity-auction-v6-sequential-fixed-result
+          path: /tmp/result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          set -euo pipefail
+          rm -rf research_results/liquidity_auction_v6/fixed
+          mkdir -p research_results/liquidity_auction_v6/fixed
+          cp /tmp/result/summary.json research_results/liquidity_auction_v6/fixed/summary.json
+          cp /tmp/result/RESULT.md research_results/liquidity_auction_v6/fixed/RESULT.md
+          cp /tmp/result/development_oof_trades.csv research_results/liquidity_auction_v6/fixed/development_oof_trades.csv
+          cp /tmp/result/fresh_trades.csv research_results/liquidity_auction_v6/fixed/calibration_trades.csv
+          printf '{"source_run_id":%s,"source_sha":"%s","published_at":"%s"}\n' "${{ github.event.workflow_run.id }}" "${{ github.event.workflow_run.head_sha }}" "$(date -u +%FT%TZ)" > research_results/liquidity_auction_v6/fixed/run.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research_results/liquidity_auction_v6/fixed
+          git commit -m "Record v6 fixed sequential commitment result" || exit 0
+          git push origin HEAD:research_liquidity_auction_v6
