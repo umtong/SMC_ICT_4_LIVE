@@ -1,0 +1,120 @@
+name: research-candidate-4t-v5-route-v2
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-v5-route-v2.yml'
+      - '.dispatch-candidate-4t-v5-route-v2'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: research-candidate-4t-v5-route-v2
+  cancel-in-progress: false
+
+jobs:
+  causal-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4t
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check 'numpy>=2.0,<3' 'pandas>=2.2,<3'
+      - name: Find a completed causal run whose five harvest artifacts exist
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          runs_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/research-candidate-4t-causal-short.yml/runs?branch=research_candidate_4t&per_page=30"
+          chosen=""
+          for attempt in $(seq 1 180); do
+            runs=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' "$runs_api" \
+              | jq -r '.workflow_runs[] | select(.status == "completed") | .id')
+            for run_id in $runs; do
+              artifacts=$(curl --fail --silent --show-error \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")
+              dev_count=$(printf '%s' "$artifacts" | jq '[.artifacts[] | select(.expired == false and (.name | startswith("candidate-4t-dev-")))] | length')
+              fresh_count=$(printf '%s' "$artifacts" | jq '[.artifacts[] | select(.expired == false and (.name | startswith("candidate-4t-fresh-")))] | length')
+              if [[ "$dev_count" -ge 4 && "$fresh_count" -ge 1 ]]; then
+                chosen="$run_id"
+                break 2
+              fi
+            done
+            sleep 60
+          done
+          test -n "$chosen"
+          echo "run_id=$chosen" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: candidate-4t-dev-*
+          path: inputs/development
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: candidate-4t-fresh-*
+          path: inputs/fresh
+      - name: Verify and route one account
+        env:
+          PYTHONPATH: research/candidate-4t-sequential-control-v5:research/candidate-4t-sequential-control-v4:research/candidate-4t-sequential-control-v3:research/candidate-4t-sequential-control-v1
+        run: |
+          set -euo pipefail
+          python research/candidate-4t-sequential-control-v3/self_check_v3.py
+          python research/candidate-4t-sequential-control-v4/self_check_v4.py
+          python research/candidate-4t-sequential-control-v5/self_check_v5.py
+          rm -rf result
+          python research/candidate-4t-sequential-control-v5/candidate_4t_policy_v5.py \
+            --development-root inputs/development \
+            --fresh-root inputs/fresh \
+            --output result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-v5-causal-route-v2-${{ github.sha }}
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit reproducible evidence
+        run: |
+          set -euo pipefail
+          destination=research_results/candidate_4t/causal_short_v5
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp result/RESULT.md result/summary.json result/model_manifest.json "$destination/"
+          for file in \
+            development_orders.csv development_trades.csv development_replacements.csv \
+            development_loss_clinic.csv development_missed_opportunity_clinic.csv \
+            fresh_orders.csv fresh_trades.csv fresh_replacements.csv \
+            fresh_loss_clinic.csv fresh_missed_opportunity_clinic.csv; do
+            [[ ! -f "result/$file" ]] || cp "result/$file" "$destination/$file"
+          done
+          printf '%s\n' \
+            "route_source_commit=${GITHUB_SHA}" \
+            "route_run=${GITHUB_RUN_ID}" \
+            "harvest_run=${{ steps.source.outputs.run_id }}" > "$destination/source.txt"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$destination"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Candidate 4t v5 causal route v2 ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
