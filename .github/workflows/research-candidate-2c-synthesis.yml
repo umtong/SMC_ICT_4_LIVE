@@ -1,0 +1,150 @@
+name: Candidate 2c causal synthesis short research
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_2c"]
+    paths:
+      - ".github/workflows/research-candidate-2c-synthesis.yml"
+      - "research/candidate-2c-synthesis/**"
+
+concurrency:
+  group: research-candidate-2c-synthesis
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {role: dev, period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: dev, period: dev-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: fresh-2026-mar, start: 2026-03-01, end: 2026-03-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-2c-synthesis:research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-2c/${{ matrix.period }}
+      OUT: artifacts/candidate-2c/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_2c
+      - name: Harvest causal exact-route actions
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, gzip, runpy
+          from pathlib import Path
+          path = Path("research/candidate-2c-synthesis/candidate_2c_policy.py")
+          namespace = runpy.run_path(str(path), run_name="candidate_2c_bootstrap")
+          path.write_bytes(gzip.decompress(base64.b64decode(namespace["COMPRESSED_SOURCE"])))
+          PY
+          python -m py_compile \
+            research/candidate-2c-synthesis/candidate_2c_harvest.py \
+            research/candidate-2c-synthesis/candidate_2c_policy.py
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-2c-synthesis/candidate_2c_harvest.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-2c-${{ matrix.period }}
+          path: artifacts/candidate-2c/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  decide-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-2c-synthesis
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_2c
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-2c-dev-*
+          path: artifacts/candidate-2c/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-2c-fresh-*
+          path: artifacts/candidate-2c/fresh
+      - name: Run causal sequential action-value policy
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, gzip, runpy
+          from pathlib import Path
+          path = Path("research/candidate-2c-synthesis/candidate_2c_policy.py")
+          namespace = runpy.run_path(str(path), run_name="candidate_2c_bootstrap")
+          path.write_bytes(gzip.decompress(base64.b64decode(namespace["COMPRESSED_SOURCE"])))
+          PY
+          mkdir -p artifacts/candidate-2c/result
+          python research/candidate-2c-synthesis/candidate_2c_policy.py \
+            --development-root artifacts/candidate-2c/development \
+            --fresh-root artifacts/candidate-2c/fresh \
+            --output artifacts/candidate-2c/result
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-2c-short-result
+          path: artifacts/candidate-2c/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish compact evidence to branch
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_2c/short_research
+          rm -rf "$DEST"
+          mkdir -p "$DEST/harvest"
+          cp artifacts/candidate-2c/result/summary.json "$DEST/"
+          for file in development_orders.csv development_trades.csv fresh_orders.csv fresh_trades.csv; do
+            if [ -f "artifacts/candidate-2c/result/$file" ]; then
+              cp "artifacts/candidate-2c/result/$file" "$DEST/$file"
+            fi
+          done
+          find artifacts/candidate-2c/development artifacts/candidate-2c/fresh \
+            -name summary.json -print | while read -r file; do
+              parent=$(basename "$(dirname "$file")")
+              cp "$file" "$DEST/harvest/${parent}.json"
+            done
+          cat > "$DEST/run.json" <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "source_sha": "${{ github.sha }}",
+            "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST" research/candidate-2c-synthesis/candidate_2c_policy.py
+          if ! git diff --cached --quiet; then
+            git commit -m "Record candidate 2c short research [skip ci]"
+            git push origin HEAD:research_candidate_2c
+          fi
