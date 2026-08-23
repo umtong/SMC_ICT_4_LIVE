@@ -1,0 +1,46 @@
+name: research-candidate-4t-cancel-obsolete
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-cancel-obsolete.yml'
+      - '.dispatch-candidate-4t-cancel-obsolete'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Cancel superseded route/diagnostic runs while preserving required harvests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          obsolete='^(research-candidate-4t-bootstrap|research-candidate-4t-causal-short|research-candidate-4t-v4-route|research-candidate-4t-v5-route|research-candidate-4t-v5-route-v2|research-candidate-4t-v6-medium-route)$'
+          for status in queued in_progress waiting pending; do
+            api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?branch=research_candidate_4t&status=${status}&per_page=100"
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' "$api" \
+              | jq -r --arg current "$CURRENT_RUN" --arg obsolete "$obsolete" '
+                  .workflow_runs[]
+                  | select((.id|tostring) != $current)
+                  | select(.name | test($obsolete))
+                  | .id' \
+              | while read -r run_id; do
+                  [[ -z "$run_id" ]] || curl --fail --silent --show-error \
+                    -X POST \
+                    -H "Authorization: Bearer ${GH_TOKEN}" \
+                    -H 'Accept: application/vnd.github+json' \
+                    -H 'X-GitHub-Api-Version: 2022-11-28' \
+                    "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" \
+                    >/dev/null || true
+                done
+          done
