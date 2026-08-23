@@ -20,6 +20,14 @@ completed bars establish a structural transition, while its evidence blocks
 are segmented by cumulative traded activity.  When activity or taker flow is
 not supplied, that fact remains ``False``/``None`` in the evidence; structural
 range may segment the path but is explicitly named as such.
+
+The flow-response fields below are observations, not an admission rule.  In
+particular, ``flow_coherence`` gives the old ``flow_share`` calculation an
+honest name, while ``pressure`` retains magnitude by dividing signed taker
+flow by total quote activity.  ``absorption_outcome_proxy`` is only the gap
+between observed taker pressure and realized OHLC path efficiency.  Public
+klines cannot observe L2 replenishment, queue depletion, or passive order
+identity, so the proxy must never be described as direct replenishment.
 """
 from __future__ import annotations
 
@@ -104,7 +112,13 @@ class ActivityBlock:
     favorable_excursion: float
     adverse_excursion: float
     activity_ratio: float | None
+    flow_coherence: float | None
     flow_share: float | None
+    pressure: float | None
+    price_response: float
+    impact_per_pressure: float | None
+    realized_capacity: float
+    absorption_outcome_proxy: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +136,20 @@ class JourneyEvidence:
     baseline_range: float | None
     baseline_body: float | None
     baseline_activity: float | None
+    baseline_pressure: float | None
     activity_input_known: bool
     flow_input_known: bool
     impulse_energy: float | None
     settlement: str
     control_transfer: bool
+    control_flow_coherence: float | None
     control_flow_share: float | None
+    control_pressure: float | None
+    control_pressure_surprise: float | None
+    control_price_response: float
+    control_impact_per_pressure: float | None
+    realized_capacity_progression: tuple[float, ...]
+    absorption_outcome_proxy_progression: tuple[float | None, ...]
     retest_time_ns: int | None
     response_time_ns: int | None
     response_close: float | None
@@ -286,7 +308,8 @@ class EventTimeAuctionJourney:
         self._tree_max_high = [-math.inf] * tree_size
         self._states: dict[tuple[object, ...], _IncrementalJourneyState] = {}
         self._baseline_cache: dict[
-            tuple[int, int, int], tuple[float | None, float | None, float | None]
+            tuple[int, int, int],
+            tuple[float | None, float | None, float | None, float | None],
         ] = {}
 
     @property
@@ -509,7 +532,10 @@ class EventTimeAuctionJourney:
         known = [float(value) for value in values if value is not None and value > 0.0]
         return float(median(known)) if known else None
 
-    def _baseline(self, interaction_time_ns: int) -> tuple[float | None, float | None, float | None]:
+    def _baseline(
+        self,
+        interaction_time_ns: int,
+    ) -> tuple[float | None, float | None, float | None, float | None]:
         end = self._bisect_time(interaction_time_ns)
         start = max(0, end - self.BASELINE_BARS)
         absolute_start = self._oldest_seq + start
@@ -523,11 +549,30 @@ class EventTimeAuctionJourney:
             return cached
         prior = [self._bar_at(index) for index in range(start, end)]
         if not prior:
-            return None, None, None
+            return None, None, None, None
         baseline_range = self._known_median(max(bar.high - bar.low, self.tick_size) for bar in prior)
         baseline_body = self._known_median(max(abs(bar.close - bar.open), self.tick_size) for bar in prior)
         baseline_activity = self._known_median(bar.activity for bar in prior)
-        result = (baseline_range, baseline_body, baseline_activity)
+        activity_total = sum(float(bar.activity or 0.0) for bar in prior)
+        baseline_raw_pressure = (
+            max(
+                -1.0,
+                min(
+                    1.0,
+                    sum(float(bar.signed_flow or 0.0) for bar in prior)
+                    / activity_total,
+                ),
+            )
+            if activity_total > 0.0
+            and all(bar.activity is not None and bar.signed_flow is not None for bar in prior)
+            else None
+        )
+        result = (
+            baseline_range,
+            baseline_body,
+            baseline_activity,
+            baseline_raw_pressure,
+        )
         self._baseline_cache[cache_key] = result
         return result
 
@@ -566,6 +611,52 @@ class EventTimeAuctionJourney:
         raw = (bar.close - bar.low) / width
         return raw if sign > 0 else 1.0 - raw
 
+    @staticmethod
+    def _flow_metrics(
+        *,
+        sign: int,
+        flow_sum: float,
+        absolute_flow: float,
+        activity_sum: float,
+        inputs_known: bool,
+    ) -> tuple[float | None, float | None]:
+        """Return legacy coherence and magnitude-preserving taker pressure."""
+
+        if not inputs_known:
+            return None, None
+        coherence = sign * flow_sum / absolute_flow if absolute_flow > 0.0 else 0.0
+        pressure = (
+            max(-1.0, min(1.0, sign * flow_sum / activity_sum))
+            if activity_sum > 0.0
+            else None
+        )
+        return coherence, pressure
+
+    @staticmethod
+    def _response_metrics(
+        progress: float,
+        path_efficiency: float,
+        pressure: float | None,
+    ) -> tuple[float | None, float, float | None]:
+        """Relate public-kline price response to observed taker pressure.
+
+        ``realized_capacity`` is the bounded signed fraction of total close
+        travel realized in the journey direction.  The absorption value is an
+        outcome proxy (pressure minus realized path efficiency), not an L2
+        replenishment measurement.
+        """
+
+        realized_capacity = max(-1.0, min(1.0, path_efficiency))
+        impact_per_pressure = (
+            progress / pressure
+            if pressure is not None and pressure != 0.0
+            else None
+        )
+        absorption_proxy = (
+            pressure - realized_capacity if pressure is not None else None
+        )
+        return impact_per_pressure, realized_capacity, absorption_proxy
+
     def _block(
         self,
         bars: list[TapeBar],
@@ -588,13 +679,17 @@ class EventTimeAuctionJourney:
             else None
         )
         known_flow = [bar.signed_flow for bar in bars if bar.signed_flow is not None]
+        activity_sum = sum(float(value) for value in known_activity)
+        flow_sum = sum(float(value) for value in known_flow)
         absolute_flow = sum(abs(float(value)) for value in known_flow)
-        flow_share = (
-            sign * sum(float(value) for value in known_flow) / absolute_flow
-            if len(known_flow) == len(bars) and absolute_flow > 0.0
-            else 0.0
-            if len(known_flow) == len(bars)
-            else None
+        flow_coherence, pressure = self._flow_metrics(
+            sign=sign,
+            flow_sum=flow_sum,
+            absolute_flow=absolute_flow,
+            activity_sum=activity_sum,
+            inputs_known=(
+                len(known_activity) == len(bars) and len(known_flow) == len(bars)
+            ),
         )
         favorable = max(
             sign * ((bar.high if sign > 0 else bar.low) - first.open) for bar in bars
@@ -602,17 +697,28 @@ class EventTimeAuctionJourney:
         adverse = max(
             -sign * ((bar.low if sign > 0 else bar.high) - first.open) for bar in bars
         )
+        progress = displacement / scale
+        path_efficiency = displacement / max(travel, self.tick_size)
+        impact, realized_capacity, absorption_proxy = self._response_metrics(
+            progress, path_efficiency, pressure,
+        )
         return ActivityBlock(
             start_ns=first.close_time_ns,
             end_ns=last.close_time_ns,
             bars=len(bars),
-            progress=displacement / scale,
-            path_efficiency=displacement / max(travel, self.tick_size),
+            progress=progress,
+            path_efficiency=path_efficiency,
             close_location=self._close_location(last, sign),
             favorable_excursion=max(favorable, 0.0) / scale,
             adverse_excursion=max(adverse, 0.0) / scale,
             activity_ratio=activity_ratio,
-            flow_share=flow_share,
+            flow_coherence=flow_coherence,
+            flow_share=flow_coherence,
+            pressure=pressure,
+            price_response=progress,
+            impact_per_pressure=impact,
+            realized_capacity=realized_capacity,
+            absorption_outcome_proxy=absorption_proxy,
         )
 
     @staticmethod
@@ -665,12 +771,20 @@ class EventTimeAuctionJourney:
             baseline_range=None,
             baseline_body=None,
             baseline_activity=None,
+            baseline_pressure=None,
             activity_input_known=False,
             flow_input_known=False,
             impulse_energy=None,
             settlement="UNKNOWN",
             control_transfer=False,
+            control_flow_coherence=None,
             control_flow_share=None,
+            control_pressure=None,
+            control_pressure_surprise=None,
+            control_price_response=0.0,
+            control_impact_per_pressure=None,
+            realized_capacity_progression=(),
+            absorption_outcome_proxy_progression=(),
             retest_time_ns=None,
             response_time_ns=None,
             response_close=None,
@@ -885,12 +999,12 @@ class EventTimeAuctionJourney:
             absolute_flow = sum(
                 abs(float(value)) for value in known_flow if value is not None
             )
-        flow_share = (
-            sign * flow_sum / absolute_flow
-            if stats[4] == count and absolute_flow > 0.0
-            else 0.0
-            if stats[4] == count
-            else None
+        flow_coherence, pressure = self._flow_metrics(
+            sign=sign,
+            flow_sum=flow_sum,
+            absolute_flow=absolute_flow,
+            activity_sum=stats[0],
+            inputs_known=(stats[1] == count and stats[4] == count),
         )
         favorable = (
             stats[8] - first.open if sign > 0 else first.open - stats[7]
@@ -898,17 +1012,28 @@ class EventTimeAuctionJourney:
         adverse = (
             first.open - stats[7] if sign > 0 else stats[8] - first.open
         )
+        progress = displacement / scale
+        path_efficiency = displacement / max(travel, self.tick_size)
+        impact, realized_capacity, absorption_proxy = self._response_metrics(
+            progress, path_efficiency, pressure,
+        )
         return ActivityBlock(
             start_ns=first.close_time_ns,
             end_ns=last.close_time_ns,
             bars=count,
-            progress=displacement / scale,
-            path_efficiency=displacement / max(travel, self.tick_size),
+            progress=progress,
+            path_efficiency=path_efficiency,
             close_location=self._close_location(last, sign),
             favorable_excursion=max(favorable, 0.0) / scale,
             adverse_excursion=max(adverse, 0.0) / scale,
             activity_ratio=activity_ratio,
-            flow_share=flow_share,
+            flow_coherence=flow_coherence,
+            flow_share=flow_coherence,
+            pressure=pressure,
+            price_response=progress,
+            impact_per_pressure=impact,
+            realized_capacity=realized_capacity,
+            absorption_outcome_proxy=absorption_proxy,
         )
 
     def _materialize_incremental(
@@ -919,6 +1044,7 @@ class EventTimeAuctionJourney:
         baseline_range: float | None,
         baseline_body: float | None,
         baseline_activity: float | None,
+        baseline_raw_pressure: float | None,
         stop: float | None,
         target: float | None,
     ) -> JourneyEvidence:
@@ -1071,9 +1197,20 @@ class EventTimeAuctionJourney:
 
         side_sign = outward if family == "ACCEPTED_AUCTION_CONTINUATION" else inward
         blocks = outward_blocks if family == "ACCEPTED_AUCTION_CONTINUATION" else inward_blocks
+        control_block = late
         if family == "ACCEPTED_AUCTION_CONTINUATION":
             control_transfer = response_confirms and accepted_completed
             flow_share = late_outward.flow_share
+            control_block = late_outward
+        baseline_pressure = (
+            side_sign * baseline_raw_pressure
+            if baseline_raw_pressure is not None else None
+        )
+        pressure_surprise = (
+            control_block.pressure - baseline_pressure
+            if control_block.pressure is not None and baseline_pressure is not None
+            else None
+        )
         stop_intact = accepted_stop_intact if accepted_resolution is not None else None
         if accepted_resolution is None and stop is not None:
             stop_intact = state.minimum > stop if side_sign > 0 else state.maximum < stop
@@ -1112,12 +1249,24 @@ class EventTimeAuctionJourney:
             baseline_range=baseline_range,
             baseline_body=baseline_body,
             baseline_activity=baseline_activity,
+            baseline_pressure=baseline_pressure,
             activity_input_known=state.activity_known,
             flow_input_known=state.flow_known,
             impulse_energy=impulse_energy,
             settlement=settlement,
             control_transfer=control_transfer,
+            control_flow_coherence=flow_share,
             control_flow_share=flow_share,
+            control_pressure=control_block.pressure,
+            control_pressure_surprise=pressure_surprise,
+            control_price_response=control_block.price_response,
+            control_impact_per_pressure=control_block.impact_per_pressure,
+            realized_capacity_progression=tuple(
+                block.realized_capacity for block in blocks
+            ),
+            absorption_outcome_proxy_progression=tuple(
+                block.absorption_outcome_proxy for block in blocks
+            ),
             retest_time_ns=retest_bar.close_time_ns if retest_bar is not None else None,
             response_time_ns=response_bar.close_time_ns if response_bar is not None else None,
             response_close=response_bar.close if response_bar is not None else None,
@@ -1161,9 +1310,12 @@ class EventTimeAuctionJourney:
             end_seq = self._oldest_seq + end_index - 1
             incremental = self._advance_incremental_state(interaction, end_seq)
             if incremental is not None:
-                baseline_range, baseline_body, baseline_activity = self._baseline(
-                    interaction.interaction_time_ns
-                )
+                (
+                    baseline_range,
+                    baseline_body,
+                    baseline_activity,
+                    baseline_raw_pressure,
+                ) = self._baseline(interaction.interaction_time_ns)
                 return self._materialize_incremental(
                     interaction,
                     observed_time_ns,
@@ -1171,6 +1323,7 @@ class EventTimeAuctionJourney:
                     baseline_range,
                     baseline_body,
                     baseline_activity,
+                    baseline_raw_pressure,
                     stop,
                     target,
                 )
@@ -1185,9 +1338,12 @@ class EventTimeAuctionJourney:
                 "no completed one-minute bars exist between interaction and observation",
             )
 
-        baseline_range, baseline_body, baseline_activity = self._baseline(
-            interaction.interaction_time_ns
-        )
+        (
+            baseline_range,
+            baseline_body,
+            baseline_activity,
+            baseline_raw_pressure,
+        ) = self._baseline(interaction.interaction_time_ns)
         inward = interaction.inward_sign
         outward = interaction.outward_sign
         outer = interaction.upper if interaction.source_side == "HIGH" else interaction.lower
@@ -1367,12 +1523,23 @@ class EventTimeAuctionJourney:
 
         side_sign = outward if family == "ACCEPTED_AUCTION_CONTINUATION" else inward
         blocks = outward_blocks if family == "ACCEPTED_AUCTION_CONTINUATION" else inward_blocks
+        control_block = late
         if family == "ACCEPTED_AUCTION_CONTINUATION":
             # The strict close beyond the retest favorable extreme is RE1's
             # accepted-auction control-transfer event.  Signed flow remains
             # evidence but does not override that exact price event.
             control_transfer = response_confirms and accepted_completed
             flow_share = outward_flow_share
+            control_block = late_outward
+        baseline_pressure = (
+            side_sign * baseline_raw_pressure
+            if baseline_raw_pressure is not None else None
+        )
+        pressure_surprise = (
+            control_block.pressure - baseline_pressure
+            if control_block.pressure is not None and baseline_pressure is not None
+            else None
+        )
         minimum = min(bar.low for bar in episode)
         maximum = max(bar.high for bar in episode)
         stop_intact = accepted_stop_intact if accepted_resolution is not None else None
@@ -1416,12 +1583,24 @@ class EventTimeAuctionJourney:
             baseline_range=baseline_range,
             baseline_body=baseline_body,
             baseline_activity=baseline_activity,
+            baseline_pressure=baseline_pressure,
             activity_input_known=activity_known,
             flow_input_known=flow_known,
             impulse_energy=impulse_energy,
             settlement=settlement,
             control_transfer=control_transfer,
+            control_flow_coherence=flow_share,
             control_flow_share=flow_share,
+            control_pressure=control_block.pressure,
+            control_pressure_surprise=pressure_surprise,
+            control_price_response=control_block.price_response,
+            control_impact_per_pressure=control_block.impact_per_pressure,
+            realized_capacity_progression=tuple(
+                block.realized_capacity for block in blocks
+            ),
+            absorption_outcome_proxy_progression=tuple(
+                block.absorption_outcome_proxy for block in blocks
+            ),
             retest_time_ns=retest_bar.close_time_ns if retest_bar is not None else None,
             response_time_ns=response_bar.close_time_ns if response_bar is not None else None,
             response_close=response_bar.close if response_bar is not None else None,

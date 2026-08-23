@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import random
 
 import pytest
@@ -14,6 +15,7 @@ from smc_ict_4.episode_policy_live.auction_journey import (
     StructureInteraction,
 )
 from smc_ict_4.episode_policy_live.domain import Bar
+from smc_ict_4.episode_policy_live.policy import SymbolEpisodePolicy
 
 
 MINUTE = 60_000_000_000
@@ -223,7 +225,149 @@ def test_missing_activity_and_flow_stay_unknown_under_structural_phase_fallback(
     assert not result.activity_input_known
     assert not result.flow_input_known
     assert result.control_flow_share is None
-    assert all(block.activity_ratio is None and block.flow_share is None for block in result.blocks)
+    assert result.control_flow_coherence is None
+    assert result.control_pressure is None
+    assert result.control_pressure_surprise is None
+    assert all(
+        block.activity_ratio is None
+        and block.flow_share is None
+        and block.flow_coherence is None
+        and block.pressure is None
+        and block.impact_per_pressure is None
+        and block.absorption_outcome_proxy is None
+        for block in result.blocks
+    )
+
+
+def test_pressure_preserves_weak_vs_full_persistent_flow_magnitude() -> None:
+    def observed(buy: float):
+        journey = tape()
+        episode = (
+            bar(6, open_=99.7, high=100.0, low=99.6, close=99.8, buy=buy),
+            bar(7, open_=99.8, high=99.85, low=99.2, close=99.3, buy=buy),
+        )
+        for item in episode:
+            journey.observe(item)
+        return journey.evaluate(interaction(), episode[-1].close_time_ns)
+
+    weak = observed(49.5)  # signed flow -1 on quote activity 100
+    full = observed(0.0)   # signed flow -100 on quote activity 100
+
+    assert weak.control_flow_share == pytest.approx(1.0)
+    assert full.control_flow_share == pytest.approx(1.0)
+    assert weak.control_flow_coherence == weak.control_flow_share
+    assert full.control_flow_coherence == full.control_flow_share
+    assert weak.control_pressure == pytest.approx(0.01)
+    assert full.control_pressure == pytest.approx(1.0)
+
+
+def test_flow_response_evidence_is_sign_symmetric_in_mirrored_coordinates() -> None:
+    high = tape()
+    high_episode = (
+        bar(6, open_=99.7, high=100.0, low=99.6, close=99.8, buy=20.0),
+        bar(7, open_=99.8, high=99.85, low=99.2, close=99.3, buy=20.0),
+    )
+    for item in high_episode:
+        high.observe(item)
+    high_result = high.evaluate(interaction(), high_episode[-1].close_time_ns)
+
+    low = EventTimeAuctionJourney("BTCUSDT", 0.1)
+    for minute in range(6):
+        low.observe(
+            bar(minute, open_=100.6, high=100.8, low=100.3, close=100.5)
+        )
+    low_source = StructureInteraction(
+        "PUBLIC:LOW:MIRROR", "BTCUSDT", "LOW", 100.0, 100.1,
+        7 * MINUTE - 1,
+    )
+    low_episode = (
+        bar(6, open_=100.3, high=100.4, low=100.1, close=100.2, buy=80.0),
+        bar(7, open_=100.2, high=100.8, low=100.15, close=100.7, buy=80.0),
+    )
+    for item in low_episode:
+        low.observe(item)
+    low_result = low.evaluate(low_source, low_episode[-1].close_time_ns)
+
+    assert high_result.control_pressure == pytest.approx(low_result.control_pressure)
+    assert high_result.control_flow_coherence == pytest.approx(
+        low_result.control_flow_coherence,
+    )
+    assert high_result.control_price_response == pytest.approx(
+        low_result.control_price_response,
+    )
+    assert high_result.realized_capacity_progression == pytest.approx(
+        low_result.realized_capacity_progression,
+    )
+    assert high_result.absorption_outcome_proxy_progression == pytest.approx(
+        low_result.absorption_outcome_proxy_progression,
+    )
+
+
+def test_pressure_baseline_and_surprise_are_strictly_pre_interaction() -> None:
+    journey = EventTimeAuctionJourney("BTCUSDT", 0.1)
+    for minute in range(6):
+        journey.observe(
+            bar(
+                minute, open_=99.4, high=99.7, low=99.2, close=99.5,
+                quote=100.0, buy=60.0,
+            )
+        )
+    episode = (
+        bar(6, open_=99.7, high=100.0, low=99.6, close=99.8, buy=20.0),
+        bar(7, open_=99.8, high=99.85, low=99.2, close=99.3, buy=20.0),
+    )
+    for item in episode:
+        journey.observe(item)
+
+    result = journey.evaluate(interaction(), episode[-1].close_time_ns)
+
+    # Raw pre-interaction buy pressure is +0.2; the HIGH-side inward journey
+    # projects it to -0.2.  The control third has inward pressure +0.6.
+    assert result.baseline_pressure == pytest.approx(-0.2)
+    assert result.control_pressure == pytest.approx(0.6)
+    assert result.control_pressure_surprise == pytest.approx(0.8)
+
+
+def test_flow_response_fields_are_prefix_invariant() -> None:
+    journey = tape()
+    episode = (
+        bar(6, open_=99.8, high=100.5, low=99.7, close=100.2, buy=80.0),
+        bar(7, open_=100.2, high=100.25, low=99.75, close=99.85, buy=25.0),
+        bar(8, open_=99.85, high=99.9, low=99.1, close=99.2, buy=20.0),
+    )
+    for item in episode:
+        journey.observe(item)
+    before = journey.evaluate(interaction(), episode[-1].close_time_ns)
+    journey.observe(
+        bar(9, open_=99.2, high=102.0, low=99.0, close=101.5, buy=100.0),
+    )
+    same_prefix = journey.evaluate(interaction(), episode[-1].close_time_ns)
+
+    assert same_prefix == before
+
+
+def test_flow_response_fields_flatten_to_restart_safe_policy_evidence() -> None:
+    journey = tape()
+    episode = (
+        bar(6, open_=99.7, high=100.0, low=99.6, close=99.8, buy=20.0),
+        bar(7, open_=99.8, high=99.85, low=99.2, close=99.3, buy=20.0),
+    )
+    for item in episode:
+        journey.observe(item)
+    result = journey.evaluate(interaction(), episode[-1].close_time_ns)
+
+    evidence = SymbolEpisodePolicy._journey_flow_response_evidence(result)
+    restored = json.loads(json.dumps(evidence, sort_keys=True))
+
+    assert restored == evidence
+    assert evidence["journey_flow_response_semantics"] == (
+        "PUBLIC_KLINE_OUTCOME_PROXY_NOT_L2"
+    )
+    assert evidence["journey_control_flow_coherence"] == (
+        evidence["journey_control_flow_share"]
+    )
+    assert evidence["journey_activity_third_1_pressure"] == pytest.approx(0.6)
+    assert "journey_activity_third_1_absorption_outcome_proxy" in evidence
 
 
 def test_decision_timestamp_cannot_use_later_completion_bar() -> None:
@@ -445,7 +589,15 @@ def _assert_incremental_semantics_equal(actual, expected) -> None:  # type: igno
     assert replace(
         actual,
         blocks=expected.blocks,
+        control_flow_coherence=expected.control_flow_coherence,
         control_flow_share=expected.control_flow_share,
+        control_pressure=expected.control_pressure,
+        control_pressure_surprise=expected.control_pressure_surprise,
+        control_impact_per_pressure=expected.control_impact_per_pressure,
+        realized_capacity_progression=expected.realized_capacity_progression,
+        absorption_outcome_proxy_progression=(
+            expected.absorption_outcome_proxy_progression
+        ),
     ) == expected
     assert len(actual.blocks) == len(expected.blocks)
     for left, right in zip(actual.blocks, expected.blocks, strict=True):
@@ -455,7 +607,9 @@ def _assert_incremental_semantics_equal(actual, expected) -> None:  # type: igno
         for name in (
             "progress", "path_efficiency", "close_location",
             "favorable_excursion", "adverse_excursion", "activity_ratio",
-            "flow_share",
+            "flow_coherence", "flow_share", "pressure", "price_response",
+            "impact_per_pressure", "realized_capacity",
+            "absorption_outcome_proxy",
         ):
             left_value = getattr(left, name)
             right_value = getattr(right, name)
@@ -469,6 +623,32 @@ def _assert_incremental_semantics_equal(actual, expected) -> None:  # type: igno
         assert actual.control_flow_share == pytest.approx(
             expected.control_flow_share, rel=1e-14, abs=1e-14,
         )
+    for name in (
+        "control_flow_coherence", "control_pressure",
+        "control_pressure_surprise", "control_impact_per_pressure",
+    ):
+        actual_value = getattr(actual, name)
+        expected_value = getattr(expected, name)
+        if actual_value is None or expected_value is None:
+            assert actual_value is expected_value
+        else:
+            assert actual_value == pytest.approx(
+                expected_value, rel=1e-14, abs=1e-14,
+            )
+    assert actual.realized_capacity_progression == pytest.approx(
+        expected.realized_capacity_progression, rel=1e-14, abs=1e-14,
+    )
+    for actual_value, expected_value in zip(
+        actual.absorption_outcome_proxy_progression,
+        expected.absorption_outcome_proxy_progression,
+        strict=True,
+    ):
+        if actual_value is None or expected_value is None:
+            assert actual_value is expected_value
+        else:
+            assert actual_value == pytest.approx(
+                expected_value, rel=1e-14, abs=1e-14,
+            )
 
 
 def test_incremental_evaluation_is_reference_semantics_equivalent() -> None:

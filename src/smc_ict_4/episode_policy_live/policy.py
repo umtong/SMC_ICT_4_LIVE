@@ -1654,6 +1654,63 @@ class SymbolEpisodePolicy:
             return "LONG" if source_side == "HIGH" else "SHORT"
         return "SHORT" if source_side == "HIGH" else "LONG"
 
+    @staticmethod
+    def _journey_flow_response_evidence(
+        journey: JourneyEvidence,
+    ) -> dict[str, float | str | int]:
+        """Flatten causal flow/response observations for durable evidence.
+
+        Missing public-kline inputs stay absent rather than becoming neutral
+        flow.  Absorption fields are outcome proxies: klines cannot observe L2
+        replenishment or passive queue identity.
+        """
+
+        output: dict[str, float | str | int] = {
+            "journey_flow_response_semantics": "PUBLIC_KLINE_OUTCOME_PROXY_NOT_L2",
+        }
+        optional = {
+            "journey_baseline_pressure": getattr(journey, "baseline_pressure", None),
+            "journey_control_flow_coherence": getattr(
+                journey, "control_flow_coherence", None,
+            ),
+            # Compatibility alias retaining the pre-existing calculation.
+            "journey_control_flow_share": getattr(journey, "control_flow_share", None),
+            "journey_control_pressure": getattr(journey, "control_pressure", None),
+            "journey_control_pressure_surprise": getattr(
+                journey, "control_pressure_surprise", None,
+            ),
+            "journey_control_price_response": getattr(
+                journey, "control_price_response", None,
+            ),
+            "journey_control_impact_per_pressure": getattr(
+                journey, "control_impact_per_pressure", None,
+            ),
+        }
+        output.update({key: value for key, value in optional.items() if value is not None})
+        for index, block in enumerate(getattr(journey, "blocks", ()), start=1):
+            prefix = f"journey_activity_third_{index}"
+            output.update(
+                {
+                    f"{prefix}_price_response": block.price_response,
+                    f"{prefix}_realized_capacity": block.realized_capacity,
+                },
+            )
+            block_optional = {
+                f"{prefix}_flow_coherence": block.flow_coherence,
+                f"{prefix}_flow_share": block.flow_share,
+                f"{prefix}_pressure": block.pressure,
+                f"{prefix}_impact_per_pressure": block.impact_per_pressure,
+                f"{prefix}_absorption_outcome_proxy": block.absorption_outcome_proxy,
+            }
+            output.update(
+                {
+                    key: value
+                    for key, value in block_optional.items()
+                    if value is not None
+                },
+            )
+        return output
+
     def _episode_tape(self, watch: EpisodeWatch, observed_time_ns: int):
         return list(
             self.journey.bars_between(
@@ -2003,6 +2060,7 @@ class SymbolEpisodePolicy:
                 journey_control_transfer=int(journey.control_transfer),
                 journey_activity_known=int(journey.activity_input_known),
                 journey_flow_known=int(journey.flow_input_known),
+                **self._journey_flow_response_evidence(journey),
             )
             if not journey.completed or journey.family is None:
                 terminal_acceptance = journey.terminal_state in {
