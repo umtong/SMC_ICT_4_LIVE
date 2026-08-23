@@ -37,59 +37,72 @@ control evidence.
 - Synthetic `CAUSAL_DEPARTURE_BAND` entries are rejected.
 - A filled position exits only through its declared TP or SL.
 - An unfilled order dies only with its original causal opportunity.
-- Model labels enter training only after their fill/cancel or TP/SL result was
-  observable.
-- No heuristic probability fallback may trade when mature history is
-  insufficient.
+- Model labels enter training only after their fill/cancel or TP/SL result was observable.
+- No heuristic probability fallback may trade when mature history is insufficient.
 - All symbols share one pending/position slot and one continuous account path.
 
 ## Restoration provenance
 
-The branch was created from `research_liquidity_episode_policy`. The base
-router file had disappeared from the tip even though
-`route_episode_policy_causal.py` still imported it. The exact historical blob
-was restored:
+The base router file had disappeared from the source branch tip even though
+`route_episode_policy_causal.py` still imported it. The exact historical blob was restored:
 
-- historical commit:
-  `8ec7bbc6c6f29b0bae5b2d386106056ca8697d4e`
-- restored `route_episode_policy.py` blob:
-  `92459a08e98a634ec0a096ec1d567c78abdff7a9`
+- historical commit: `8ec7bbc6c6f29b0bae5b2d386106056ca8697d4e`
+- restored `route_episode_policy.py` blob: `92459a08e98a634ec0a096ec1d567c78abdff7a9`
 
 No replacement router was invented for the restoration.
 
+## Windows 11 production-candidate runtime
+
+The `production/`, `configs/` and `windows/` directories turn the restored policy into a
+reproducible operational system without changing its alpha grammar.
+
+```text
+closed Binance USD-M futures / mark / index / public positioning data
+-> restored episode_policy.generate_symbol
+-> frozen causal model bundle (orders fail closed when absent)
+-> account-wide arbitration and 3% NAV risk sizing
+-> durable SQLite WAL event/hash/checkpoint state
+-> no-order connected shadow
+   or NautilusTrader live-data + sandbox paper execution
+   or explicitly armed Binance USD-M Futures testnet execution
+```
+
+The public-data producer and Nautilus execution process communicate through one durable
+SQLite database. An atomic account slot prevents two symbols or episodes from occupying
+the account at the same time. Every decision is idempotent by episode/decision ID. Restart
+recovery verifies both SQLite integrity and the append-only event hash chain before resuming.
+
+Native Windows 11 commands, model construction, historical continuous reproduction,
+shadow, paper and testnet procedures are documented in
+[PRODUCTION_WINDOWS_11.md](PRODUCTION_WINDOWS_11.md).
+
+The physical execution boundary is deliberate:
+
+- `shadow`: refuses to start when Binance credentials are present and has no order gateway;
+- `paper`: uses public live Binance data and NautilusTrader `SandboxExecutionClient`;
+- `testnet`: requires a separate config, testnet credentials and an explicit PowerShell switch;
+- no command in this candidate submits real-money Binance production orders.
+
 ## Reproduction
 
-The pinned workflow is:
+The restoration workflow remains:
 
 ```text
 .github/workflows/candidate-liquidity-episode-policy-v1.yml
 ```
 
-On every source push to this branch it:
+The production-candidate workflows add native Windows tests, a real Nautilus bracket
+lifecycle smoke, bounded connected shadow restart/reconciliation and bounded Nautilus
+sandbox connectivity. Long historical continuous evaluation and model-bundle construction
+are separate explicit workflows because they download substantial public history.
 
-1. checks out the exact triggering SHA;
-2. runs in the pinned research-container digest;
-3. installs the pinned strict-router dependency;
-4. compiles and imports the entire restored policy;
-5. runs a network-free chronological-model and global-account self-check;
-6. harvests a fixed public-data smoke interval for all four symbols;
-7. commits compact source-bound evidence to
-   `research_results/candidate_liquidity_episode_policy_v1/latest`.
-
-Every committed reproduction record names the exact source SHA that produced it.
-A later GitHub Actions publication commit therefore cannot be confused with the
-policy source commit it evaluated.
-
-Full artifacts remain attached to the GitHub Actions run. The compact committed
-record contains only JSON summaries and source identity, not a substitute result.
-
-Exact local/container commands and the meaning of each evidence file are in
+Exact local/container commands and the original restoration evidence contract are in
 [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 
-## Important evidence boundary
+## Evidence boundary
 
-A successful reproduction workflow proves that the repository contains an
-executable causal policy, strict router and real-data harvest path at that SHA.
-It does **not** by itself prove long-horizon after-cost alpha or months of live
-paper stability. Those claims require their own committed continuous-account
-and shadow records generated by the same frozen source.
+A green contract or operational workflow proves that the exact source can be installed,
+started, restarted and reconciled on the tested environment. It does not turn a short smoke
+into long-horizon alpha evidence. Long after-cost performance remains the output of the
+single four-market continuous account, and connected shadow/paper quality remains the
+observed operational record rather than the name of this branch.
