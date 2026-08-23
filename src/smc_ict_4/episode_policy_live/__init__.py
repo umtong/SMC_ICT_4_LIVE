@@ -7,14 +7,26 @@ shadow account implementation cannot be mistaken for the production path.
 
 from .domain import Bar, ContractSpec, DEFAULT_CONTRACTS, FundingRate, TradePlan
 from .policy import LiquidityEpisodeCoordinator, PolicyConfig, SymbolEpisodePolicy
+from .route_survival import (
+    FrozenRoute,
+    RouteScore,
+    RouteState,
+    RouteSurvivalBook,
+    native_route_economics,
+)
 
 __all__ = [
     "Bar",
     "ContractSpec",
     "DEFAULT_CONTRACTS",
     "FundingRate",
+    "FrozenRoute",
     "LiquidityEpisodeCoordinator",
     "PolicyConfig",
+    "RouteScore",
+    "RouteState",
+    "RouteSurvivalBook",
     "SymbolEpisodePolicy",
     "TradePlan",
+    "native_route_economics",
 ]
