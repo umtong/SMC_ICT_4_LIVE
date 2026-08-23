@@ -64,15 +64,21 @@ jobs:
           print(f'materialized {len(parts)} parts, tar_sha256={digest}')
           PY
 
+          # GITHUB_TOKEN may update source files but cannot create/update workflow files.
+          # Keep this bootstrap workflow untouched and let the repository connector install
+          # the reviewed production workflows after the source commit lands.
           rm -rf .bootstrap
-          rm -f .github/workflows/bootstrap-production-candidate.yml
+          rm -f .github/workflows/candidate-liquidity-episode-build-model.yml
+          rm -f .github/workflows/candidate-liquidity-episode-connected-shadow.yml
+          rm -f .github/workflows/candidate-liquidity-episode-paper-connectivity.yml
+          rm -f .github/workflows/candidate-liquidity-episode-production-windows.yml
 
-      - name: Commit the complete production-candidate system
+      - name: Commit the complete production-candidate source system
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Complete Windows paper-shadow production candidate"
+          git commit -m "Complete Windows paper-shadow production candidate source"
           git push origin HEAD:production-candidate-liquidity-episode-policy-v1
