@@ -1,0 +1,1124 @@
+{
+  "candidate-diagonal-channel-auction-v1": {
+    "directory": "research/candidate-diagonal-channel-auction-v1",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-diagonal-channel-auction-v1/diagonal_channel_auction.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": "float",
+            "line": 124
+          },
+          {
+            "name": "_sign",
+            "args": [
+              "side"
+            ],
+            "returns": "float",
+            "line": 132
+          },
+          {
+            "name": "_detect_pivots",
+            "args": [
+              "raw",
+              "one_minute",
+              "tick"
+            ],
+            "returns": "tuple[list[Pivot], dict[int, pd.DataFrame]]",
+            "line": 136
+          },
+          {
+            "name": "_line_value",
+            "args": [
+              "first",
+              "slope_per_minute",
+              "timestamp_ns"
+            ],
+            "returns": "float",
+            "line": 173
+          },
+          {
+            "name": "_construct_lines",
+            "args": [
+              "pivots",
+              "one_minute",
+              "aggregates",
+              "tick"
+            ],
+            "returns": "list[DiagonalLine]",
+            "line": 177
+          },
+          {
+            "name": "_response_at",
+            "args": [
+              "data",
+              "start",
+              "side",
+              "line",
+              "event_extreme",
+              "mechanism",
+              "break_index",
+              "hold_index",
+              "retest_index"
+            ],
+            "returns": "DiagonalEvent | None",
+            "line": 281
+          },
+          {
+            "name": "_scan_line",
+            "args": [
+              "data",
+              "line",
+              "trading_start_ns"
+            ],
+            "returns": "DiagonalEvent | None",
+            "line": 310
+          },
+          {
+            "name": "_external_target",
+            "args": [
+              "levels",
+              "side",
+              "emission_index",
+              "entry",
+              "minimum_scale"
+            ],
+            "returns": "LiquidityLevel | None",
+            "line": 358
+          },
+          {
+            "name": "_make_action",
+            "args": [
+              "symbol",
+              "data",
+              "line",
+              "event",
+              "levels",
+              "tick"
+            ],
+            "returns": "ActionSpec | None",
+            "line": 371
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "raw",
+              "levels",
+              "trading_start"
+            ],
+            "returns": null,
+            "line": 488
+          },
+          {
+            "name": "run_research",
+            "args": [
+              "start",
+              "end",
+              "warmup_days",
+              "symbols",
+              "cache",
+              "output"
+            ],
+            "returns": null,
+            "line": 521
+          }
+        ],
+        "classes": [
+          {
+            "name": "Pivot",
+            "fields": [
+              "pivot_id",
+              "side",
+              "timeframe_minutes",
+              "center_position",
+              "center_time_ns",
+              "observed_time_ns",
+              "observed_index_1m",
+              "price",
+              "atr"
+            ],
+            "line": 65
+          },
+          {
+            "name": "DiagonalLine",
+            "fields": [
+              "line_id",
+              "side",
+              "timeframe_minutes",
+              "first",
+              "second",
+              "slope_per_minute",
+              "observed_index_1m",
+              "observed_time_ns",
+              "atr",
+              "tolerance",
+              "pivot_inliers",
+              "prior_violation_fraction",
+              "channel_offset",
+              "opposite_pivot_inliers"
+            ],
+            "line": 78
+          },
+          {
+            "name": "DiagonalEvent",
+            "fields": [
+              "mechanism",
+              "side",
+              "interaction_index",
+              "break_index",
+              "hold_index",
+              "retest_index",
+              "response_index",
+              "event_extreme",
+              "stop_reference",
+              "projected_line",
+              "penetration",
+              "response_kind"
+            ],
+            "line": 109
+          }
+        ]
+      },
+      {
+        "path": "research/candidate-diagonal-channel-auction-v1/run_research.py",
+        "functions": [
+          {
+            "name": "main",
+            "args": [],
+            "returns": null,
+            "line": 8
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-liquidity-displacement-v1": {
+    "directory": "research/candidate-liquidity-displacement-v1",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-liquidity-displacement-v1/liquidity_displacement.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": "float",
+            "line": 57
+          },
+          {
+            "name": "_side_sign",
+            "args": [
+              "side"
+            ],
+            "returns": "float",
+            "line": 65
+          },
+          {
+            "name": "_directional",
+            "args": [
+              "side",
+              "value"
+            ],
+            "returns": "float",
+            "line": 69
+          },
+          {
+            "name": "_merge_metrics",
+            "args": [
+              "data",
+              "metrics"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 73
+          },
+          {
+            "name": "_add_common_state",
+            "args": [
+              "prepared"
+            ],
+            "returns": "dict[str, pd.DataFrame]",
+            "line": 85
+          },
+          {
+            "name": "_structure_state",
+            "args": [
+              "levels",
+              "emission_ns",
+              "side"
+            ],
+            "returns": "dict[str, float]",
+            "line": 117
+          },
+          {
+            "name": "_find_local_control",
+            "args": [
+              "data",
+              "index",
+              "side",
+              "lookback"
+            ],
+            "returns": "float",
+            "line": 136
+          },
+          {
+            "name": "_displacement_zone",
+            "args": [
+              "data",
+              "index",
+              "side",
+              "tick"
+            ],
+            "returns": "dict[str, Any] | None",
+            "line": 143
+          },
+          {
+            "name": "_first_return_response",
+            "args": [
+              "data",
+              "zone",
+              "side",
+              "tick"
+            ],
+            "returns": "dict[str, Any] | None",
+            "line": 217
+          },
+          {
+            "name": "_event_candidate",
+            "args": [
+              "data",
+              "interaction",
+              "boundary",
+              "tick"
+            ],
+            "returns": "dict[str, Any] | None",
+            "line": 274
+          },
+          {
+            "name": "_action_from_sequence",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "boundary",
+              "interaction_index",
+              "event",
+              "zone",
+              "response",
+              "tick"
+            ],
+            "returns": "ActionSpec | None",
+            "line": 325
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "trading_start"
+            ],
+            "returns": "tuple[pd.DataFrame, dict[str, Any]]",
+            "line": 483
+          },
+          {
+            "name": "run_research",
+            "args": [
+              "start",
+              "end",
+              "warmup_days",
+              "symbols",
+              "cache",
+              "output"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 593
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-liquidity-displacement-v1/render_cases_svg.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": null,
+            "line": 26
+          },
+          {
+            "name": "_ts",
+            "args": [
+              "value"
+            ],
+            "returns": null,
+            "line": 34
+          },
+          {
+            "name": "_x",
+            "args": [
+              "index",
+              "timestamp"
+            ],
+            "returns": "float",
+            "line": 38
+          },
+          {
+            "name": "_yscale",
+            "args": [
+              "low",
+              "high",
+              "y",
+              "height"
+            ],
+            "returns": null,
+            "line": 46
+          },
+          {
+            "name": "_candles",
+            "args": [
+              "parts",
+              "frame",
+              "y",
+              "height",
+              "extra_prices"
+            ],
+            "returns": null,
+            "line": 51
+          },
+          {
+            "name": "_hline",
+            "args": [
+              "parts",
+              "sy",
+              "price",
+              "label",
+              "color",
+              "dash",
+              "width"
+            ],
+            "returns": null,
+            "line": 76
+          },
+          {
+            "name": "_band",
+            "args": [
+              "parts",
+              "sy",
+              "lower",
+              "upper",
+              "label",
+              "color",
+              "opacity"
+            ],
+            "returns": null,
+            "line": 83
+          },
+          {
+            "name": "_vline",
+            "args": [
+              "parts",
+              "index",
+              "timestamp",
+              "y",
+              "height",
+              "label",
+              "color"
+            ],
+            "returns": null,
+            "line": 89
+          },
+          {
+            "name": "_flow_panel",
+            "args": [
+              "parts",
+              "frame"
+            ],
+            "returns": null,
+            "line": 95
+          },
+          {
+            "name": "render_case",
+            "args": [
+              "row",
+              "raw",
+              "path"
+            ],
+            "returns": null,
+            "line": 117
+          },
+          {
+            "name": "main",
+            "args": [],
+            "returns": null,
+            "line": 167
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-liquidity-displacement-v1/run_research.py",
+        "functions": [
+          {
+            "name": "main",
+            "args": [],
+            "returns": "None",
+            "line": 12
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-auction-dislocation-confluence-v1": {
+    "directory": "research/candidate-auction-dislocation-confluence-v1",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-auction-dislocation-confluence-v1/confluence.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": "float",
+            "line": 51
+          },
+          {
+            "name": "_outward_direction",
+            "args": [
+              "boundary"
+            ],
+            "returns": "float",
+            "line": 59
+          },
+          {
+            "name": "_derivatives_context",
+            "args": [
+              "data",
+              "event",
+              "boundary"
+            ],
+            "returns": "dict[str, Any] | None",
+            "line": 63
+          },
+          {
+            "name": "_response_derivatives_valid",
+            "args": [
+              "data",
+              "response",
+              "context",
+              "side"
+            ],
+            "returns": "tuple[bool, dict[str, float]]",
+            "line": 119
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "trading_start"
+            ],
+            "returns": null,
+            "line": 143
+          },
+          {
+            "name": "run_research",
+            "args": [
+              "start",
+              "end",
+              "warmup_days",
+              "symbols",
+              "cache",
+              "output"
+            ],
+            "returns": null,
+            "line": 216
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-auction-dislocation-confluence-v1/run_research.py",
+        "functions": [
+          {
+            "name": "main",
+            "args": [],
+            "returns": null,
+            "line": 8
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-derivatives-dislocation-v1": {
+    "directory": "research/candidate-derivatives-dislocation-v1",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-derivatives-dislocation-v1/derivatives_dislocation.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": "float",
+            "line": 54
+          },
+          {
+            "name": "_side_sign",
+            "args": [
+              "side"
+            ],
+            "returns": "float",
+            "line": 62
+          },
+          {
+            "name": "_prepare_reference",
+            "args": [
+              "frame",
+              "prefix"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 66
+          },
+          {
+            "name": "prepare_market_state",
+            "args": [
+              "futures",
+              "index_price",
+              "mark_price",
+              "metrics",
+              "tick_size"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 73
+          },
+          {
+            "name": "_event_features",
+            "args": [
+              "data",
+              "index",
+              "direction"
+            ],
+            "returns": "dict[str, float]",
+            "line": 115
+          },
+          {
+            "name": "_classify_event",
+            "args": [
+              "data",
+              "index",
+              "boundary"
+            ],
+            "returns": "tuple[str, float, dict[str, float]] | None",
+            "line": 147
+          },
+          {
+            "name": "_confirmation",
+            "args": [
+              "data",
+              "event_index",
+              "boundary",
+              "mechanism",
+              "direction"
+            ],
+            "returns": "dict[str, Any] | None",
+            "line": 172
+          },
+          {
+            "name": "_make_action",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "boundary",
+              "event_index",
+              "mechanism",
+              "direction",
+              "event_features",
+              "confirmation",
+              "tick"
+            ],
+            "returns": "ActionSpec | None",
+            "line": 241
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "trading_start"
+            ],
+            "returns": "tuple[pd.DataFrame, dict[str, Any]]",
+            "line": 340
+          },
+          {
+            "name": "run_research",
+            "args": [
+              "start",
+              "end",
+              "warmup_days",
+              "symbols",
+              "cache",
+              "output"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 413
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-derivatives-dislocation-v1/market_data.py",
+        "functions": [
+          {
+            "name": "_time_unit",
+            "args": [
+              "values"
+            ],
+            "returns": "str",
+            "line": 18
+          },
+          {
+            "name": "load_day",
+            "args": [
+              "kind",
+              "symbol",
+              "day",
+              "cache"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 27
+          },
+          {
+            "name": "load_range",
+            "args": [
+              "kind",
+              "symbol",
+              "start",
+              "end",
+              "cache"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 62
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-derivatives-dislocation-v1/run_research.py",
+        "functions": [
+          {
+            "name": "main",
+            "args": [],
+            "returns": "None",
+            "line": 12
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-hierarchical-liquidity-bpr-v2": {
+    "directory": "research/candidate-hierarchical-liquidity-bpr-v2",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-hierarchical-liquidity-bpr-v2/hierarchical_liquidity_bpr_v2.py",
+        "functions": [
+          {
+            "name": "_nearest_route_target",
+            "args": [
+              "levels",
+              "source",
+              "side",
+              "emission_index",
+              "entry"
+            ],
+            "returns": "v1.LiquidityLevel | None",
+            "line": 44
+          },
+          {
+            "name": "_make_action_v2",
+            "args": [],
+            "returns": null,
+            "line": 71
+          },
+          {
+            "name": "detect_levels_v2",
+            "args": [
+              "symbol",
+              "data",
+              "raw",
+              "tick"
+            ],
+            "returns": null,
+            "line": 80
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "raw",
+              "levels",
+              "trading_start"
+            ],
+            "returns": "tuple[pd.DataFrame, dict[str, Any]]",
+            "line": 89
+          },
+          {
+            "name": "run_research",
+            "args": [
+              "start",
+              "end",
+              "warmup_days",
+              "symbols",
+              "cache",
+              "output"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 151
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-hierarchical-liquidity-bpr-v2/run_research.py",
+        "functions": [
+          {
+            "name": "main",
+            "args": [],
+            "returns": null,
+            "line": 8
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-auction-episode-system": {
+    "directory": "research/candidate-auction-episode-system",
+    "readme": null,
+    "files": [
+      {
+        "path": "research/candidate-auction-episode-system/auction_episode_harvest.py",
+        "functions": [
+          {
+            "name": "_finite",
+            "args": [
+              "value",
+              "default"
+            ],
+            "returns": "float",
+            "line": 27
+          },
+          {
+            "name": "_phase",
+            "args": [
+              "progress_r",
+              "retrace_fraction",
+              "outside_ratio"
+            ],
+            "returns": "str",
+            "line": 35
+          },
+          {
+            "name": "episode_arm_metrics",
+            "args": [
+              "data",
+              "candidate",
+              "arm",
+              "entry",
+              "stop"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 47
+          },
+          {
+            "name": "episode_arm_positions",
+            "args": [
+              "data",
+              "candidate",
+              "source",
+              "entry",
+              "stop",
+              "target",
+              "tick"
+            ],
+            "returns": "Iterator[int]",
+            "line": 105
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-auction-episode-system/auction_episode_policy.py",
+        "functions": [
+          {
+            "name": "load_actions",
+            "args": [
+              "root"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 82
+          },
+          {
+            "name": "feature_columns",
+            "args": [
+              "frame"
+            ],
+            "returns": "tuple[list[str], list[str]]",
+            "line": 99
+          },
+          {
+            "name": "_matrix",
+            "args": [
+              "train",
+              "test",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "tuple[pd.DataFrame, pd.DataFrame, list[int]]",
+            "line": 120
+          },
+          {
+            "name": "_weights",
+            "args": [
+              "frame"
+            ],
+            "returns": "np.ndarray",
+            "line": 135
+          },
+          {
+            "name": "classifier",
+            "args": [
+              "train",
+              "test",
+              "label",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "tuple[np.ndarray, np.ndarray]",
+            "line": 141
+          },
+          {
+            "name": "duration_model",
+            "args": [
+              "train",
+              "test",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "tuple[np.ndarray, np.ndarray]",
+            "line": 179
+          },
+          {
+            "name": "score_fold",
+            "args": [
+              "train",
+              "test",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 216
+          },
+          {
+            "name": "_state_best",
+            "args": [
+              "frame"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 265
+          },
+          {
+            "name": "route",
+            "args": [
+              "frame"
+            ],
+            "returns": "tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]",
+            "line": 282
+          },
+          {
+            "name": "diagnostic_clinics",
+            "args": [
+              "scored",
+              "orders",
+              "trades"
+            ],
+            "returns": "tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]",
+            "line": 360
+          },
+          {
+            "name": "run",
+            "args": [
+              "development_root",
+              "fresh_root",
+              "output"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 399
+          },
+          {
+            "name": "main",
+            "args": [],
+            "returns": "None",
+            "line": 450
+          }
+        ],
+        "classes": []
+      }
+    ]
+  },
+  "candidate-1k-auction-system": {
+    "directory": "research/candidate-1k-auction-system",
+    "readme": "# Candidate 1k — exact-route causal auction system\n\nThis branch does not treat the previous policy as a benchmark. It reuses the data,\ncausal labeling and account-routing engineering that already works, while replacing\none central decision error: previous episode plans chose an arbitrary 1.0–2.0R grid\ninside the route. Candidate 1k exits the whole position at the first still-unconsumed\nopposing semantic-liquidity or causal 24h volume obstacle. If that real destination\ncannot pay at least 1R from a structural invalidation stop, there is no trade.\n\nThe common decision grammar is:\n\n1. a pre-existing semantic liquidity boundary supplies directional context;\n2. the interaction becomes either failed-auction reversal or accepted-auction continuation;\n3. price/volume, common-market, basis and OI behavior describe ownership;\n4. the first-return zone refines entry; it does not vote on direction;\n5. stop and exact structural target are immutable before entry;\n6. one account slot arbitrates BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT;\n7. completed positions exit only at the predeclared TP or SL.\n\nThe first diagnostic intentionally uses separated short periods. Its purpose is to\nexpose implementation and market-logic errors quickly; it is not long-run evidence.\n",
+    "files": [
+      {
+        "path": "research/candidate-1k-auction-system/candidate_1k_harvest.py",
+        "functions": [
+          {
+            "name": "direction_sources",
+            "args": [
+              "levels",
+              "metadata",
+              "minimum_timeframe"
+            ],
+            "returns": null,
+            "line": 42
+          },
+          {
+            "name": "atr_price",
+            "args": [
+              "data",
+              "position",
+              "lookback"
+            ],
+            "returns": "float",
+            "line": 56
+          },
+          {
+            "name": "_sign",
+            "args": [
+              "side"
+            ],
+            "returns": "float",
+            "line": 81
+          },
+          {
+            "name": "_target_plan",
+            "args": [
+              "data",
+              "levels",
+              "metadata",
+              "candidate",
+              "entry",
+              "stop",
+              "tick"
+            ],
+            "returns": null,
+            "line": 85
+          },
+          {
+            "name": "generate_symbol",
+            "args": [
+              "symbol",
+              "data",
+              "levels",
+              "metadata",
+              "trading_start"
+            ],
+            "returns": null,
+            "line": 124
+          }
+        ],
+        "classes": []
+      },
+      {
+        "path": "research/candidate-1k-auction-system/candidate_1k_policy.py",
+        "functions": [
+          {
+            "name": "classifier",
+            "args": [
+              "train",
+              "test",
+              "label",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "tuple[np.ndarray, np.ndarray]",
+            "line": 33
+          },
+          {
+            "name": "score_fold",
+            "args": [
+              "train",
+              "test",
+              "numeric",
+              "categorical"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 82
+          },
+          {
+            "name": "_state_best",
+            "args": [
+              "frame"
+            ],
+            "returns": "pd.DataFrame",
+            "line": 133
+          },
+          {
+            "name": "route",
+            "args": [
+              "frame"
+            ],
+            "returns": "tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]",
+            "line": 151
+          },
+          {
+            "name": "run",
+            "args": [
+              "development_root",
+              "fresh_root",
+              "output"
+            ],
+            "returns": "dict[str, Any]",
+            "line": 239
+          },
+          {
+            "name": "main",
+            "args": [],
+            "returns": "None",
+            "line": 292
+          }
+        ],
+        "classes": []
+      }
+    ]
+  }
+}
