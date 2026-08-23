@@ -1,0 +1,119 @@
+name: Research candidate 3b proof-route diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_3b"]
+    paths:
+      - ".github/workflows/research-candidate-3b-short.yml"
+      - "research/candidate-3b-synthesis/**"
+
+concurrency:
+  group: research-candidate-3b-short
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-3b-synthesis
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-3b-synthesis/candidate_3b_logic.py \
+            research/candidate-3b-synthesis/candidate_3b_harvest.py \
+            research/candidate-3b-synthesis/candidate_3b_policy.py \
+            research/candidate-3b-synthesis/test_candidate_3b.py
+          python - <<'PY'
+          import test_candidate_3b as tests
+          names = sorted(name for name in dir(tests) if name.startswith("test_"))
+          for name in names:
+              getattr(tests, name)()
+              print("passed", name)
+          PY
+
+  harvest:
+    needs: unit
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: known-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: unseen-2024-jun, start: 2024-06-01, end: 2024-06-08}
+          - {period: unseen-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: known-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: unseen-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: known-2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {period: known-2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {period: unseen-2026-may, start: 2026-05-01, end: 2026-05-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-3b-synthesis:research/candidate-1k-auction-system:research/candidate-2c-synthesis:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-3b/${{ matrix.period }}
+      OUT: artifacts/candidate-3b/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-3b-synthesis/candidate_3b_harvest.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-3b-${{ matrix.period }}
+          path: artifacts/candidate-3b/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-3b-synthesis
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-3b-*
+          path: artifacts/candidate-3b/actions
+      - run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-3b/result
+          python research/candidate-3b-synthesis/candidate_3b_policy.py \
+            --root artifacts/candidate-3b/actions \
+            --output artifacts/candidate-3b/result \
+            --calendar-days-per-period 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-3b-short-result
+          path: artifacts/candidate-3b/result/**
+          if-no-files-found: error
+          retention-days: 30
