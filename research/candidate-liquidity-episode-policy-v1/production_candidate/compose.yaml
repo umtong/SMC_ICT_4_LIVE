@@ -1,0 +1,38 @@
+services:
+  shadow:
+    build:
+      context: ../../..
+      dockerfile: research/candidate-liquidity-episode-policy-v1/production_candidate/Dockerfile
+    image: smc-ict-liquidity-episode:local
+    command:
+      - run
+      - --mode
+      - shadow
+      - --state
+      - /var/lib/lep/shadow.sqlite
+    init: true
+    restart: "no"
+    stop_grace_period: 30s
+    volumes:
+      - episode-policy-state:/var/lib/lep
+
+  sandbox:
+    profiles: ["sandbox"]
+    build:
+      context: ../../..
+      dockerfile: research/candidate-liquidity-episode-policy-v1/production_candidate/Dockerfile
+    image: smc-ict-liquidity-episode:local
+    command:
+      - run
+      - --mode
+      - sandbox
+      - --state
+      - /var/lib/lep/sandbox.sqlite
+    init: true
+    restart: "no"
+    stop_grace_period: 30s
+    volumes:
+      - episode-policy-state:/var/lib/lep
+
+volumes:
+  episode-policy-state:

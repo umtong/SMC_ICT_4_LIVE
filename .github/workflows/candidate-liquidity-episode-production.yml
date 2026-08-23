@@ -1,0 +1,295 @@
+name: Liquidity episode production contracts
+
+on:
+  push:
+    paths:
+      - ".github/workflows/candidate-liquidity-episode-production.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/smc_ict_4/episode_policy_live/**"
+      - "tests/**"
+      - "research/candidate-liquidity-episode-policy-v1/production_candidate/**"
+  workflow_dispatch:
+    inputs:
+      run_connected:
+        description: Run a bounded public-market connection check (not an alpha test)
+        required: true
+        default: false
+        type: boolean
+      connected_mode:
+        description: In-process Nautilus execution mode for the connection check
+        required: true
+        default: shadow
+        type: choice
+        options:
+          - shadow
+          - sandbox
+      connected_seconds:
+        description: Bounded connection duration in seconds
+        required: true
+        default: "120"
+        type: string
+      run_long_continuous:
+        description: Run the source-bound 2024-01-01..2026-08-01 native replay
+        required: true
+        default: false
+        type: boolean
+      monthly_data_cache_key:
+        description: Exact existing Actions cache key containing data/binance-monthly (choose cache or artifact)
+        required: false
+        default: ""
+        type: string
+      monthly_data_artifact:
+        description: Exact artifact name containing one canonical futures_um/monthly tree
+        required: false
+        default: ""
+        type: string
+      monthly_data_run_id:
+        description: Workflow run ID that owns monthly_data_artifact
+        required: false
+        default: ""
+        type: string
+      metrics_data_cache_key:
+        description: Optional exact cache key containing data/binance-metrics
+        required: false
+        default: ""
+        type: string
+      metrics_data_artifact:
+        description: Optional artifact containing one canonical daily metrics tree
+        required: false
+        default: ""
+        type: string
+      metrics_data_run_id:
+        description: Workflow run ID that owns metrics_data_artifact
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: liquidity-episode-production-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  linux-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install production candidate and test runner
+        run: python -m pip install --editable . "pytest==9.1.1"
+      - name: Run every repository contract test
+        run: python -m pytest tests -q
+      - name: Build a Linux Nautilus node and verify durable state
+        run: |
+          lep verify \
+            --build-node \
+            --state artifacts/linux/state.sqlite \
+            --output artifacts/linux/verify.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-linux-${{ github.sha }}
+          path: artifacts/linux/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  windows-contract:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Run the shipped Windows install, full pytest, and node-build contract
+        shell: pwsh
+        run: |
+          $pc = ".\research\candidate-liquidity-episode-policy-v1\production_candidate\windows"
+          & "$pc\bootstrap.ps1"
+          & "$pc\verify.ps1"
+          New-Item -ItemType Directory -Force artifacts\windows | Out-Null
+          Copy-Item artifacts\episode-policy-live\verify.* artifacts\windows\
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-windows-${{ github.sha }}
+          path: artifacts/windows/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  docker-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production runtime image
+        run: |
+          docker build \
+            --file research/candidate-liquidity-episode-policy-v1/production_candidate/Dockerfile \
+            --tag liquidity-episode:${{ github.sha }} \
+            .
+      - name: Build a Nautilus node inside the image
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/docker
+          docker create --name liquidity-episode-contract \
+            liquidity-episode:${{ github.sha }} \
+            verify --build-node \
+            --state /var/lib/lep/state.sqlite \
+            --output /var/lib/lep/verify.json
+          trap 'docker rm -f liquidity-episode-contract >/dev/null 2>&1 || true' EXIT
+          docker start --attach liquidity-episode-contract
+          docker cp liquidity-episode-contract:/var/lib/lep/. artifacts/docker/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-docker-${{ github.sha }}
+          path: artifacts/docker/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  connected-public-market:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_connected }}
+    needs: linux-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --editable .
+      - name: Run one bounded public-data connection
+        env:
+          CONNECTED_MODE: ${{ inputs.connected_mode }}
+          CONNECTED_SECONDS: ${{ inputs.connected_seconds }}
+        run: |
+          set -euo pipefail
+          [[ "$CONNECTED_SECONDS" =~ ^[0-9]+$ ]]
+          test "$CONNECTED_SECONDS" -ge 15
+          mkdir -p artifacts/connected
+          lep run \
+            --mode "$CONNECTED_MODE" \
+            --state artifacts/connected/runtime.sqlite \
+            --duration-seconds "$CONNECTED_SECONDS"
+          lep status \
+            --state artifacts/connected/runtime.sqlite \
+            --mode "$CONNECTED_MODE" \
+            > artifacts/connected/status.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-connected-${{ github.sha }}
+          path: artifacts/connected/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  long-continuous-account:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_long_continuous }}
+    needs: linux-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Validate the external data selection
+        env:
+          CACHE_KEY: ${{ inputs.monthly_data_cache_key }}
+          ARTIFACT_NAME: ${{ inputs.monthly_data_artifact }}
+          ARTIFACT_RUN_ID: ${{ inputs.monthly_data_run_id }}
+          METRICS_CACHE_KEY: ${{ inputs.metrics_data_cache_key }}
+          METRICS_ARTIFACT_NAME: ${{ inputs.metrics_data_artifact }}
+          METRICS_ARTIFACT_RUN_ID: ${{ inputs.metrics_data_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$CACHE_KEY" && -n "$ARTIFACT_NAME" ]]; then
+            echo "Choose exactly one data source: cache key or artifact." >&2
+            exit 2
+          fi
+          if [[ -z "$CACHE_KEY" && -z "$ARTIFACT_NAME" ]]; then
+            echo "Long replay requires an explicit monthly data cache key or artifact." >&2
+            exit 2
+          fi
+          if [[ -n "$ARTIFACT_NAME" && ! "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "monthly_data_run_id is required for artifact input." >&2
+            exit 2
+          fi
+          if [[ -n "$METRICS_CACHE_KEY" && -n "$METRICS_ARTIFACT_NAME" ]]; then
+            echo "Choose at most one metrics source: cache key or artifact." >&2
+            exit 2
+          fi
+          if [[ -n "$METRICS_ARTIFACT_NAME" && ! "$METRICS_ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "metrics_data_run_id is required for metrics artifact input." >&2
+            exit 2
+          fi
+      - name: Restore the exact monthly-data cache
+        if: ${{ inputs.monthly_data_cache_key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/binance-monthly
+          key: ${{ inputs.monthly_data_cache_key }}
+          fail-on-cache-miss: true
+      - name: Download the exact monthly-data artifact
+        if: ${{ inputs.monthly_data_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.monthly_data_artifact }}
+          run-id: ${{ inputs.monthly_data_run_id }}
+          github-token: ${{ github.token }}
+          path: data/binance-monthly
+      - name: Restore the optional exact daily-metrics cache
+        if: ${{ inputs.metrics_data_cache_key != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/binance-metrics
+          key: ${{ inputs.metrics_data_cache_key }}
+          fail-on-cache-miss: true
+      - name: Download the optional exact daily-metrics artifact
+        if: ${{ inputs.metrics_data_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.metrics_data_artifact }}
+          run-id: ${{ inputs.metrics_data_run_id }}
+          github-token: ${{ github.token }}
+          path: data/binance-metrics
+      - name: Install the native replay runtime
+        run: python -m pip install --editable .
+      - name: Run one continuous source-bound Nautilus account
+        run: |
+          set -euo pipefail
+          test -d data/binance-monthly/klines
+          test -d data/binance-monthly/fundingRate
+          test -d data/binance-monthly/markPriceKlines
+          REPLAY_ARGS=(
+            replay
+            --start 2024-01-01
+            --end 2026-08-01
+            --warmup-days 90
+            --initial-nav 100000
+            --monthly-root data/binance-monthly
+            --output artifacts/long-continuous
+          )
+          if [[ -d data/binance-metrics ]]; then
+            REPLAY_ARGS+=(--metrics-root data/binance-metrics)
+          fi
+          lep "${REPLAY_ARGS[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-episode-long-${{ github.sha }}
+          path: artifacts/long-continuous/**
+          if-no-files-found: warn
+          retention-days: 30

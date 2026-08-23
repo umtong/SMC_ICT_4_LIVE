@@ -87,8 +87,13 @@ def run_smoke(output: str | Path) -> dict[str, Any]:
     )
     bars = BarDataWrangler(bar_type, instrument).process(frame)
 
+    # Native engines are also constructed by the policy integration tests in the
+    # same Python process.  Nautilus owns a process-global logger, so this smoke
+    # engine must not attempt to initialize a second logger.
     engine = BacktestEngine(
-        config=BacktestEngineConfig(logging=LoggingConfig(log_level="ERROR")),
+        config=BacktestEngineConfig(
+            logging=LoggingConfig(log_level="ERROR", bypass_logging=True),
+        ),
     )
     strategy = SmokeStrategy(
         SmokeConfig(
