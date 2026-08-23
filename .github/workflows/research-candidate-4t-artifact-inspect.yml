@@ -1,0 +1,74 @@
+name: research-candidate-4t-artifact-inspect
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-artifact-inspect.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4t
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade 'pandas>=2.2'
+      - name: Download source action artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p downloaded
+          gh run download 32592363635 --repo "$GITHUB_REPOSITORY" --dir downloaded
+      - name: Inspect every CSV without assuming its role
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path('downloaded')
+          rows = []
+          required = {'action_id','state_id','episode_id','order_time_ns'}
+          for path in sorted(root.rglob('*.csv')):
+              item = {'artifact': path.relative_to(root).parts[0], 'path': str(path.relative_to(root))}
+              try:
+                  frame = pd.read_csv(path, low_memory=False)
+                  item['rows'] = int(len(frame))
+                  item['columns'] = int(len(frame.columns))
+                  item['is_action_table'] = required.issubset(frame.columns)
+                  if item['is_action_table'] and len(frame):
+                      time = pd.to_numeric(frame['order_time_ns'], errors='coerce').dropna()
+                      item['unique_actions'] = int(frame.action_id.nunique())
+                      item['unique_states'] = int(frame.state_id.nunique())
+                      item['unique_episodes'] = int(frame.episode_id.nunique())
+                      if len(time):
+                          item['min_order_time_ns'] = int(time.min())
+                          item['max_order_time_ns'] = int(time.max())
+                          item['min_order_utc'] = str(pd.to_datetime(int(time.min()), unit='ns', utc=True))
+                          item['max_order_utc'] = str(pd.to_datetime(int(time.max()), unit='ns', utc=True))
+                      item['sample_columns'] = list(frame.columns[:80])
+              except Exception as exc:
+                  item['error'] = repr(exc)
+              rows.append(item)
+          target = Path('research_results/candidate_4t')
+          target.mkdir(parents=True, exist_ok=True)
+          (target / 'action_artifact_manifest.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')
+          PY
+      - name: Commit manifest
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research_results/candidate_4t/action_artifact_manifest.json
+          git commit -m "Record candidate 4t source artifact manifest ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_4t
