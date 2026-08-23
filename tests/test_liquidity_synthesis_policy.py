@@ -349,6 +349,7 @@ def test_completed_episode_cannot_revive_farther_target_after_first_route_reject
         for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
     }
     ownership = {
+        "event_local_progress": 0.01,
         "event_residual_ownership": 0.01,
         "directional_posterior_support_rank": 1,
         "directional_family_transition_rank": 2,
@@ -1135,6 +1136,186 @@ def test_directional_semantics_precede_magnitude_without_becoming_hard_gate() ->
     assert LiquidityEpisodeCoordinator._arbitrate([opposed]) == [opposed]
 
 
+def test_absolute_progress_owns_admission_not_relative_peer_residual() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision = bar(
+        10,
+        interval=1,
+        open_=100.0,
+        high=101.2,
+        low=98.8,
+        close=99.0,
+    )
+    watch = EpisodeWatch(
+        episode_id="EP:NEGATIVE-LOCAL-POSITIVE-RESIDUAL",
+        family="FAILED_AUCTION_REVERSAL",
+        source=boundary("SOURCE:ABSOLUTE", "LOW", 99.0),
+        side="LONG",
+        state="COMPLETING",
+        interaction_serial=1,
+        interaction_time_ns=decision.open_time_ns,
+        event_extreme=98.8,
+        last_update_serial=1,
+        last_update_time_ns=decision.open_time_ns - 1,
+    )
+    policy._watches[watch.episode_id] = watch
+    completed = SimpleNamespace(
+        completed=True,
+        family="FAILED_AUCTION_REVERSAL",
+        terminal_state="FAILED_AUCTION_RECLAIM_COMPLETED",
+        completed_states=("FAILED_AUCTION_RECLAIM_COMPLETED",),
+        phase_basis="STRUCTURAL_RANGE",
+        control_transfer=True,
+        activity_input_known=True,
+        flow_input_known=True,
+        response_time_ns=None,
+        retest_time_ns=None,
+        response_required_extreme=None,
+        target_fresh=True,
+        stop_intact=True,
+    )
+    ownership = {
+        "ownership_known": 1,
+        "event_local_progress": -0.01,
+        "event_common_progress": -0.02,
+        "event_residual_ownership": 0.01,
+        "event_ownership_role": "DIVIDED",
+    }
+
+    with (
+        patch.object(policy.journey, "evaluate", return_value=completed),
+        patch.object(policy, "_episode_tape", return_value=[decision]),
+        patch.object(policy, "_event_ownership", return_value=ownership),
+    ):
+        assert policy._advance_watches(
+            decision,
+            2,
+            1.0,
+            0.0,
+            {"BTCUSDT": [decision]},
+        ) == []
+
+    terminal = policy._terminal_decisions[watch.episode_id]
+    assert terminal["outcome"] == "NO_TRADE"
+    assert terminal["plan"] is None
+    assert terminal["terminal_reason"] == "ABSOLUTE_DIRECTIONAL_DELIVERY_ABSENT"
+    assert terminal["details"]["selection_state"] == "NULL"
+
+
+def test_positive_local_common_follower_remains_eligible() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision = bar(10, interval=1, open_=100.0, high=101.2, low=99.8, close=101.0)
+    watch = EpisodeWatch(
+        episode_id="EP:POSITIVE-LOCAL-NEGATIVE-RESIDUAL",
+        family="FAILED_AUCTION_REVERSAL",
+        source=boundary("SOURCE:FOLLOWER", "LOW", 99.0),
+        side="LONG",
+        state="COMPLETING",
+        interaction_serial=1,
+        interaction_time_ns=decision.open_time_ns,
+        event_extreme=99.0,
+        last_update_serial=1,
+        last_update_time_ns=decision.open_time_ns - 1,
+    )
+    policy._watches[watch.episode_id] = watch
+    completed = SimpleNamespace(
+        completed=True,
+        family="FAILED_AUCTION_REVERSAL",
+        terminal_state="FAILED_AUCTION_RECLAIM_COMPLETED",
+        completed_states=("FAILED_AUCTION_RECLAIM_COMPLETED",),
+        phase_basis="STRUCTURAL_RANGE",
+        control_transfer=True,
+        activity_input_known=True,
+        flow_input_known=True,
+        response_time_ns=None,
+        retest_time_ns=None,
+        response_required_extreme=None,
+        target_fresh=True,
+        stop_intact=True,
+    )
+    ownership = {
+        "ownership_known": 1,
+        "event_local_progress": 0.01,
+        "event_common_progress": 0.02,
+        "event_residual_ownership": -0.01,
+        "event_ownership_role": "COMMON_FOLLOWER",
+    }
+    plan = replace(
+        _plan("BTCUSDT", watch.episode_id, watch.interaction_time_ns),
+        evidence={**ownership, "interaction_time_ns": watch.interaction_time_ns},
+    )
+
+    with (
+        patch.object(policy.journey, "evaluate", return_value=completed),
+        patch.object(policy, "_episode_tape", return_value=[decision]),
+        patch.object(policy, "_event_ownership", return_value=ownership),
+        patch.object(policy, "_origin_zone", return_value=plan.entry_zone),
+        patch.object(policy, "_build_plan", return_value=plan),
+    ):
+        assert policy._advance_watches(
+            decision,
+            2,
+            1.0,
+            0.0,
+            {"BTCUSDT": [decision]},
+        ) == [plan]
+
+
+def test_public_arbitration_can_return_no_eligible_owner() -> None:
+    null_plans = [
+        replace(
+            _plan(symbol, f"EP:NULL:{symbol}", 10 * MIN),
+            evidence={
+                "interaction_time_ns": 10 * MIN,
+                "event_local_progress": value,
+                "event_residual_ownership": 1.0,
+            },
+        )
+        for symbol, value in (("BTCUSDT", -0.01), ("ETHUSDT", 0.0))
+    ]
+
+    assert LiquidityEpisodeCoordinator.arbitrate(null_plans) == []
+
+
+def test_common_and_residual_moves_only_classify_absolute_delivery() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision = bar(10, interval=1, open_=100.0, close=101.0)
+    watch = EpisodeWatch(
+        episode_id="EP:ROLE",
+        family="FAILED_AUCTION_REVERSAL",
+        source=boundary("SOURCE:ROLE", "LOW", 99.0),
+        side="LONG",
+        state="COMPLETED",
+        interaction_serial=1,
+        interaction_time_ns=decision.open_time_ns,
+        event_extreme=99.0,
+        last_update_serial=1,
+        last_update_time_ns=decision.close_time_ns,
+    )
+    paths = {
+        "BTCUSDT": [decision],
+        **{
+            symbol: [
+                bar(
+                    10,
+                    symbol=symbol,
+                    interval=1,
+                    open_=100.0,
+                    high=102.2,
+                    close=102.0,
+                ),
+            ]
+            for symbol in ("ETHUSDT", "SOLUSDT", "XRPUSDT")
+        },
+    }
+
+    evidence = policy._event_ownership(watch, decision, paths)
+
+    assert evidence["event_local_progress"] > 0.0
+    assert evidence["event_residual_ownership"] < 0.0
+    assert evidence["event_ownership_role"] == "COMMON_FOLLOWER"
+
+
 def test_independent_and_common_roles_do_not_create_automatic_total_order() -> None:
     independent = replace(
         _plan("BTCUSDT", "EP:INDEPENDENT", 10 * MIN),
@@ -1747,7 +1928,10 @@ def test_superseded_watch_in_iteration_snapshot_cannot_terminalize_twice() -> No
         target_fresh=True,
         stop_intact=True,
     )
-    ownership = {"event_residual_ownership": 0.01}
+    ownership = {
+        "event_local_progress": 0.01,
+        "event_residual_ownership": 0.01,
+    }
     owner_plan = replace(
         _plan("BTCUSDT", newer.episode_id, newer.interaction_time_ns),
         family="ACCEPTED_AUCTION_CONTINUATION",

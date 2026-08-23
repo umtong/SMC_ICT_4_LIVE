@@ -855,7 +855,12 @@ class SymbolEpisodePolicy:
         return (
             -float(plan.evidence.get("directional_posterior_support_rank", -1.0)),
             -float(plan.evidence.get("directional_family_transition_rank", -1.0)),
-            -float(plan.evidence.get("counterfactual_ownership_per_risk", 0.0)),
+            -float(
+                plan.evidence.get(
+                    "absolute_delivery_per_risk",
+                    plan.evidence.get("counterfactual_ownership_per_risk", 0.0),
+                ),
+            ),
             -float(plan.evidence.get("inventory_coherence_rank", 0.0)),
             -int(plan.evidence.get("source_observed_time_ns", 0)),
             plan.plan_id,
@@ -1693,10 +1698,17 @@ class SymbolEpisodePolicy:
             "event_local_progress": local,
             "event_common_progress": common,
             "event_residual_ownership": residual,
+            "event_ownership_role": (
+                "LOCAL_LEADER"
+                if local > 0.0 and residual > 0.0
+                else "COMMON_FOLLOWER"
+                if local > 0.0 and common > 0.0
+                else "DIVIDED"
+            ),
         }
-        # Candidate-13 semantic roles describe whether the same positive
-        # residual is independent discovery or leadership inside a common
-        # cascade.  They never approve a trade or replace the residual sign.
+        # Common-market and residual moves classify the delivery path; they do
+        # not decide whether this symbol actually delivered in the intended
+        # direction.  Admission is owned by ``event_local_progress`` below.
         event_segments = {
             symbol: [
                 item for item in values
@@ -2094,8 +2106,8 @@ class SymbolEpisodePolicy:
                 )
 
             ownership = self._event_ownership(watch, bar, bars_by_symbol)
-            residual = ownership.get("event_residual_ownership")
-            if not isinstance(residual, (float, int)):
+            local_progress = ownership.get("event_local_progress")
+            if not isinstance(local_progress, (float, int)):
                 self._record_terminal(
                     "COUNTERFACTUAL_DIRECTION_UNKNOWN",
                     watch,
@@ -2103,17 +2115,30 @@ class SymbolEpisodePolicy:
                 )
                 self._watches.pop(episode_id, None)
                 continue
-            watch.ownership_balance = float(residual)
-            watch.supportive_control = max(float(residual), 0.0)
-            watch.opposing_control = max(-float(residual), 0.0)
-            if float(residual) <= 0.0:
+            watch.evidence.update(ownership)
+            local_progress = float(local_progress)
+            watch.ownership_balance = local_progress
+            watch.supportive_control = max(local_progress, 0.0)
+            watch.opposing_control = max(-local_progress, 0.0)
+            if local_progress <= 0.0:
                 self._record_terminal(
-                    "COUNTERFACTUAL_DIRECTION_UNOWNED", watch, bar,
-                    event_residual_ownership=float(residual),
+                    "ABSOLUTE_DIRECTIONAL_DELIVERY_ABSENT",
+                    watch,
+                    bar,
+                    selection_state="NULL",
+                    event_local_progress=local_progress,
+                    event_common_progress=float(
+                        ownership.get("event_common_progress", 0.0),
+                    ),
+                    event_residual_ownership=float(
+                        ownership.get("event_residual_ownership", 0.0),
+                    ),
+                    event_ownership_role=str(
+                        ownership.get("event_ownership_role", "DIVIDED"),
+                    ),
                 )
                 self._watches.pop(episode_id, None)
                 continue
-            watch.evidence.update(ownership)
             watch.evidence.update(self._inventory_evidence(watch, bar))
             zone = self._origin_zone(watch, bar)
             watch.entry_zone = zone
@@ -2122,7 +2147,7 @@ class SymbolEpisodePolicy:
                 bar,
                 serial,
                 max(self.market.atr(self.market.five_minute), self.tick_size),
-                {"event_residual_ownership": float(residual)},
+                ownership,
                 zone,
                 journey,
             )
@@ -2417,7 +2442,7 @@ class SymbolEpisodePolicy:
         decision_bar: Bar,
         serial: int,
         atr: float,
-        evidence: Mapping[str, float],
+        evidence: Mapping[str, float | str | int],
         zone: EntryZone,
         completed_journey: JourneyEvidence | None = None,
     ) -> TradePlan | None:
@@ -2535,8 +2560,10 @@ class SymbolEpisodePolicy:
             self._record_terminal(reason, watch, decision_bar)
             return None
         risk_fraction = abs(entry - stop) / max(abs(entry), self.tick_size)
-        residual = float(evidence.get("event_residual_ownership", watch.ownership_balance))
-        ownership_per_risk = residual / max(risk_fraction, 1e-12)
+        local_progress = float(
+            evidence.get("event_local_progress", watch.ownership_balance),
+        )
+        delivery_per_risk = local_progress / max(risk_fraction, 1e-12)
         htf = self._higher_timeframe_context(watch.side)
         proof_price = watch.proof_extreme if watch.proof_extreme is not None else decision_bar.close
         merged: dict[str, float | str | int] = {
@@ -2549,7 +2576,10 @@ class SymbolEpisodePolicy:
             "destination_observed_time_ns": route.destination.observed_time_ns,
             "event_extreme": watch.event_extreme,
             "interaction_time_ns": watch.interaction_time_ns,
-            "counterfactual_ownership_per_risk": ownership_per_risk,
+            "absolute_delivery_per_risk": delivery_per_risk,
+            # Compatibility name for persisted consumers.  Its value now
+            # represents absolute local delivery, never peer residual spread.
+            "counterfactual_ownership_per_risk": delivery_per_risk,
             "route_rr": float(route.gross_rr or 0.0),
             "delivery_proof_price": proof_price,
             "delivery_proof_role": "SEQUENCE_COMPLETION_EVIDENCE_ONLY",
@@ -2631,7 +2661,7 @@ class LiquidityEpisodeCoordinator:
             for proposal in peer._proposals.values()
             if proposal.episode_id not in peer._terminalized_episodes
         ]
-        return self._arbitrate(remaining)
+        return self.arbitrate(remaining)
 
     def drain_decision_events(self) -> list[dict[str, object]]:
         """Collect deterministic policy event intents for durable append.
@@ -2784,10 +2814,30 @@ class LiquidityEpisodeCoordinator:
 
     @classmethod
     def _arbitrate(cls, candidates: Sequence[TradePlan]) -> list[TradePlan]:
-        if not candidates:
+        return cls.arbitrate(candidates)
+
+    @classmethod
+    def arbitrate(cls, candidates: Sequence[TradePlan]) -> list[TradePlan]:
+        """Return one eligible account owner, or no owner.
+
+        A completed event with explicitly non-positive absolute local progress
+        is a NULL proposal.  Missing evidence remains compatible with focused
+        synthetic coordinators; production plans always carry the field.
+        """
+
+        eligible = [
+            plan
+            for plan in candidates
+            if not isinstance(
+                plan.evidence.get("event_local_progress"),
+                (float, int),
+            )
+            or float(plan.evidence["event_local_progress"]) > 0.0
+        ]
+        if not eligible:
             return []
-        cls._mark_common_cascades(candidates)
-        return [min(candidates, key=SymbolEpisodePolicy._arbitration_key)]
+        cls._mark_common_cascades(eligible)
+        return [min(eligible, key=SymbolEpisodePolicy._arbitration_key)]
 
     def push_five_minute_group(self, bars: Mapping[str, Bar]) -> list[TradePlan]:
         if set(bars) != set(self.policies):
@@ -2806,7 +2856,7 @@ class LiquidityEpisodeCoordinator:
                     completed[symbol], breadth[symbol], self._one_minute_map(),
                 )
             )
-        return self._arbitrate(candidates)
+        return self.arbitrate(candidates)
 
     def push_bar(self, bar: Bar) -> list[TradePlan]:
         bucket = self._pending_by_close.setdefault(bar.close_time_ns, {})
@@ -2843,7 +2893,7 @@ class LiquidityEpisodeCoordinator:
                         synchronized[symbol], bars_by_symbol=one_minute,
                     )
                 )
-        return self._arbitrate(candidates)
+        return self.arbitrate(candidates)
 
 
 __all__ = [

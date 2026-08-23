@@ -762,6 +762,138 @@ def test_busy_slot_preserves_untouched_failed_first_return_until_release(
     assert wait_index < release_index < second_submit
 
 
+def test_slot_release_reranks_waiting_with_fresh_instead_of_fifo(
+    tmp_path: Path,
+) -> None:
+    class RerankCoordinator(_TwoPlanCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed_groups = 0
+            self.arbitrated: list[tuple[str, ...]] = []
+
+        @staticmethod
+        def ranked_plan(
+            symbol: str,
+            suffix: str,
+            decision_ns: int,
+            rank: float,
+        ) -> TradePlan:
+            plan = _plan(
+                symbol,
+                suffix,
+                decision_ns,
+                entry_event="FAILED_AUCTION_FUTURE_FIRST_RETURN",
+            )
+            return TradePlan.from_dict(
+                {
+                    **plan.to_dict(),
+                    "evidence": {
+                        **plan.evidence,
+                        "event_local_progress": 0.01,
+                        "absolute_delivery_per_risk": rank,
+                    },
+                },
+            )
+
+        def push_bar(self, bar: Bar) -> list[TradePlan]:
+            symbols = self.pending.setdefault(bar.close_time_ns, set())
+            symbols.add(bar.symbol)
+            if symbols != set(SYMBOLS):
+                return []
+            self.completed_groups += 1
+            if self.completed_groups == 1:
+                return [
+                    _plan("BTCUSDT", "rerank-owner", bar.close_time_ns),
+                    self.ranked_plan(
+                        "SOLUSDT",
+                        "older-waiting",
+                        bar.close_time_ns,
+                        1.0,
+                    ),
+                ]
+            if self.completed_groups == 4:
+                return [
+                    self.ranked_plan(
+                        "ETHUSDT",
+                        "fresh-better",
+                        bar.close_time_ns,
+                        2.0,
+                    ),
+                ]
+            return []
+
+        def arbitrate(self, candidates: tuple[TradePlan, ...]) -> list[TradePlan]:
+            self.arbitrated.append(tuple(item.plan_id for item in candidates))
+            return [
+                max(
+                    candidates,
+                    key=lambda item: float(
+                        item.evidence.get("absolute_delivery_per_risk", 0.0),
+                    ),
+                ),
+            ]
+
+    bars: list[Bar] = []
+    for minute in range(9):
+        for symbol in SYMBOLS:
+            if symbol == "BTCUSDT":
+                values = (
+                    (101.0, 101.5, 100.5, 101.0)
+                    if minute == 0
+                    else (100.5, 101.0, 99.5, 100.5)
+                    if minute == 1
+                    else (100.5, 104.0, 100.2, 103.0)
+                )
+            elif symbol == "ETHUSDT":
+                values = (
+                    (202.0, 203.0, 201.0, 202.0)
+                    if minute < 4
+                    else (202.0, 203.0, 199.9, 201.0)
+                    if minute == 4
+                    else (201.0, 207.0, 200.5, 206.0)
+                )
+            elif symbol == "SOLUSDT":
+                values = (
+                    (20.2, 20.3, 20.1, 20.2)
+                    if minute < 7
+                    else (20.1, 20.2, 19.9, 20.0)
+                )
+            else:
+                base = BASE[symbol]
+                values = (base * 1.01, base * 1.015, base * 1.005, base * 1.01)
+            bars.append(
+                _bar(
+                    symbol,
+                    minute,
+                    open_=values[0],
+                    high=values[1],
+                    low=values[2],
+                    close=values[3],
+                ),
+            )
+
+    coordinator = RerankCoordinator()
+    state_path = tmp_path / "slot-release-rerank.sqlite3"
+    result = run_native_backtest(
+        bars,
+        state_path=state_path,
+        configure_strategy=lambda strategy: setattr(strategy, "coordinator", coordinator),
+    )
+
+    assert result.parent_orders_submitted == 3
+    assert coordinator.claimed == [
+        "PLAN:rerank-owner",
+        "PLAN:fresh-better",
+        "PLAN:older-waiting",
+    ]
+    assert any(
+        set(candidates)
+        == {"PLAN:older-waiting", "PLAN:fresh-better"}
+        for candidates in coordinator.arbitrated
+    )
+    assert coordinator.rejected == []
+
+
 def test_busy_slot_invalidates_failed_first_return_when_entry_is_touched(
     tmp_path: Path,
 ) -> None:

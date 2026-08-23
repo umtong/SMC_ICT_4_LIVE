@@ -854,8 +854,12 @@ if NT is not None:
                 and self.latest_policy_bars[symbol].close_time_ns == completed.close_time_ns
                 for symbol in SYMBOLS
             )
-            if synchronized_close and not self._global_slot_busy():
-                plans = [*self._waiting_global_slot_plans.values(), *plans]
+            if (
+                synchronized_close
+                and not self._global_slot_busy()
+                and self._waiting_global_slot_plans
+            ):
+                plans = self._rerank_released_global_slot(plans)
             self._handle_plans(plans, completed)
             self._observe_global_slot()
             self._checkpoint(completed.close_time_ns)
@@ -1116,6 +1120,37 @@ if NT is not None:
                 return None
             current = proposals.get(plan.episode_id)
             return isinstance(current, TradePlan) and current.plan_id == plan.plan_id
+
+        def _rerank_released_global_slot(
+            self,
+            fresh_plans: Iterable[TradePlan],
+        ) -> list[TradePlan]:
+            """Rerank every still-live waiting owner with the fresh winner.
+
+            A dict's insertion order is not account opportunity priority.  Only
+            the selected owner is released; other waiting proposals remain in
+            the waiting ledger for the next synchronized decision.
+            """
+
+            combined = {
+                plan.plan_id: plan
+                for plan in (
+                    *self._waiting_global_slot_plans.values(),
+                    *tuple(fresh_plans),
+                )
+            }
+            if not combined:
+                return []
+            arbiter = getattr(self.coordinator, "arbitrate", None)
+            if callable(arbiter):
+                ranked = arbiter(tuple(combined.values()))
+            else:
+                # Focused execution coordinators do not own policy selection.
+                # Use the production semantic ordering, never insertion order.
+                ranked = LiquidityEpisodeCoordinator.arbitrate(
+                    tuple(combined.values()),
+                )
+            return [plan for plan in ranked if isinstance(plan, TradePlan)]
 
         def _refresh_waiting_global_slot(
             self,
