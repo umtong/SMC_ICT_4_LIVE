@@ -1,0 +1,208 @@
+name: research-candidate-4t-v7-continuous-2024-2026
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-v7-continuous-2024-2026.yml'
+      - 'research/candidate-4t-sequential-control-v7/**'
+      - '.dispatch-candidate-4t-v7-continuous-2024-2026'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-4t-v7-continuous-2024-2026
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest-evaluation:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {name: q2024-1, start: 2024-01-01, evaluation_end: 2024-04-01, harvest_end: 2024-04-15}
+          - {name: q2024-2, start: 2024-04-01, evaluation_end: 2024-07-01, harvest_end: 2024-07-15}
+          - {name: q2024-3, start: 2024-07-01, evaluation_end: 2024-10-01, harvest_end: 2024-10-15}
+          - {name: q2024-4, start: 2024-10-01, evaluation_end: 2025-01-01, harvest_end: 2025-01-15}
+          - {name: q2025-1, start: 2025-01-01, evaluation_end: 2025-04-01, harvest_end: 2025-04-15}
+          - {name: q2025-2, start: 2025-04-01, evaluation_end: 2025-07-01, harvest_end: 2025-07-15}
+          - {name: q2025-3, start: 2025-07-01, evaluation_end: 2025-10-01, harvest_end: 2025-10-15}
+          - {name: q2025-4, start: 2025-10-01, evaluation_end: 2026-01-01, harvest_end: 2026-01-15}
+          - {name: q2026-1, start: 2026-01-01, evaluation_end: 2026-04-01, harvest_end: 2026-04-15}
+          - {name: q2026-2, start: 2026-04-01, evaluation_end: 2026-07-01, harvest_end: 2026-07-15}
+          - {name: q2026-3, start: 2026-07-01, evaluation_end: 2026-08-01, harvest_end: 2026-08-15}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-4t-sequential-control-v1:research/candidate-2c-synthesis:research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/candidate-4t-continuous/${{ matrix.name }}
+      OUT: artifacts/candidate-4t-continuous/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Harvest with warmup and a post-shard resolution tail
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-4t-sequential-control-v1/candidate_4t_harvest.py \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.harvest_end }}' \
+            --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+          cat > "$OUT/evaluation_interval.json" <<JSON
+          {
+            "name": "${{ matrix.name }}",
+            "evaluation_start": "${{ matrix.start }}",
+            "evaluation_end": "${{ matrix.evaluation_end }}",
+            "harvest_end": "${{ matrix.harvest_end }}",
+            "source_commit": "${GITHUB_SHA}"
+          }
+          JSON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-continuous-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-4t-continuous/${{ matrix.name }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-continuous-account:
+    needs: harvest-evaluation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check 'numpy>=2.0,<3' 'pandas>=2.2,<3'
+      - name: Locate the completed eight-regime development action harvest
+        id: training
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/research-candidate-4t-v5-medium.yml/runs?branch=research_candidate_4t&per_page=30"
+          chosen=""
+          for attempt in $(seq 1 300); do
+            runs=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' "$api" \
+              | jq -r '.workflow_runs[] | select(.status == "completed") | .id')
+            for run_id in $runs; do
+              artifacts=$(curl --fail --silent --show-error \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")
+              dev_count=$(printf '%s' "$artifacts" | jq '[.artifacts[] | select(.expired == false and (.name | startswith("candidate-4t-medium-dev-")))] | length')
+              if [[ "$dev_count" -ge 8 ]]; then
+                chosen="$run_id"
+                break 2
+              fi
+            done
+            sleep 60
+          done
+          test -n "$chosen"
+          echo "run_id=$chosen" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.training.outputs.run_id }}
+          pattern: candidate-4t-medium-dev-*
+          path: inputs/development
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-4t-continuous-*
+          path: inputs/evaluation-shards
+      - name: Build one continuous action stream
+        run: |
+          set -euo pipefail
+          cat > evaluation_manifest.json <<'JSON'
+          [
+            {"name":"q2024-1","evaluation_start":"2024-01-01","evaluation_end":"2024-04-01"},
+            {"name":"q2024-2","evaluation_start":"2024-04-01","evaluation_end":"2024-07-01"},
+            {"name":"q2024-3","evaluation_start":"2024-07-01","evaluation_end":"2024-10-01"},
+            {"name":"q2024-4","evaluation_start":"2024-10-01","evaluation_end":"2025-01-01"},
+            {"name":"q2025-1","evaluation_start":"2025-01-01","evaluation_end":"2025-04-01"},
+            {"name":"q2025-2","evaluation_start":"2025-04-01","evaluation_end":"2025-07-01"},
+            {"name":"q2025-3","evaluation_start":"2025-07-01","evaluation_end":"2025-10-01"},
+            {"name":"q2025-4","evaluation_start":"2025-10-01","evaluation_end":"2026-01-01"},
+            {"name":"q2026-1","evaluation_start":"2026-01-01","evaluation_end":"2026-04-01"},
+            {"name":"q2026-2","evaluation_start":"2026-04-01","evaluation_end":"2026-07-01"},
+            {"name":"q2026-3","evaluation_start":"2026-07-01","evaluation_end":"2026-08-01"}
+          ]
+          JSON
+          rm -rf inputs/continuous
+          mkdir -p inputs/continuous
+          python research/candidate-4t-sequential-control-v7/prepare_continuous_actions.py \
+            --root inputs/evaluation-shards \
+            --manifest evaluation_manifest.json \
+            --period continuous-2024-2026 \
+            --output inputs/continuous/immutable_actions.csv
+      - name: Verify all causal and account invariants
+        env:
+          PYTHONPATH: research/candidate-4t-sequential-control-v7:research/candidate-4t-sequential-control-v6:research/candidate-4t-sequential-control-v5:research/candidate-4t-sequential-control-v4:research/candidate-4t-sequential-control-v3:research/candidate-4t-sequential-control-v1
+        run: |
+          set -euo pipefail
+          python research/candidate-4t-sequential-control-v3/self_check_v3.py
+          python research/candidate-4t-sequential-control-v4/self_check_v4.py
+          python research/candidate-4t-sequential-control-v5/self_check_v5.py
+          python research/candidate-4t-sequential-control-v6/self_check_v6.py
+          python research/candidate-4t-sequential-control-v7/self_check_v7.py
+          rm -rf result
+          python research/candidate-4t-sequential-control-v7/candidate_4t_policy_v7.py \
+            --development-root inputs/development \
+            --fresh-root inputs/continuous \
+            --output result
+          cp inputs/continuous/immutable_actions.manifest.json result/evaluation_action_manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-v7-continuous-2024-2026-${{ github.sha }}
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the actual continuous-account evidence
+        run: |
+          set -euo pipefail
+          destination=research_results/candidate_4t/continuous_2024_2026_v7
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp result/RESULT.md result/summary.json result/model_manifest.json \
+             result/evaluation_action_manifest.json "$destination/"
+          for file in \
+            fresh_orders.csv fresh_trades.csv fresh_replacements.csv \
+            fresh_loss_clinic.csv fresh_missed_opportunity_clinic.csv; do
+            [[ ! -f "result/$file" ]] || cp "result/$file" "$destination/$file"
+          done
+          printf '%s\n' \
+            "source_commit=${GITHUB_SHA}" \
+            "source_run=${GITHUB_RUN_ID}" \
+            "training_harvest_run=${{ steps.training.outputs.run_id }}" > "$destination/source.txt"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$destination"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Candidate 4t v7 continuous 2024-2026 ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
