@@ -18,8 +18,10 @@ mechanisms are not presented as newly discovered Missing Pieces.
 - Entry, structural stop and liquidity target are fixed before submission; no
   scaling in or out is used.
 - A plan is not emitted below 1.0 gross R.
-- Quantity is derived from current mark-to-market NAV so the rounded adverse
-  stop loss, including configured cost assumptions, is approximately 3% of NAV.
+- Quantity is derived from current mark-to-market NAV so the rounded planned
+  entry-to-structural-stop price loss is approximately 3% of NAV. Entry/exit
+  fees, adverse stop slippage and gaps are recorded economic losses on top;
+  they do not reduce the structural-risk quantity.
 - Native Nautilus orders, fills, portfolio, margin accounting and reports are
   used.  Historical funding is applied to the native account from official
   funding-rate and mark-price archives.
@@ -111,6 +113,13 @@ Native replay writes `episode_decisions.csv` beside `trades.csv`.  It contains
 one causal START and at most one terminal SELECTED/NO_TRADE result per episode;
 an incomplete episode remains explicit rather than being converted into a
 loss or a missed win.  Future price outcomes are not policy evidence.
+
+Parent-order evidence separates `planned_entry_price` from an immediate IOC's
+`execution_limit_price`. `planned_structural_stop_loss` is the requested
+quantity's entry-to-stop price risk; `estimated_all_in_stop_loss` separately
+shows adverse-stop price loss and fees. If an entry is only partially filled,
+the trade ledger preserves the full parent intent but scales `risk_cash` and
+`actual_filled_structural_risk_fraction` by the observed fill fraction.
 
 Render every actual trade plus a deterministic reason/family/symbol sample of
 terminal no-trades with the reused branch chart clinic:

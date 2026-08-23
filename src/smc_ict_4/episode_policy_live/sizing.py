@@ -1,9 +1,11 @@
-"""Deterministic 3% stop-risk sizing for native Nautilus instruments.
+"""Deterministic structural 3% stop-risk sizing for Nautilus instruments.
 
-The sizing contract deliberately does not clip to quantity, notional, leverage,
-or margin limits.  A trade either has the nearest representable quantity whose
-all-in stop loss is approximately 3% of current marked equity, or it is rejected
-with an explicit reason.
+The quantity contract is deliberately simple: planned entry-to-stop price loss
+is approximately 3% of current marked equity.  Fees, stop slippage and gaps are
+real economic losses on top of that structural risk; they are estimated and
+retained as evidence, but never smuggled into the denominator to shrink size.
+The function also never clips to quantity, notional, leverage or margin limits.
+An infeasible exact-risk quantity is rejected with an explicit reason.
 """
 from __future__ import annotations
 
@@ -51,9 +53,14 @@ class SizingAccepted:
     notional: Money
     nav: Decimal
     free_margin: Decimal
-    risk_budget: Decimal
-    planned_stop_loss: Decimal
-    planned_risk_fraction: Decimal
+    structural_risk_budget: Decimal
+    planned_structural_stop_loss: Decimal
+    planned_structural_risk_fraction: Decimal
+    estimated_adverse_price_loss: Decimal
+    estimated_entry_fee: Decimal
+    estimated_stop_fee: Decimal
+    estimated_all_in_stop_loss: Decimal
+    estimated_all_in_risk_fraction: Decimal
     effective_leverage: Decimal
     account_leverage: Decimal
     initial_margin_required: Decimal
@@ -101,10 +108,12 @@ def size_three_percent_stop_risk(
     """Return the exact native quantity or a structured rejection.
 
     ``nav`` is current mark-to-market account equity. ``free_margin`` is only a
-    feasibility constraint; it never replaces NAV as the risk base.  Entry fees
-    are taker fees unless the caller guarantees a post-only entry.  This function
-    supports the linear USD-M instruments used by the episode policy; inverse
-    contracts are rejected rather than approximated.
+    feasibility constraint; it never replaces NAV as the risk base. ``entry``
+    is the policy's planned entry price, not a market-order/IOC worst-price
+    guard.  Quantity is based only on the native planned entry-to-stop-trigger
+    distance. Entry fees are taker fees unless the caller guarantees a post-only
+    entry. This function supports the linear USD-M instruments used by the
+    episode policy; inverse contracts are rejected rather than approximated.
     """
 
     try:
@@ -246,20 +255,16 @@ def size_three_percent_stop_risk(
             instrument.maker_fee if entry_post_only_guaranteed else instrument.taker_fee
         )
         stop_fee_rate = _decimal(instrument.taker_fee)
-        per_unit_loss = multiplier * (
-            abs(entry_rounded - adverse_stop_fill)
-            + entry_rounded * entry_fee_rate
-            + adverse_stop_fill * stop_fee_rate
-        )
-        if per_unit_loss <= 0 or not per_unit_loss.is_finite():
+        structural_per_unit_loss = multiplier * abs(entry_rounded - stop_trigger)
+        if structural_per_unit_loss <= 0 or not structural_per_unit_loss.is_finite():
             return _reject(
                 SizingRejectionReason.INVALID_INPUT,
-                field="per_unit_loss",
-                value=per_unit_loss,
+                field="structural_per_unit_loss",
+                value=structural_per_unit_loss,
             )
 
-        risk_budget = nav_value * risk_fraction
-        raw_quantity = risk_budget / per_unit_loss
+        structural_risk_budget = nav_value * risk_fraction
+        raw_quantity = structural_risk_budget / structural_per_unit_loss
         quantity_value = _round_increment(raw_quantity, quantity_step, ROUND_HALF_UP)
         if quantity_value <= 0:
             return _reject(
@@ -283,16 +288,33 @@ def size_three_percent_stop_risk(
                 raw_quantity=raw_quantity,
             )
 
-        planned_stop_loss = quantity.as_decimal() * per_unit_loss
-        planned_risk_fraction = planned_stop_loss / nav_value
-        if abs(planned_risk_fraction - risk_fraction) > risk_tolerance:
+        planned_structural_stop_loss = quantity.as_decimal() * structural_per_unit_loss
+        planned_structural_risk_fraction = planned_structural_stop_loss / nav_value
+        if abs(planned_structural_risk_fraction - risk_fraction) > risk_tolerance:
             return _reject(
                 SizingRejectionReason.RISK_TOLERANCE,
-                planned_risk_fraction=planned_risk_fraction,
+                planned_structural_risk_fraction=planned_structural_risk_fraction,
                 target=risk_fraction,
                 tolerance=risk_tolerance,
                 quantity=quantity,
             )
+
+        # These estimates describe economic exposure, not the sizing budget.
+        # Actual gaps, fill prices and commissions remain owned by Nautilus.
+        quantity_decimal = quantity.as_decimal()
+        estimated_adverse_price_loss = (
+            quantity_decimal * multiplier * abs(entry_rounded - adverse_stop_fill)
+        )
+        estimated_entry_fee = (
+            quantity_decimal * multiplier * entry_rounded * entry_fee_rate
+        )
+        estimated_stop_fee = (
+            quantity_decimal * multiplier * adverse_stop_fill * stop_fee_rate
+        )
+        estimated_all_in_stop_loss = (
+            estimated_adverse_price_loss + estimated_entry_fee + estimated_stop_fee
+        )
+        estimated_all_in_risk_fraction = estimated_all_in_stop_loss / nav_value
 
         notional = instrument.notional_value(quantity, entry_price)
         notional_value = notional.as_decimal()
@@ -358,9 +380,14 @@ def size_three_percent_stop_risk(
             notional=notional,
             nav=nav_value,
             free_margin=free_margin_value,
-            risk_budget=risk_budget,
-            planned_stop_loss=planned_stop_loss,
-            planned_risk_fraction=planned_risk_fraction,
+            structural_risk_budget=structural_risk_budget,
+            planned_structural_stop_loss=planned_structural_stop_loss,
+            planned_structural_risk_fraction=planned_structural_risk_fraction,
+            estimated_adverse_price_loss=estimated_adverse_price_loss,
+            estimated_entry_fee=estimated_entry_fee,
+            estimated_stop_fee=estimated_stop_fee,
+            estimated_all_in_stop_loss=estimated_all_in_stop_loss,
+            estimated_all_in_risk_fraction=estimated_all_in_risk_fraction,
             effective_leverage=effective_leverage,
             account_leverage=account_leverage_value,
             initial_margin_required=initial_margin_required,

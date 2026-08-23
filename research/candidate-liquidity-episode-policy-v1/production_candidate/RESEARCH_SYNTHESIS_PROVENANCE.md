@@ -27,7 +27,7 @@ as proof that it contains every earlier improvement.
 | One four-market Nautilus account/global slot | candidates 05, 29, 35, 51 | native account topology |
 | First fill cancels parent remainder; every raced fill receives protection | `research/candidate-10/c10_flow_parent_execution.py` | managed parent and per-fill reduce-only protection |
 | Native TradeTick matching and pending invalidation | candidate-01 `nautilus_tick_*_plan_backtest.py` | execution precedent |
-| Exact 3% cost-aware sizing | directional-liquidity-v2 `risk_sizing.py` | current MTM NAV risk base; impossible size is rejected, never clipped |
+| Exact 3% structural sizing | directional-liquidity-v2 `risk_sizing.py` | current MTM NAV and planned entry-to-stop distance set quantity; costs remain additional realized economics; impossible size is rejected, never clipped |
 | Historical funding source and settlement precedent | EasyChart v13 funding files plus Nautilus `SimulationModule` pattern | official funding/mark data settled in the native margin account |
 | Counterfactual/full-local-common evidence | candidate 4t, C47/C51/C55/C57, ML2 | diagnostics and causal feature provenance, not live hindsight |
 

@@ -137,7 +137,7 @@ research/candidate-easychart-v19-alternating-horizontal 5f4e36cee3ae
 
 | Decision | Branch evidence boundary | Consequence for the integrated system |
 |---|---|---|
-| Reuse | Causal pivots and liquidity episodes; failed/accepted auction separation; destination-first geometry; one four-market account/global slot; exact 3% cost-aware sizing; native Nautilus execution; counterfactual/no-trade harvesting | Import the established responsibility, preserving causal and account contracts |
+| Reuse | Causal pivots and liquidity episodes; failed/accepted auction separation; destination-first geometry; one four-market account/global slot; exact 3% structural entry-to-stop sizing; native Nautilus execution; counterfactual/no-trade harvesting | Import the established responsibility, preserving causal and account contracts |
 | Exclude as alpha proof | Sparse perfect weeks, high win rate with PF below one, static OI/flow/depth signs, generic ADX/Kaufman regimes, simple lead-lag/symbol ranking, immediate reclaim reversal, delayed confirmation after objective consumption, workflow-only success | Retain as negative evidence or diagnostics; do not promote it as a complete policy |
 | Unresolved | Early pre-entry separation of genuine control transfer from common-mode/mechanical completion, with enough unconsumed natural objective and robust cross-regime opportunity density | Requires integrated empirical proof on real causal ledgers; another detector, hard filter, classifier shell or validation gate is not resolution |
 

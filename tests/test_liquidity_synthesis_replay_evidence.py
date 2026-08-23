@@ -18,6 +18,7 @@ def _parent(
     order_id: str = "ENTRY-1",
     *,
     event_type: str = "PARENT_LIMIT_SUBMITTED",
+    quantity: str = "10",
 ) -> None:
     store.append_event(
         time_ns=10,
@@ -34,7 +35,13 @@ def _parent(
                 "target": 110,
                 "gross_rr": 2.0,
             },
-            "sizing": {"planned_stop_loss": "50 USDT", "planned_risk_fraction": "0.03"},
+            "sizing": {
+                "quantity": quantity,
+                "planned_structural_stop_loss": "50 USDT",
+                "planned_structural_risk_fraction": "0.03",
+                "estimated_all_in_stop_loss": "54 USDT",
+                "estimated_all_in_risk_fraction": "0.0324",
+            },
         },
     )
 
@@ -85,10 +92,55 @@ def test_exact_opening_order_join_and_cost_after_r(tmp_path: Path) -> None:
     assert trade["funding_cost"] == 1
     assert trade["gross_r"] == 2
     assert trade["cost_after_r"] == 1.96
+    assert trade["fill_fraction_of_planned_quantity"] == 1.0
+    assert trade["risk_cash"] == trade["planned_order_risk_cash"] == 50
+    assert trade["actual_filled_structural_risk_fraction"] == 0.03
     assert trade["exit_reason"] == "TARGET"
     assert evidence["metrics"]["win_rate"] == 1
     assert evidence["metrics"]["overlap_invariant"]["status"] == "OBSERVED_NO_OVERLAP"
     state.unlink()
+
+
+def test_partial_fill_scales_actual_structural_r_but_not_parent_intent(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "partial-state.sqlite"
+    with StateStore(state) as store:
+        _parent(store)
+    evidence = build_replay_evidence(
+        positions=[{
+            "position_id": "POS-PARTIAL",
+            "instrument_id": "BTCUSDT-PERP.BINANCE",
+            "opening_order_id": "ENTRY-1",
+            "closing_order_id": "CLOSE-PARTIAL",
+            "entry": "BUY",
+            "side": "FLAT",
+            "peak_qty": 4,
+            "ts_opened": 20,
+            "ts_closed": 30,
+            "avg_px_open": 100,
+            "avg_px_close": 95,
+            "commissions": ["0 USDT"],
+            "realized_pnl": "-20 USDT",
+        }],
+        fills=[],
+        account=[],
+        state_path=state,
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 2),
+        initial_nav=100_000,
+        final_nav=99_980,
+    )
+
+    trade = evidence["trades"][0]
+    assert trade["planned_order_quantity"] == 10
+    assert trade["fill_fraction_of_planned_quantity"] == 0.4
+    assert trade["planned_order_risk_cash"] == 50
+    assert trade["risk_cash"] == 20
+    assert trade["planned_structural_risk_fraction"] == 0.03
+    assert trade["actual_filled_structural_risk_fraction"] == pytest.approx(0.012)
+    assert trade["estimated_all_in_stop_loss"] == pytest.approx(21.6)
+    assert trade["net_r"] == -1.0
 
 
 def test_generic_market_parent_event_joins_immediate_response_lifecycle(
@@ -96,7 +148,12 @@ def test_generic_market_parent_event_joins_immediate_response_lifecycle(
 ) -> None:
     state = tmp_path / "state.sqlite"
     with StateStore(state) as store:
-        _parent(store, "MARKET-ENTRY", event_type="PARENT_ORDER_SUBMITTED")
+        _parent(
+            store,
+            "MARKET-ENTRY",
+            event_type="PARENT_ORDER_SUBMITTED",
+            quantity="1",
+        )
     evidence = build_replay_evidence(
         positions=[{
             "position_id": "POS-MARKET",
@@ -174,7 +231,13 @@ def test_netting_snapshot_rows_preserve_every_closed_lifecycle(tmp_path: Path) -
                         "target": 105,
                         "gross_rr": 1,
                     },
-                    "sizing": {"planned_stop_loss": "3 USDT", "planned_risk_fraction": "0.03"},
+                    "sizing": {
+                        "quantity": "1",
+                        "planned_structural_stop_loss": "3 USDT",
+                        "planned_structural_risk_fraction": "0.03",
+                        "estimated_all_in_stop_loss": "3.3 USDT",
+                        "estimated_all_in_risk_fraction": "0.033",
+                    },
                 },
             )
     positions = []

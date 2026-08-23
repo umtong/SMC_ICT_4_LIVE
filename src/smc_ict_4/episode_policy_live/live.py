@@ -1302,7 +1302,8 @@ if NT is not None:
                 )
             account_leverage = account.leverage(instrument.id) or account.default_leverage
             immediate_acceptance = self._is_immediate_acceptance(plan)
-            requested_entry = Decimal(str(plan.entry))
+            planned_entry = Decimal(str(plan.entry))
+            execution_limit = planned_entry
             if immediate_acceptance:
                 # A naked MARKET order can gap beyond both the target and the
                 # 3% risk geometry.  The response is a one-shot IOC at the
@@ -1315,11 +1316,14 @@ if NT is not None:
                 midpoint = (native_stop_hint + native_target_hint) / Decimal(2)
                 units = midpoint / tick
                 bound_rounding = ROUND_FLOOR if plan.side == "LONG" else ROUND_CEILING
-                requested_entry = units.to_integral_value(rounding=bound_rounding) * tick
+                execution_limit = units.to_integral_value(rounding=bound_rounding) * tick
             sizing = size_three_percent_stop_risk(
                 instrument,
                 side=plan.side,
-                entry=requested_entry,
+                # Size the declared structural entry-to-stop risk.  The IOC
+                # limit below is only a worst acceptable execution guard;
+                # using it here silently under-risks every response entry.
+                entry=planned_entry,
                 stop=plan.stop,
                 nav=nav,
                 free_margin=free_margin,
@@ -1337,6 +1341,7 @@ if NT is not None:
                     details={"details": dict(sizing.details)},
                 )
             target_price = instrument.make_price(plan.target)
+            execution_limit_price = instrument.make_price(execution_limit)
             native_entry = sizing.entry_price.as_decimal()
             native_stop = sizing.stop_trigger_price.as_decimal()
             native_target = target_price.as_decimal()
@@ -1366,10 +1371,30 @@ if NT is not None:
                         "native_target": str(native_target),
                     },
                 )
+            # A marketable IOC can execute away from the structural entry.
+            # Preserve 3% structural quantity while proving the whole order is
+            # still feasible at its worst accepted native price.
+            execution_notional = instrument.notional_value(
+                sizing.quantity,
+                execution_limit_price,
+            )
+            execution_effective_leverage = execution_notional.as_decimal() / sizing.nav
+            contract_max_leverage = DEFAULT_CONTRACTS[plan.symbol].max_leverage
+            if execution_effective_leverage > contract_max_leverage:
+                return self._terminal_reject_plan(
+                    plan,
+                    reason="EXECUTION_BOUND_MAX_LEVERAGE",
+                    event_type="PLAN_REJECTED_SIZING",
+                    details={
+                        "effective_leverage": str(execution_effective_leverage),
+                        "maximum": str(contract_max_leverage),
+                        "execution_limit_price": str(execution_limit_price),
+                    },
+                )
             native_margin = account.calculate_margin_init(
                 instrument,
                 sizing.quantity,
-                sizing.entry_price,
+                execution_limit_price,
             )
             if native_margin > free_margin:
                 return self._terminal_reject_plan(
@@ -1390,7 +1415,7 @@ if NT is not None:
                     instrument_id=instrument.id,
                     order_side=side,
                     quantity=quantity,
-                    price=sizing.entry_price,
+                    price=execution_limit_price,
                     time_in_force=TimeInForce.IOC,
                 )
                 entry_mode = "IMMEDIATE_RESPONSE_BOUNDED_IOC"
@@ -1407,15 +1432,27 @@ if NT is not None:
             self.active_plan = plan
             self.active_sizing = {
                 "quantity": str(sizing.quantity),
-                "entry_price": str(sizing.entry_price),
+                "planned_entry_price": str(sizing.entry_price),
+                "execution_limit_price": str(execution_limit_price),
                 "stop_trigger_price": str(sizing.stop_trigger_price),
                 "adverse_stop_fill_price": str(sizing.adverse_stop_fill_price),
                 "target_price": str(target_price),
                 "native_gross_rr": str(native_gross_rr),
                 "entry_mode": entry_mode,
-                "planned_stop_loss": str(sizing.planned_stop_loss),
-                "planned_risk_fraction": str(sizing.planned_risk_fraction),
+                "structural_risk_budget": str(sizing.structural_risk_budget),
+                "planned_structural_stop_loss": str(sizing.planned_structural_stop_loss),
+                "planned_structural_risk_fraction": str(
+                    sizing.planned_structural_risk_fraction
+                ),
+                "estimated_adverse_price_loss": str(sizing.estimated_adverse_price_loss),
+                "estimated_entry_fee": str(sizing.estimated_entry_fee),
+                "estimated_stop_fee": str(sizing.estimated_stop_fee),
+                "estimated_all_in_stop_loss": str(sizing.estimated_all_in_stop_loss),
+                "estimated_all_in_risk_fraction": str(
+                    sizing.estimated_all_in_risk_fraction
+                ),
                 "effective_leverage": str(sizing.effective_leverage),
+                "execution_bound_effective_leverage": str(execution_effective_leverage),
                 "initial_margin_required": str(native_margin),
             }
             order_id = str(order.client_order_id)
@@ -1867,7 +1904,16 @@ if NT is not None:
                     == "IMMEDIATE_RESPONSE_BOUNDED_IOC"
                 )
                 if immediate_response:
-                    bound = Decimal(str(self.active_sizing["entry_price"]))
+                    bound = Decimal(
+                        str(
+                            self.active_sizing.get(
+                                "execution_limit_price",
+                                # Restart compatibility for snapshots written
+                                # before planned entry and IOC bound were split.
+                                self.active_sizing.get("entry_price"),
+                            ),
+                        ),
+                    )
                     actual = event.last_px.as_decimal()
                     plan = self.active_plan
                     outside_bound = plan is None or (

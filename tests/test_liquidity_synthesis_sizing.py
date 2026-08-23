@@ -71,7 +71,10 @@ def test_all_four_native_quantity_steps_land_near_three_percent(symbol: str, ent
     )
 
     assert isinstance(result, SizingAccepted), result
-    assert abs(result.planned_risk_fraction - Decimal("0.03")) <= Decimal("0.0005")
+    assert (
+        abs(result.planned_structural_risk_fraction - Decimal("0.03"))
+        <= Decimal("0.0005")
+    )
     assert result.quantity.as_decimal() % instrument.size_increment.as_decimal() == 0
 
 
@@ -91,12 +94,12 @@ def test_stop_distance_derives_effective_leverage_from_whole_nav() -> None:
 
     assert isinstance(narrow, SizingAccepted)
     assert isinstance(wide, SizingAccepted)
-    assert Decimal("4.5") < narrow.effective_leverage < Decimal("6")
+    assert Decimal("5.9") < narrow.effective_leverage < Decimal("6.1")
     assert Decimal("1.3") < wide.effective_leverage < Decimal("1.6")
     assert narrow.nav == wide.nav == Decimal("100000")
 
 
-def test_adverse_stop_fill_rounds_outward_and_entry_defaults_to_taker_fee() -> None:
+def test_costs_and_adverse_stop_are_evidence_on_top_of_structural_three_percent() -> None:
     instrument = make_binance_usdm_instruments()["BTCUSDT"]
     common = {
         "instrument": instrument,
@@ -124,7 +127,55 @@ def test_adverse_stop_fill_rounds_outward_and_entry_defaults_to_taker_fee() -> N
     assert short.adverse_stop_fill_price.as_decimal() == Decimal("100510.4")
     assert long.entry_fee_rate == instrument.taker_fee
     assert post_only.entry_fee_rate == instrument.maker_fee
-    assert post_only.quantity > long.quantity
+    assert long.quantity == post_only.quantity
+    assert short.quantity.as_decimal() == Decimal("5.999")
+    assert (
+        abs(short.planned_structural_risk_fraction - Decimal("0.03"))
+        <= Decimal("0.0005")
+    )
+    assert long.planned_structural_stop_loss == Decimal("3000.0")
+    assert long.planned_structural_risk_fraction == Decimal("0.030")
+    assert long.estimated_adverse_price_loss == Decimal("3061.20")
+    assert long.estimated_entry_fee == Decimal("300.0000")
+    assert long.estimated_stop_fee == Decimal("298.46940")
+    assert long.estimated_all_in_stop_loss == Decimal("3659.66940")
+    assert long.estimated_all_in_risk_fraction == Decimal("0.036596694")
+    assert post_only.estimated_entry_fee < long.estimated_entry_fee
+    assert post_only.estimated_all_in_stop_loss < long.estimated_all_in_stop_loss
+
+
+def test_fee_and_stop_slippage_assumptions_never_change_structural_quantity() -> None:
+    instrument = make_binance_usdm_instruments()["ETHUSDT"]
+    common = {
+        "instrument": instrument,
+        "side": "LONG",
+        "entry": Decimal("5000"),
+        "stop": Decimal("4950"),
+        "nav": Decimal("100000"),
+        "free_margin": Decimal("100000"),
+        "account_leverage": Decimal("20"),
+        "max_leverage": Decimal("20"),
+    }
+    ordinary = size_three_percent_stop_risk(**common)
+    extreme_cost_evidence = size_three_percent_stop_risk(
+        **common,
+        entry_post_only_guaranteed=True,
+        stop_slippage_ticks=100,
+        stop_slippage_bps=Decimal("25"),
+    )
+
+    assert isinstance(ordinary, SizingAccepted)
+    assert isinstance(extreme_cost_evidence, SizingAccepted)
+    assert ordinary.quantity == extreme_cost_evidence.quantity
+    assert (
+        ordinary.planned_structural_stop_loss
+        == extreme_cost_evidence.planned_structural_stop_loss
+        == Decimal("3000.00")
+    )
+    assert (
+        extreme_cost_evidence.estimated_all_in_stop_loss
+        > ordinary.estimated_all_in_stop_loss
+    )
 
 
 @pytest.mark.parametrize(

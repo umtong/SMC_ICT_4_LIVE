@@ -1051,7 +1051,13 @@ def test_acceptance_first_response_is_bounded_ioc_not_later_return(tmp_path: Pat
     assert "PARENT_ORDER_SUBMITTED" in event_types
     assert "PARENT_LIMIT_SUBMITTED" not in event_types
     parent_event = next(payload for event_type, payload in event_rows if event_type == "PARENT_ORDER_SUBMITTED")
-    assert abs(float(parent_event["sizing"]["planned_risk_fraction"]) - 0.03) < 0.0005
+    sizing = parent_event["sizing"]
+    assert abs(float(sizing["planned_structural_risk_fraction"]) - 0.03) < 0.0005
+    assert float(sizing["planned_entry_price"]) == 20.2
+    assert float(sizing["execution_limit_price"]) == 20.3
+    assert float(sizing["quantity"]) == 7500.0
+    assert float(sizing["planned_structural_stop_loss"]) == 3000.0
+    assert float(sizing["estimated_all_in_stop_loss"]) > 3000.0
     assert float(parent_event["sizing"]["native_gross_rr"]) >= 1.0
     ledger, diagnostics = build_closed_trade_ledger(
         result.positions,

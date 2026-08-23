@@ -590,7 +590,54 @@ def build_closed_trade_ledger(
             funding_cost = gross_pnl - fees - net_pnl
             if abs(funding_cost) < 1e-9:
                 funding_cost = 0.0
-        risk_cash = _number(sizing.get("planned_stop_loss")) if isinstance(sizing, Mapping) else None
+        planned_order_risk_cash = None
+        planned_structural_risk_fraction = None
+        estimated_order_all_in_stop_loss = None
+        estimated_order_all_in_risk_fraction = None
+        planned_order_quantity = None
+        if isinstance(sizing, Mapping):
+            planned_order_risk_cash = _number(sizing.get("planned_structural_stop_loss"))
+            planned_structural_risk_fraction = _number(
+                sizing.get("planned_structural_risk_fraction"),
+            )
+            estimated_order_all_in_stop_loss = _number(
+                sizing.get("estimated_all_in_stop_loss"),
+            )
+            estimated_order_all_in_risk_fraction = _number(
+                sizing.get("estimated_all_in_risk_fraction"),
+            )
+            planned_order_quantity = _number(sizing.get("quantity"))
+            # Read old evidence without perpetuating its all-in sizing
+            # semantics in newly written parent events.
+            if planned_order_risk_cash is None:
+                planned_order_risk_cash = _number(sizing.get("planned_stop_loss"))
+            if planned_structural_risk_fraction is None:
+                planned_structural_risk_fraction = _number(
+                    sizing.get("planned_risk_fraction"),
+                )
+        fill_fraction = None
+        if (
+            quantity is not None
+            and planned_order_quantity is not None
+            and planned_order_quantity > 0.0
+        ):
+            fill_fraction = abs(quantity) / planned_order_quantity
+        # The parent sizing event describes the requested full order. A genuine
+        # partial fill owns only its proportional structural R denominator; it
+        # must not be reported as though the unfilled remainder lost money.
+        risk_cash = planned_order_risk_cash
+        estimated_all_in_stop_loss = estimated_order_all_in_stop_loss
+        estimated_all_in_risk_fraction = estimated_order_all_in_risk_fraction
+        actual_structural_risk_fraction = planned_structural_risk_fraction
+        if fill_fraction is not None:
+            if risk_cash is not None:
+                risk_cash *= fill_fraction
+            if estimated_all_in_stop_loss is not None:
+                estimated_all_in_stop_loss *= fill_fraction
+            if estimated_all_in_risk_fraction is not None:
+                estimated_all_in_risk_fraction *= fill_fraction
+            if actual_structural_risk_fraction is not None:
+                actual_structural_risk_fraction *= fill_fraction
         if risk_cash is not None:
             risk_cash = abs(risk_cash)
             if risk_cash == 0.0:
@@ -620,9 +667,13 @@ def build_closed_trade_ledger(
                 "target_price": _number(plan.get("target")) if isinstance(plan, Mapping) else None,
                 "planned_gross_rr": _number(plan.get("gross_rr")) if isinstance(plan, Mapping) else None,
                 "risk_cash": risk_cash,
-                "planned_risk_fraction": (
-                    _number(sizing.get("planned_risk_fraction")) if isinstance(sizing, Mapping) else None
-                ),
+                "planned_order_risk_cash": planned_order_risk_cash,
+                "planned_order_quantity": planned_order_quantity,
+                "fill_fraction_of_planned_quantity": fill_fraction,
+                "planned_structural_risk_fraction": planned_structural_risk_fraction,
+                "actual_filled_structural_risk_fraction": actual_structural_risk_fraction,
+                "estimated_all_in_stop_loss": estimated_all_in_stop_loss,
+                "estimated_all_in_risk_fraction": estimated_all_in_risk_fraction,
                 "gross_pnl": gross_pnl,
                 "fees": fees,
                 "funding_cost": funding_cost,
@@ -1116,7 +1167,7 @@ def build_replay_evidence(
         "episode_decisions": episode_decision_metrics,
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "metrics": metrics,
         "trades": ledger,
         "daily_equity": daily,
@@ -1130,7 +1181,10 @@ TRADE_FIELDS = (
     "episode_id", "family", "symbol", "side", "entry_time_ns", "exit_time_ns",
     "duration_ns", "quantity", "entry_price", "exit_price", "planned_entry",
     "stop_price", "target_price", "planned_gross_rr", "risk_cash",
-    "planned_risk_fraction", "gross_pnl", "fees", "funding_cost",
+    "planned_order_risk_cash", "planned_order_quantity",
+    "fill_fraction_of_planned_quantity", "planned_structural_risk_fraction",
+    "actual_filled_structural_risk_fraction", "estimated_all_in_stop_loss",
+    "estimated_all_in_risk_fraction", "gross_pnl", "fees", "funding_cost",
     "reported_slippage_cost", "slippage_join_status", "net_pnl", "gross_r",
     "net_r", "cost_after_r", "outcome",
     "exit_reason", "cost_bridge_basis",
