@@ -1,0 +1,75 @@
+name: Export CIT fresh derivatives metrics through 2026-08-22
+
+on:
+  push:
+    branches: ["research_candidate_4_causal_inventory_transfer"]
+    paths:
+      - ".github/workflows/cit-forward-derivatives-metrics-20260822.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_4_causal_inventory_transfer
+      - name: Record run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-cit-forward-derivatives-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-cit-forward-derivatives-export
+          git commit -m "Record CIT forward derivatives export $GITHUB_RUN_ID" || true
+          git push origin HEAD:research_candidate_4_causal_inventory_transfer
+      - name: Download official Binance Vision metrics and funding
+        run: |
+          set -euo pipefail
+          python -m pip install -q pandas pyarrow requests
+          python - <<'PY'
+          from pathlib import Path
+          import io, zipfile, json, hashlib, requests
+          import pandas as pd
+          out=Path('cit_forward_derivatives');out.mkdir(exist_ok=True)
+          syms=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
+          days=pd.date_range('2026-07-01','2026-08-22',freq='D')
+          manifest={'source':'Binance Vision USD-M','period':'2026-07-01..2026-08-22','files':[],'symbols':{}}
+          def get(url):
+              r=requests.get(url,timeout=60)
+              if r.status_code!=200:return None
+              try:
+                  z=zipfile.ZipFile(io.BytesIO(r.content));names=[n for n in z.namelist() if n.endswith('.csv')]
+                  if not names:return None
+                  q=pd.read_csv(z.open(names[0]))
+              except Exception:return None
+              manifest['files'].append({'url':url,'sha256':hashlib.sha256(r.content).hexdigest(),'rows':len(q)})
+              return q
+          for sym in syms:
+              metrics=[];fund=[]
+              for day in days:
+                  ds=day.strftime('%Y-%m-%d')
+                  q=get(f'https://data.binance.vision/data/futures/um/daily/metrics/{sym}/{sym}-metrics-{ds}.zip')
+                  if q is not None:metrics.append(q)
+                  q=get(f'https://data.binance.vision/data/futures/um/daily/fundingRate/{sym}/{sym}-fundingRate-{ds}.zip')
+                  if q is not None:fund.append(q)
+              if metrics:
+                  m=pd.concat(metrics,ignore_index=True)
+                  m.to_parquet(out/f'{sym}_metrics_5m.parquet',index=False)
+              if fund:
+                  f=pd.concat(fund,ignore_index=True)
+                  f.to_parquet(out/f'{sym}_funding.parquet',index=False)
+              manifest['symbols'][sym]={'metrics_rows':sum(map(len,metrics)) if metrics else 0,'funding_rows':sum(map(len,fund)) if fund else 0}
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cit-forward-derivatives-2026-07-01-2026-08-22
+          path: cit_forward_derivatives/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
