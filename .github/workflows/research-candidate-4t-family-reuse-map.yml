@@ -1,0 +1,56 @@
+name: research-candidate-4t-family-reuse-map
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - '.github/workflows/research-candidate-4t-family-reuse-map.yml'
+      - 'research/candidate-4t-diagonal-integration/probe_family.py'
+      - '.dispatch-candidate-4t-family-reuse-map'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  map:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record existing scenario APIs before integration
+        run: |
+          set -euo pipefail
+          destination=research_results/candidate_4t/family_reuse_map
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          python research/candidate-4t-diagonal-integration/probe_family.py \
+            "$destination/api_map.json" \
+            candidate-diagonal-channel-auction-v1 \
+            candidate-liquidity-displacement-v1 \
+            candidate-auction-dislocation-confluence-v1 \
+            candidate-derivatives-dislocation-v1 \
+            candidate-hierarchical-liquidity-bpr-v2 \
+            candidate-auction-episode-system \
+            candidate-1k-auction-system
+          printf '%s\n' "source_commit=${GITHUB_SHA}" "source_run=${GITHUB_RUN_ID}" > "$destination/source.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-4t-family-reuse-map-${{ github.sha }}
+          path: research_results/candidate_4t/family_reuse_map/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the synthesis source map
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research_results/candidate_4t/family_reuse_map
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Candidate 4t family reuse map ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
