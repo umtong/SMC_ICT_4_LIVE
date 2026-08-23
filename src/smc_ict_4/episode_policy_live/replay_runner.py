@@ -299,24 +299,38 @@ def load_inventory_replay_bundle(sources: InventoryReplaySources) -> InventoryRe
     expected_points = expected_days * 24 * 12
     first_expected = _utc_ns(sources.start)
     last_expected = _utc_ns(sources.end_exclusive) - 5 * 60 * 1_000_000_000
+    coverage_end_ns = _utc_ns(sources.end_exclusive)
     timelines: dict[str, InventoryTimeline] = {}
     coverage: dict[str, dict[str, object]] = {}
     for symbol in SYMBOLS:
-        timeline = load_official_metrics_archives(
+        source_timeline = load_official_metrics_archives(
             symbol,
             sources.archives[symbol],
             verify_checksums=True,
         )
-        points = timeline.points
-        if not points:
-            raise ReplaySourceError(f"metrics archives contain no observations for {symbol}")
-        if (
-            points[0].nominal_ts_ns < first_expected
-            or points[-1].nominal_ts_ns > last_expected
-        ):
+        outside = tuple(
+            point
+            for point in source_timeline.points
+            if not first_expected <= point.nominal_ts_ns < coverage_end_ns
+        )
+        allowed_boundary_overlap = tuple(
+            point
+            for point in outside
+            if (
+                point.nominal_ts_ns == coverage_end_ns
+                and point.source_archive == sources.archives[symbol][-1].name
+            )
+        )
+        if len(allowed_boundary_overlap) != len(outside):
             raise ReplaySourceError(
                 f"metrics observation outside requested archive coverage for {symbol}",
             )
+        timeline = source_timeline.bounded_nominal(first_expected, coverage_end_ns)
+        points = timeline.points
+        if not points:
+            raise ReplaySourceError(f"metrics archives contain no observations for {symbol}")
+        if points[0].nominal_ts_ns < first_expected or points[-1].nominal_ts_ns > last_expected:
+            raise AssertionError("bounded inventory timeline escaped its nominal range")
         interval_ns = 5 * 60 * 1_000_000_000
         gaps: list[dict[str, int]] = []
         cursor = first_expected
@@ -333,7 +347,6 @@ def load_inventory_replay_bundle(sources: InventoryReplaySources) -> InventoryRe
                     f"{point.nominal_ts_ns} < {cursor}",
                 )
             cursor = point.nominal_ts_ns + interval_ns
-        coverage_end_ns = _utc_ns(sources.end_exclusive)
         if cursor < coverage_end_ns:
             gaps.append({
                 "start_nominal_ts_ns": cursor,
@@ -364,6 +377,20 @@ def load_inventory_replay_bundle(sources: InventoryReplaySources) -> InventoryRe
             "last_observed_ts_ns": points[-1].observed_ts_ns,
             "invalid_observations": sum(bool(point.invalid_fields) for point in points),
             "invalid_fields": dict(sorted(invalid_fields.items())),
+            "end_boundary_overlap_observations_excluded": len(
+                allowed_boundary_overlap
+            ),
+            "end_boundary_overlap_evidence": [
+                {
+                    "source_ts_ns": point.source_ts_ns,
+                    "nominal_ts_ns": point.nominal_ts_ns,
+                    "observed_ts_ns": point.observed_ts_ns,
+                    "source_archive": point.source_archive,
+                    "source_archive_sha256": point.source_archive_sha256,
+                    "invalid_fields": list(point.invalid_fields),
+                }
+                for point in allowed_boundary_overlap
+            ],
             "gap_count": len(gaps),
             "missing_observations": missing_observations,
             "gaps": gaps,
@@ -399,6 +426,10 @@ def load_inventory_replay_bundle(sources: InventoryReplaySources) -> InventoryRe
             "checksum_algorithm": "SHA-256",
             "archive_count": sum(len(items) for items in sources.archives.values()),
             "checksum_count": sum(len(items) for items in sources.checksums.values()),
+            "end_boundary_overlap_observations_excluded": sum(
+                int(item["end_boundary_overlap_observations_excluded"])
+                for item in coverage.values()
+            ),
             "identical_duplicates_collapsed": sum(
                 len(timeline.duplicate_observed_ts_ns)
                 for timeline in timelines.values()

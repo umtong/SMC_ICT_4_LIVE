@@ -494,6 +494,55 @@ def test_inventory_loader_merges_official_conflict_and_records_both_sources(
     assert resumed.regime.value == "POSITION_RESET"
 
 
+def test_inventory_loader_excludes_one_last_archive_end_boundary_overlap(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "metrics"
+    first = date(2024, 1, 1)
+    second = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    end_ms = int(datetime(2024, 1, 3, tzinfo=timezone.utc).timestamp() * 1000)
+    for symbol in SYMBOLS:
+        _metrics_day(root, symbol, first)
+        extra = (
+            f"{end_ms},{symbol},90000,9000000,1.3,1.4,1.2,1.1",
+        ) if symbol == "BTCUSDT" else ()
+        _metrics_day(root, symbol, second, extra_rows=extra)
+
+    bundle = load_inventory_replay_bundle(
+        discover_inventory_sources(root, start=second, end=end),
+    )
+    btc = bundle.manifest["symbols"]["BTCUSDT"]
+    assert btc["observations"] == 576
+    assert btc["end_boundary_overlap_observations_excluded"] == 1
+    assert btc["end_boundary_overlap_evidence"][0]["source_archive"] == (
+        "BTCUSDT-metrics-2024-01-02.zip"
+    )
+    assert bundle.manifest["end_boundary_overlap_observations_excluded"] == 1
+    assert bundle.timelines["BTCUSDT"].points[-1].nominal_ts_ns < end_ms * 1_000_000
+
+
+def test_inventory_loader_rejects_observation_beyond_single_end_boundary(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "metrics"
+    first = date(2024, 1, 1)
+    second = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    beyond_ms = int(datetime(2024, 1, 3, tzinfo=timezone.utc).timestamp() * 1000) + 300_000
+    for symbol in SYMBOLS:
+        _metrics_day(root, symbol, first)
+        extra = (
+            f"{beyond_ms},{symbol},90000,9000000,1.3,1.4,1.2,1.1",
+        ) if symbol == "BTCUSDT" else ()
+        _metrics_day(root, symbol, second, extra_rows=extra)
+
+    with pytest.raises(ReplaySourceError, match="outside requested archive coverage"):
+        load_inventory_replay_bundle(
+            discover_inventory_sources(root, start=second, end=end),
+        )
+
+
 def test_native_strategy_policies_receive_each_timeline() -> None:
     policies = {
         symbol: SimpleNamespace(inventory_timeline=None)

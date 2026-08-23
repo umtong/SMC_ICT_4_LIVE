@@ -540,6 +540,39 @@ class InventoryTimeline:
         self.duplicate_observed_ts_ns = tuple(duplicate_timestamps)
         self.conflicting_duplicates = tuple(conflicts)
 
+    def bounded_nominal(
+        self,
+        start_inclusive_ns: int,
+        end_exclusive_ns: int,
+    ) -> InventoryTimeline:
+        """Return the causal timeline inside an exact half-open nominal range.
+
+        Binance daily archives occasionally carry one observation for the
+        following UTC boundary.  Replay discovery still verifies the complete
+        source archive; this view prevents that next-period observation from
+        becoming visible inside the requested replay while retaining duplicate
+        provenance for observations which remain in range.
+        """
+
+        if end_exclusive_ns <= start_inclusive_ns:
+            raise ValueError("inventory timeline range must be positive")
+        bounded = InventoryTimeline(
+            item
+            for item in self.points
+            if start_inclusive_ns <= item.nominal_ts_ns < end_exclusive_ns
+        )
+        bounded.duplicate_observed_ts_ns = tuple(
+            timestamp
+            for timestamp in self.duplicate_observed_ts_ns
+            if start_inclusive_ns <= timestamp < end_exclusive_ns
+        )
+        bounded.conflicting_duplicates = tuple(
+            item
+            for item in self.conflicting_duplicates
+            if start_inclusive_ns <= item.nominal_ts_ns < end_exclusive_ns
+        )
+        return bounded
+
     def evaluate(
         self,
         *,
