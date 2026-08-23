@@ -1,0 +1,53 @@
+name: research-candidate-4t-v7-medium-review
+
+on:
+  push:
+    branches: [research_candidate_4t]
+    paths:
+      - 'research_results/candidate_4t/medium_v7/summary.json'
+      - 'research_results/candidate_4t/medium_v7/fresh_trades.csv'
+      - 'research_results/candidate_4t/medium_v7/fresh_loss_clinic.csv'
+      - 'research_results/candidate_4t/medium_v7/fresh_missed_opportunity_clinic.csv'
+      - 'research/candidate-4t-sequential-control-v7/analyze_result.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: research-candidate-4t-v7-medium-review
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check 'numpy>=2.0,<3' 'pandas>=2.2,<3' tabulate
+      - name: Read actual trades and no-trade opportunities
+        run: |
+          set -euo pipefail
+          result=research_results/candidate_4t/medium_v7
+          test -f "$result/summary.json"
+          python research/candidate-4t-sequential-control-v7/analyze_result.py \
+            --result "$result" \
+            --prefix fresh \
+            --output "$result/TRADE_REVIEW.md"
+      - name: Commit direct research interpretation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research_results/candidate_4t/medium_v7/TRADE_REVIEW.md \
+                  research_results/candidate_4t/medium_v7/winner_loss_feature_separation.csv \
+                  research_results/candidate_4t/medium_v7/ownership_calibration.csv \
+                  research_results/candidate_4t/medium_v7/stopping_calibration.csv
+          if ! git diff --cached --quiet; then
+            git commit -m "Inspect Candidate 4t v7 medium trades ${GITHUB_RUN_ID}"
+            git push origin HEAD:research_candidate_4t
+          fi
