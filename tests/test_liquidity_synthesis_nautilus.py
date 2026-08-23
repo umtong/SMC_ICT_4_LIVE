@@ -108,6 +108,15 @@ class _TwoPlanCoordinator:
         }
 
 
+class _CompactTwoPlanCoordinator(_TwoPlanCoordinator):
+    def export_runtime_state(self) -> dict[str, object]:
+        return {
+            "version": 2,
+            "claimed": list(self.claimed),
+            "rejected": list(self.rejected),
+        }
+
+
 class _SolPartialCoordinator(_TwoPlanCoordinator):
     def push_bar(self, bar: Bar) -> list[TradePlan]:
         symbols = self.pending.setdefault(bar.close_time_ns, set())
@@ -433,6 +442,74 @@ def test_native_engine_owns_fills_account_and_one_global_slot(tmp_path: Path) ->
         assert stop_cancels
         assert max(target_fills) < min(stop_cancels)
     assert set(result.positions["side"].astype(str)) == {"FLAT"}
+
+
+def test_compact_runtime_snapshot_does_not_change_native_execution_results(
+    tmp_path: Path,
+) -> None:
+    baseline_state = tmp_path / "baseline-full-runtime.sqlite3"
+    compact_state = tmp_path / "compact-runtime.sqlite3"
+    baseline_coordinator = _TwoPlanCoordinator()
+    compact_coordinator = _CompactTwoPlanCoordinator()
+    baseline = run_native_backtest(
+        _bars(),
+        state_path=baseline_state,
+        configure_strategy=lambda strategy: setattr(
+            strategy, "coordinator", baseline_coordinator,
+        ),
+    )
+    compact = run_native_backtest(
+        _bars(),
+        state_path=compact_state,
+        configure_strategy=lambda strategy: setattr(
+            strategy, "coordinator", compact_coordinator,
+        ),
+    )
+
+    assert compact_coordinator.claimed == baseline_coordinator.claimed
+    assert compact_coordinator.rejected == baseline_coordinator.rejected
+    assert (
+        compact.final_balance,
+        compact.final_nav,
+        compact.parent_orders_submitted,
+        compact.protective_pairs_submitted,
+        compact.plans_blocked_by_global_slot,
+        compact.max_active_instruments,
+    ) == (
+        baseline.final_balance,
+        baseline.final_nav,
+        baseline.parent_orders_submitted,
+        baseline.protective_pairs_submitted,
+        baseline.plans_blocked_by_global_slot,
+        baseline.max_active_instruments,
+    )
+
+    # Nautilus creates fresh UUIDs for init_id and position_id on each engine
+    # construction. Every deterministic order/fill/account field is exact.
+    baseline_fills = baseline.fills.drop(columns=["init_id"]).reset_index(drop=True)
+    compact_fills = compact.fills.drop(columns=["init_id"]).reset_index(drop=True)
+    assert baseline_fills.equals(compact_fills)
+    baseline_positions = baseline.positions.reset_index().drop(columns=["position_id"])
+    compact_positions = compact.positions.reset_index().drop(columns=["position_id"])
+    assert baseline_positions.equals(compact_positions)
+    assert baseline.account.reset_index(drop=True).equals(
+        compact.account.reset_index(drop=True),
+    )
+
+    baseline_trades, _ = build_closed_trade_ledger(
+        baseline.positions,
+        baseline.fills,
+        state_path=baseline_state,
+    )
+    compact_trades, _ = build_closed_trade_ledger(
+        compact.positions,
+        compact.fills,
+        state_path=compact_state,
+    )
+    for trade in (*baseline_trades, *compact_trades):
+        trade.pop("trade_id", None)
+        trade.pop("position_id", None)
+    assert compact_trades == baseline_trades
 
 
 def test_policy_semantic_events_persist_on_bar_and_execution_admission(

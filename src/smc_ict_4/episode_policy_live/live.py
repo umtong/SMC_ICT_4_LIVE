@@ -502,6 +502,7 @@ if NT is not None:
             self.live_inventory_status: dict[str, str] = {
                 symbol: "NOT_CONFIGURED" for symbol in SYMBOLS
             }
+            self._last_checkpoint_payload: dict[str, object] | None = None
 
         def on_start(self) -> None:
             for symbol, instrument_id in self.instrument_ids.items():
@@ -596,6 +597,12 @@ if NT is not None:
                     complete_groups += 1
                 else:
                     pending_members += len(group)
+            decision_events = self.store.load_events(
+                event_types=("POLICY_EPISODE_STARTED", "POLICY_EPISODE_TERMINAL"),
+            )
+            decision_restorer = getattr(self.coordinator, "restore_decision_events", None)
+            if callable(decision_restorer):
+                decision_restorer(decision_events)
             self._replayed = True
             self.store.append_event(
                 time_ns=self.clock.timestamp_ns(),
@@ -604,6 +611,7 @@ if NT is not None:
                     "stored_bars": len(bars),
                     "complete_four_symbol_minutes": complete_groups,
                     "pending_partial_minute_members": pending_members,
+                    "durable_policy_decision_events": len(decision_events),
                     **clock_evidence,
                 },
             )
@@ -2009,26 +2017,43 @@ if NT is not None:
             self._finalize_slot_if_flat()
 
         def _checkpoint(self, time_ns: int) -> None:
-            self.store.save_snapshot(
-                "strategy_runtime",
-                time_ns=time_ns,
-                payload={
+            policy_exporter = getattr(self.coordinator, "export_runtime_state", None)
+            policy_state = (
+                policy_exporter()
+                if callable(policy_exporter)
+                else self.coordinator.export_state()
+            )
+            payload: dict[str, object] = {
+                    "runtime_state_version": 2,
                     "active_plan": None if self.active_plan is None else self.active_plan.to_dict(),
                     "active_order_ids": sorted(self.active_order_ids),
-                    "order_roles": self.order_roles,
-                    "order_mates": self.order_mates,
+                    "order_roles": dict(self.order_roles),
+                    "order_mates": dict(self.order_mates),
                     "entry_filled_quantity": str(self.entry_filled_quantity),
-                    "active_sizing": self.active_sizing,
-                    "deferred_targets": self.deferred_targets,
+                    "active_sizing": dict(self.active_sizing),
+                    "deferred_targets": [dict(item) for item in self.deferred_targets],
                     "emergency_flatten_pending": self.emergency_flatten_pending,
                     "emergency_flatten_reason": self.emergency_flatten_reason,
                     "sandbox_native_account_mutated": self.sandbox_native_account_mutated,
                     "mode": self.config.execution_mode,
                     "halted": self._halted,
-                    "funding_state": self._funding_state,
-                    "policy_state": self.coordinator.export_state(),
-                },
+                    "funding_state": {
+                        symbol: dict(values)
+                        for symbol, values in self._funding_state.items()
+                    },
+                    "policy_state": policy_state,
+                }
+            # Bars and semantic policy events are durable before this point.
+            # Only a materially changed execution/identity image needs a new
+            # atomic snapshot; identical per-symbol calls are no-ops.
+            if payload == self._last_checkpoint_payload:
+                return
+            self.store.save_snapshot(
+                "strategy_runtime",
+                time_ns=time_ns,
+                payload=payload,
             )
+            self._last_checkpoint_payload = payload
 
         def on_stop(self) -> None:
             for instrument_id in self.config.instrument_ids:
@@ -2056,7 +2081,9 @@ if NT is not None:
             self.store.close()
 
         def on_save(self) -> dict[str, bytes]:
+            policy_exporter = getattr(self.coordinator, "export_runtime_state", None)
             payload = {
+                "runtime_state_version": 2,
                 "active_plan": None if self.active_plan is None else self.active_plan.to_dict(),
                 "active_order_ids": sorted(self.active_order_ids),
                 "order_roles": self.order_roles,
@@ -2069,7 +2096,11 @@ if NT is not None:
                 "sandbox_native_account_mutated": self.sandbox_native_account_mutated,
                 "halted": self._halted,
                 "funding_state": self._funding_state,
-                "policy_state": self.coordinator.export_state(),
+                "policy_state": (
+                    policy_exporter()
+                    if callable(policy_exporter)
+                    else self.coordinator.export_state()
+                ),
             }
             return {"episode_policy_runtime": json.dumps(payload, sort_keys=True).encode("utf-8")}
 

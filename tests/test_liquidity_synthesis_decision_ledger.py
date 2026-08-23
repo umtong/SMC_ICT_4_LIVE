@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -211,6 +212,89 @@ def test_claim_and_rejection_are_durable_terminal_decisions() -> None:
     )
     restored.restore_state(saved)
     assert restored.export_state() == saved
+
+
+def test_compact_runtime_plus_semantic_events_exactly_rebuilds_full_state(
+    tmp_path: Path,
+) -> None:
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+    policies = {symbol: SymbolEpisodePolicy(symbol, 0.1) for symbol in symbols}
+    coordinator = LiquidityEpisodeCoordinator(policies)
+    selected = _plan("BTCUSDT", "EP:COMPACT-SELECTED")
+    rejected = _plan("ETHUSDT", "EP:COMPACT-REJECTED")
+    policies[selected.symbol]._proposals[selected.episode_id] = selected
+    policies[rejected.symbol]._proposals[rejected.episode_id] = rejected
+    coordinator.claim(selected, time_ns=3 * MINUTE)
+    coordinator.reject_proposal(
+        rejected,
+        "MAX_LEVERAGE_EXCEEDED",
+        time_ns=3 * MINUTE,
+    )
+    events = coordinator.drain_decision_events()
+    full_state = coordinator.export_state()
+    compact_state = coordinator.export_runtime_state()
+    with StateStore(tmp_path / "decision-restart.sqlite") as store:
+        _persist_events(store, events)
+        durable_events = store.load_events(
+            event_types=("POLICY_EPISODE_STARTED", "POLICY_EPISODE_TERMINAL"),
+        )
+        semantic_event_count = store.counts()["runtime_events"]
+
+    for state in compact_state["policies"].values():  # type: ignore[union-attr]
+        assert state["version"] == 2
+        assert "started_episodes" not in state
+        assert "terminal_decisions" not in state
+
+    restored = LiquidityEpisodeCoordinator(
+        {symbol: SymbolEpisodePolicy(symbol, 0.1) for symbol in symbols},
+    )
+    restored.restore_decision_events(durable_events)
+    assert restored.export_state() == full_state
+    restored.restore_state(compact_state)
+
+    assert restored.export_state() == full_state
+    assert restored.drain_decision_events() == []
+    with StateStore(tmp_path / "decision-restart.sqlite") as store:
+        assert store.counts()["runtime_events"] == semantic_event_count
+
+
+def test_compact_runtime_rejects_embedded_decisions_and_legacy_state_still_loads() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    selected = _plan("BTCUSDT", "EP:LEGACY")
+    policy._proposals[selected.episode_id] = selected
+    policy.claim(selected, time_ns=3 * MINUTE)
+    policy.drain_decision_events()
+    legacy = policy.export_state()
+
+    legacy_restored = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    legacy_restored.restore_state(legacy)
+    assert legacy_restored.export_state() == legacy
+
+    corrupt_compact = policy.export_runtime_state()
+    corrupt_compact["started_episodes"] = legacy["started_episodes"]
+    with pytest.raises(ValueError, match="contains decision payloads"):
+        SymbolEpisodePolicy("BTCUSDT", 0.1).restore_state(corrupt_compact)
+
+
+def test_compact_snapshot_does_not_repeat_growing_decision_payloads() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    for index in range(100):
+        plan = _plan("BTCUSDT", f"EP:SIZE:{index}", minute=index + 2)
+        policy._proposals[plan.episode_id] = plan
+        policy.reject_proposal(
+            plan,
+            "MAX_LEVERAGE_EXCEEDED",
+            time_ns=(index + 3) * MINUTE,
+        )
+        policy.drain_decision_events()
+
+    full_bytes = len(json.dumps(policy.export_state(), sort_keys=True))
+    compact = policy.export_runtime_state()
+    compact_bytes = len(json.dumps(compact, sort_keys=True))
+
+    assert "started_episodes" not in compact
+    assert "terminal_decisions" not in compact
+    assert compact_bytes < full_bytes // 10
 
 
 def test_episode_decisions_join_trades_and_keep_ongoing_separate(

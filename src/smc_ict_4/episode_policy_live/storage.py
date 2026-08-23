@@ -232,6 +232,50 @@ class StateStore:
             raise RuntimeError(f"snapshot hash mismatch: {name}")
         return json.loads(row["payload_json"])
 
+    def load_events(
+        self,
+        *,
+        event_types: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load durable events in hash-chain order.
+
+        Policy decision payloads are the authoritative, append-only record of
+        episode starts and terminal dispositions. Runtime snapshots can stay
+        compact by rebuilding that ledger from these rows on restart.
+        """
+
+        parameters: list[Any] = []
+        where = ""
+        if event_types is not None:
+            values = tuple(dict.fromkeys(str(value) for value in event_types))
+            if not values:
+                return []
+            where = f" WHERE event_type IN ({','.join('?' for _ in values)})"
+            parameters.extend(values)
+        rows = self.connection.execute(
+            "SELECT sequence, time_ns, event_type, payload_json, event_key, "
+            f"event_hash FROM runtime_events{where} ORDER BY sequence",
+            parameters,
+        ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if not isinstance(payload, dict):
+                raise RuntimeError(
+                    f"runtime event payload is not an object: sequence={row['sequence']}",
+                )
+            output.append(
+                {
+                    "sequence": int(row["sequence"]),
+                    "time_ns": int(row["time_ns"]),
+                    "event_type": str(row["event_type"]),
+                    "event_key": row["event_key"],
+                    "event_hash": str(row["event_hash"]),
+                    "payload": payload,
+                },
+            )
+        return output
+
     def verify_hash_chain(self) -> bool:
         previous = "0" * 64
         for row in self.connection.execute(

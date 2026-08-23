@@ -106,6 +106,7 @@ class PolicyConfig:
 
 class SymbolEpisodePolicy:
     STATE_VERSION = 1
+    RUNTIME_STATE_VERSION = 2
 
     def __init__(
         self,
@@ -886,10 +887,125 @@ class SymbolEpisodePolicy:
             "last_plan_time_ns": self._last_plan_time_ns,
         }
 
+    def export_runtime_state(self) -> dict[str, object]:
+        """Return only state which causal bar/event replay cannot rebuild."""
+
+        if self._pending_started_episode_ids or self._pending_terminal_episode_ids:
+            raise RuntimeError(
+                "policy decisions must be durably drained before runtime snapshot",
+            )
+        return {
+            "version": self.RUNTIME_STATE_VERSION,
+            "symbol": self.symbol,
+            "used_episode_ids": sorted(self._used_episodes),
+            "claimed_plan_ids": dict(sorted(self._claimed_plans.items())),
+            "claimed_plan_metadata": {
+                key: dict(value)
+                for key, value in sorted(self._claimed_plan_metadata.items())
+            },
+            "invalidated_claimed_plans": {
+                key: dict(value)
+                for key, value in sorted(self._invalidated_claimed_plans.items())
+            },
+            "terminalized_episodes": dict(sorted(self._terminalized_episodes.items())),
+            "last_plan_time_ns": self._last_plan_time_ns,
+        }
+
+    def _decision_ledger_overlay_state(
+        self,
+        starts: Mapping[str, Mapping[str, object]],
+        terminals: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Compose a legacy-shaped validated overlay without queueing events."""
+
+        state = self.export_state()
+        merged_starts = {
+            str(key): dict(value)
+            for key, value in self._started_episodes.items()
+        }
+        merged_terminals = {
+            str(key): dict(value)
+            for key, value in self._terminal_decisions.items()
+        }
+        for episode_id, values in starts.items():
+            payload = dict(values)
+            existing = merged_starts.get(episode_id)
+            if existing is not None and existing != payload:
+                raise ValueError(
+                    f"conflicting durable episode start for episode {episode_id}",
+                )
+            merged_starts[episode_id] = payload
+        for episode_id, values in terminals.items():
+            payload = dict(values)
+            existing = merged_terminals.get(episode_id)
+            if existing is not None and existing != payload:
+                raise ValueError(
+                    f"conflicting durable terminal decision for episode {episode_id}",
+                )
+            merged_terminals[episode_id] = payload
+        state["started_episodes"] = merged_starts
+        state["terminal_decisions"] = merged_terminals
+        used = set(state["used_episode_ids"])
+        claimed = dict(state["claimed_plan_ids"])
+        metadata = {
+            str(key): dict(value)
+            for key, value in state["claimed_plan_metadata"].items()
+        }
+        terminalized = dict(state["terminalized_episodes"])
+        last_plan_time_ns = int(state["last_plan_time_ns"])
+        for episode_id, terminal in merged_terminals.items():
+            outcome = terminal.get("outcome")
+            reason = terminal.get("terminal_reason")
+            if outcome == "NO_TRADE":
+                if reason == "SAME_CASCADE_NON_OWNER":
+                    used.add(episode_id)
+                elif isinstance(reason, str) and reason:
+                    terminalized[episode_id] = reason
+                continue
+            if outcome != "SELECTED":
+                continue
+            raw_plan = terminal.get("plan")
+            if not isinstance(raw_plan, Mapping):
+                raise ValueError(
+                    f"selected durable decision has no plan for episode {episode_id}",
+                )
+            plan = TradePlan.from_dict(raw_plan)
+            if plan.episode_id != episode_id or terminal.get("plan_id") != plan.plan_id:
+                raise ValueError(f"selected durable plan identity mismatch for {episode_id}")
+            used.add(episode_id)
+            claimed[episode_id] = plan.plan_id
+            metadata[episode_id] = {
+                "plan_id": plan.plan_id,
+                "side": plan.side,
+                "family": plan.family,
+                "interaction_time_ns": int(
+                    plan.evidence.get("interaction_time_ns", plan.decision_time_ns),
+                ),
+                "source_timeframe_minutes": int(
+                    plan.evidence.get("source_timeframe_minutes", 0),
+                ),
+                "source_boundary_id": plan.source_boundary_id,
+                "source_kind": str(plan.evidence.get("source_kind", "UNKNOWN")),
+                "destination_boundary_id": plan.destination_boundary_id,
+                "destination_kind": str(
+                    plan.evidence.get("destination_kind", "UNKNOWN"),
+                ),
+            }
+            last_plan_time_ns = max(last_plan_time_ns, plan.decision_time_ns)
+        state["used_episode_ids"] = sorted(used)
+        state["claimed_plan_ids"] = dict(sorted(claimed.items()))
+        state["claimed_plan_metadata"] = {
+            key: metadata[key] for key in sorted(metadata)
+        }
+        state["terminalized_episodes"] = dict(sorted(terminalized.items()))
+        state["last_plan_time_ns"] = last_plan_time_ns
+        return state
+
     def restore_state(self, payload: Mapping[str, object]) -> None:
         if not isinstance(payload, Mapping):
             raise ValueError("policy state must be a mapping")
-        if payload.get("version") != self.STATE_VERSION:
+        version = payload.get("version")
+        if version not in {self.STATE_VERSION, self.RUNTIME_STATE_VERSION}:
             raise ValueError(f"unsupported policy state version: {payload.get('version')!r}")
         if payload.get("symbol") != self.symbol:
             raise ValueError(f"policy state symbol mismatch: {payload.get('symbol')!r}")
@@ -902,6 +1018,16 @@ class SymbolEpisodePolicy:
         raw_decisions = payload.get("terminal_decisions", {})
         raw_pending_started = payload.get("pending_started_episode_ids", [])
         raw_pending_terminal = payload.get("pending_terminal_episode_ids", [])
+        if version == self.RUNTIME_STATE_VERSION and any(
+            key in payload
+            for key in (
+                "started_episodes",
+                "terminal_decisions",
+                "pending_started_episode_ids",
+                "pending_terminal_episode_ids",
+            )
+        ):
+            raise ValueError("compact policy runtime state contains decision payloads")
         raw_last = payload.get("last_plan_time_ns", -1)
         if not isinstance(raw_used, list) or any(
             not isinstance(value, str) or not value for value in raw_used
@@ -2421,10 +2547,67 @@ class LiquidityEpisodeCoordinator:
             },
         }
 
+    def export_runtime_state(self) -> dict[str, object]:
+        return {
+            "version": 2,
+            "policies": {
+                symbol: self.policies[symbol].export_runtime_state()
+                for symbol in sorted(self.policies)
+            },
+        }
+
+    def restore_decision_events(
+        self,
+        events: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Rebuild the full decision ledger from durable semantic events."""
+
+        starts: dict[str, dict[str, Mapping[str, object]]] = {
+            symbol: {} for symbol in self.policies
+        }
+        terminals: dict[str, dict[str, Mapping[str, object]]] = {
+            symbol: {} for symbol in self.policies
+        }
+        for event in events:
+            event_type = event.get("event_type")
+            if event_type not in {"POLICY_EPISODE_STARTED", "POLICY_EPISODE_TERMINAL"}:
+                raise ValueError(f"unsupported policy decision event: {event_type!r}")
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping):
+                raise ValueError("policy decision event payload must be a mapping")
+            symbol = payload.get("symbol")
+            episode_id = payload.get("episode_id")
+            if symbol not in self.policies or not isinstance(episode_id, str) or not episode_id:
+                raise ValueError("policy decision event has invalid symbol or episode ID")
+            expected_key = f"{event_type}:{episode_id}"
+            event_key = event.get("event_key")
+            if event_key is not None and event_key != expected_key:
+                raise ValueError("policy decision semantic event key mismatch")
+            destination = starts if event_type == "POLICY_EPISODE_STARTED" else terminals
+            existing = destination[str(symbol)].get(episode_id)
+            if existing is not None and dict(existing) != dict(payload):
+                raise ValueError(f"conflicting policy decision event for {episode_id}")
+            destination[str(symbol)][episode_id] = payload
+
+        overlays = {
+            symbol: self.policies[symbol]._decision_ledger_overlay_state(
+                starts[symbol], terminals[symbol],
+            )
+            for symbol in sorted(self.policies)
+        }
+        # Validate the full four-symbol overlay before mutating live state.
+        for symbol in sorted(self.policies):
+            validator = SymbolEpisodePolicy(
+                symbol, self.policies[symbol].tick_size, self.policies[symbol].config,
+            )
+            validator.restore_state(overlays[symbol])
+        for symbol in sorted(self.policies):
+            self.policies[symbol].restore_state(overlays[symbol])
+
     def restore_state(self, payload: Mapping[str, object]) -> None:
         if not isinstance(payload, Mapping):
             raise ValueError("coordinator state must be a mapping")
-        if payload.get("version") != 1:
+        if payload.get("version") not in {1, 2}:
             raise ValueError(f"unsupported coordinator state version: {payload.get('version')!r}")
         raw = payload.get("policies")
         if not isinstance(raw, Mapping) or set(raw) != set(self.policies):
