@@ -1459,6 +1459,96 @@ def test_newer_accepted_level_durably_invalidates_claimed_pending_plan() -> None
     ] == owner.episode_id
 
 
+def test_superseded_watch_in_iteration_snapshot_cannot_terminalize_twice() -> None:
+    policy = SymbolEpisodePolicy("BTCUSDT", 0.1)
+    decision = bar(30, interval=1)
+    newer = EpisodeWatch(
+        episode_id="EP:NEWER-IN-SNAPSHOT",
+        family="ACCEPTED_AUCTION_CONTINUATION",
+        source=boundary("SOURCE:NEWER-SNAPSHOT", "HIGH", 100.0),
+        side="LONG",
+        state="COMPLETING",
+        interaction_serial=4,
+        interaction_time_ns=20 * MIN,
+        event_extreme=99.0,
+        last_update_serial=5,
+        last_update_time_ns=decision.open_time_ns - 1,
+        evidence={
+            "interaction_source_lower": 99.9,
+            "interaction_source_upper": 100.1,
+        },
+    )
+    older = EpisodeWatch(
+        episode_id="EP:OLDER-IN-SNAPSHOT",
+        family="ACCEPTED_AUCTION_CONTINUATION",
+        source=boundary("SOURCE:OLDER-SNAPSHOT", "HIGH", 100.0),
+        side="LONG",
+        state="COMPLETING",
+        interaction_serial=2,
+        interaction_time_ns=10 * MIN,
+        event_extreme=99.0,
+        last_update_serial=5,
+        last_update_time_ns=decision.open_time_ns - 1,
+        evidence={
+            "interaction_source_lower": 99.9,
+            "interaction_source_upper": 100.1,
+        },
+    )
+    # This order reproduces the production failure: the newer watch completes
+    # first and removes the older object from the live mapping, but the older
+    # object still exists in list(self._watches.items()).
+    policy._watches[newer.episode_id] = newer
+    policy._watches[older.episode_id] = older
+    completed = SimpleNamespace(
+        completed=True,
+        family="ACCEPTED_AUCTION_CONTINUATION",
+        terminal_state="ACCEPTANCE_FIRST_RESPONSE_COMPLETED",
+        completed_states=("ACCEPTANCE_FIRST_RESPONSE_COMPLETED",),
+        phase_basis="STRUCTURAL_RANGE",
+        control_transfer=True,
+        activity_input_known=True,
+        flow_input_known=True,
+        response_time_ns=decision.close_time_ns,
+        response_close=decision.close,
+        retest_time_ns=decision.close_time_ns,
+        response_required_extreme=decision.high,
+        target_fresh=True,
+        stop_intact=True,
+    )
+    ownership = {"event_residual_ownership": 0.01}
+    owner_plan = replace(
+        _plan("BTCUSDT", newer.episode_id, newer.interaction_time_ns),
+        family="ACCEPTED_AUCTION_CONTINUATION",
+    )
+
+    with (
+        patch.object(policy.journey, "evaluate", return_value=completed),
+        patch.object(policy, "_episode_tape", return_value=[decision]),
+        patch.object(policy, "_event_ownership", return_value=ownership),
+        patch.object(
+            policy,
+            "_origin_zone",
+            return_value=EntryZone(
+                "SOURCE_ORDER_BLOCK", 99.5, 100.0, 0, decision.open_time_ns,
+            ),
+        ),
+        patch.object(policy, "_build_plan", return_value=owner_plan) as build,
+    ):
+        assert policy._advance_watches(
+            decision,
+            6,
+            1.0,
+            0.0,
+            {"BTCUSDT": [decision]},
+        ) == [owner_plan]
+
+    assert build.call_count == 1
+    assert older.episode_id not in policy._watches
+    assert policy._terminal_decisions[older.episode_id]["terminal_reason"] == (
+        "NEWER_SAME_SIDE_LEVEL_SUPERSEDED_PENDING"
+    )
+
+
 def test_restart_overlay_removes_replayed_claim_and_cascade_but_keeps_independent_proposal() -> None:
     symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
     policies = {symbol: SymbolEpisodePolicy(symbol, 0.1) for symbol in symbols}

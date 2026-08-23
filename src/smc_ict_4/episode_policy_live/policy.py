@@ -1865,6 +1865,12 @@ class SymbolEpisodePolicy:
             bar.close_time_ns, serial,
         )
         for episode_id, watch in list(self._watches.items()):
+            # Processing a newer accepted episode can terminally supersede and
+            # remove an older watch while this snapshot is still being
+            # traversed.  Never evaluate that stale object again: doing so can
+            # create a second, contradictory terminal reason for one episode.
+            if self._watches.get(episode_id) is not watch:
+                continue
             if bar.close_time_ns <= watch.last_update_time_ns or watch.state == "PROPOSED":
                 continue
             if (
