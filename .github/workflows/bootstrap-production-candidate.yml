@@ -1,0 +1,73 @@
+name: Bootstrap production candidate source tree
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["production-candidate-liquidity-episode-policy-v1"]
+    paths:
+      - ".bootstrap/**"
+      - ".github/workflows/bootstrap-production-candidate.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-production-candidate
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify and materialize the reviewed source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import io
+          import os
+          from pathlib import Path
+          import tarfile
+
+          root = Path.cwd().resolve()
+          parts = sorted(Path('.bootstrap').glob('production_candidate_payload.part*'))
+          if len(parts) != 8:
+              raise SystemExit(f'expected 8 payload parts, found {len(parts)}')
+          encoded = ''.join(path.read_text(encoding='ascii').strip() for path in parts)
+          payload = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(payload).hexdigest()
+          expected = '5df0e6dd8be7f4b1cf386304ddfbfd5fa5a3c9709379fe1d2d372d9d2f644fc4'
+          if digest != expected:
+              raise SystemExit(f'payload SHA-256 mismatch: {digest} != {expected}')
+
+          with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
+              for member in archive.getmembers():
+                  target = (root / member.name).resolve()
+                  if os.path.commonpath([str(root), str(target)]) != str(root):
+                      raise SystemExit(f'unsafe archive member: {member.name}')
+              archive.extractall(root, filter='data')
+          print(f'materialized {len(parts)} parts, tar_sha256={digest}')
+          PY
+
+          rm -rf .bootstrap
+          rm -f .github/workflows/bootstrap-production-candidate.yml
+
+      - name: Commit the complete production-candidate system
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Complete Windows paper-shadow production candidate"
+          git push origin HEAD:production-candidate-liquidity-episode-policy-v1
