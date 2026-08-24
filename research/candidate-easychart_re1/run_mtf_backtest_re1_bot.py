@@ -3,4 +3,4 @@
 import runpy
 
 if __name__ == "__main__":
-    runpy.run_module("run_mtf_backtest_re1_complete_bot_policy_v2", run_name="__main__")
+    runpy.run_module("run_mtf_backtest_re1_causal_channel", run_name="__main__")

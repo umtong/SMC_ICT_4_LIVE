@@ -18,9 +18,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import time
+import urllib.parse
+import urllib.request
 
 from nautilus_trader.adapters.binance import BINANCE
 from nautilus_trader.adapters.binance import BinanceAccountType
@@ -39,15 +44,87 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import ClientId, InstrumentId, TraderId
 
-from easychart_re1_fresh import EasyChartRE1FreshBundle
+from easychart_re1_bot import EasyChartRE1BotBundle
 from execution_re1 import EasyChartMTFConfig
 from paper_re1 import build_warmup_map
-from paper_re1_fixed import EasyChartRE1CoherentPaperStrategy
+from paper_re1_bot import EasyChartRE1BotPaperStrategy
 import mtf_strategy as _base_strategy
 from simple_contract_v14 import FIXED_RISK_FRACTION, MINIMUM_GROSS_RR
 
 
 DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+BINANCE_DEMO_REST = "https://demo-fapi.binance.com"
+
+
+def _signed_demo_request(
+    method: str,
+    path: str,
+    params: dict[str, str | int],
+    api_key: str,
+    api_secret: str,
+) -> object:
+    signed = dict(params)
+    signed["timestamp"] = int(time.time() * 1000)
+    signed["recvWindow"] = 10_000
+    query = urllib.parse.urlencode(signed)
+    signature = hmac.new(
+        api_secret.encode("utf-8"),
+        query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    request = urllib.request.Request(
+        f"{BINANCE_DEMO_REST}{path}?{query}&signature={signature}",
+        method=method,
+        headers={"X-MBX-APIKEY": api_key},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict) and int(payload.get("code", 0)) < 0:
+        raise RuntimeError(f"Binance Demo request rejected: {payload}")
+    return payload
+
+
+def _configure_exchange_leverage(
+    symbols: tuple[str, ...],
+    api_key: str,
+    api_secret: str,
+) -> dict[str, int]:
+    """Give fixed-risk quantities the venue margin they require.
+
+    The exchange setting is deliberately the largest bracket-supported value;
+    actual economic leverage remains quantity times entry divided by NAV.
+    """
+    payload = _signed_demo_request(
+        "GET",
+        "/fapi/v1/leverageBracket",
+        {},
+        api_key,
+        api_secret,
+    )
+    if not isinstance(payload, list):
+        raise RuntimeError(f"unexpected Binance leverage brackets: {payload!r}")
+    brackets_by_symbol = {
+        str(item["symbol"]): item["brackets"]
+        for item in payload
+        if isinstance(item, dict) and "symbol" in item and "brackets" in item
+    }
+    configured: dict[str, int] = {}
+    for symbol in symbols:
+        brackets = brackets_by_symbol.get(symbol)
+        if not brackets:
+            raise RuntimeError(f"missing Binance leverage bracket for {symbol}")
+        leverage = max(int(item["initialLeverage"]) for item in brackets)
+        response = _signed_demo_request(
+            "POST",
+            "/fapi/v1/leverage",
+            {"symbol": symbol, "leverage": leverage},
+            api_key,
+            api_secret,
+        )
+        if not isinstance(response, dict) or int(response.get("leverage", 0)) != leverage:
+            raise RuntimeError(f"failed to set Binance leverage for {symbol}: {response!r}")
+        configured[symbol] = leverage
+    return configured
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,8 +188,8 @@ def main() -> None:
     check_record = {
         "candidate": "candidate-easychart_re1",
         "environment": "BINANCE_DEMO_USDT_FUTURES",
-        "scenario_bundle": "EasyChartRE1FreshBundle",
-        "paper_strategy": "EasyChartRE1CoherentPaperStrategy",
+        "scenario_bundle": "EasyChartRE1BotBundle",
+        "paper_strategy": "EasyChartRE1BotPaperStrategy",
         "symbols": symbols,
         "instrument_ids": [str(item) for item in instrument_ids],
         "execution_bar_types": [str(item) for item in execution_types],
@@ -135,10 +212,25 @@ def main() -> None:
     if missing:
         raise SystemExit(f"missing Demo Trading credentials: {', '.join(missing)}")
 
+    api_key = os.environ["BINANCE_DEMO_API_KEY"]
+    api_secret = os.environ["BINANCE_DEMO_API_SECRET"]
+    configured_leverage = _configure_exchange_leverage(
+        symbols,
+        api_key,
+        api_secret,
+    )
+    print(
+        json.dumps(
+            {"configured_exchange_leverage": configured_leverage},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
+
     args.cache.mkdir(parents=True, exist_ok=True)
     symbols_by_instrument = dict(zip(instrument_ids, symbols, strict=True))
     warmup = build_warmup_map(symbols_by_instrument, args.warmup_days, args.cache)
-    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1FreshBundle
+    _base_strategy.MultiScaleScenarioBundle = EasyChartRE1BotBundle
 
     provider = BinanceInstrumentProviderConfig(
         load_ids=frozenset(instrument_ids),
@@ -194,7 +286,7 @@ def main() -> None:
     )
     node = TradingNode(config=node_config)
     trading_start_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
-    strategy = EasyChartRE1CoherentPaperStrategy(
+    strategy = EasyChartRE1BotPaperStrategy(
         EasyChartMTFConfig(
             instrument_ids=instrument_ids,
             higher_bar_types=higher_types,

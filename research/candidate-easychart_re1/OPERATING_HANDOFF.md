@@ -6,6 +6,7 @@
 - Bundle: `EasyChartRE1BotBundle`
 - NautilusTrader strategy: `EasyChartRE1BotStrategy`
 - Continuous-account runner: `run_mtf_backtest_re1_bot.py`
+- Binance USD-M paper runner: `run_binance_demo_re1.py`
 
 The same bundle and strategy class are used for research, long continuous evaluation and paper/shadow execution. Only data and execution clients change.
 
@@ -13,21 +14,27 @@ The same bundle and strategy class are used for research, long continuous evalua
 
 - One account and at most one global position across BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT.
 - Current NAV risk to the original structural invalidation: 3%.
+- Quantity is `NAV × 3% / structural stop distance`; costs never shrink it.
+- Nautilus receives the quantity-derived effective leverage and Binance Demo is
+  set to each contract's supported maximum margin leverage before startup.
 - One full-position entry and one full-position exit; no partials or pyramiding.
 - Entry, stop and first pre-existing opposing objective are fixed before order submission.
 - Gross planned reward/risk must be at least 1.0R.
 - No daily loss limit and no trade-count limit.
 
-## Integrated auction owners
+## Canonical decision sequence
 
-1. Responsible rejection/reversal.
-2. Event-local OB/FVG continuation.
-3. Horizontal S/R flip.
-4. Contextual local efficient pullback.
-5. Residual macro-trend efficient pullback.
-6. Residual mature diagonal/channel acceptance.
+The bot follows one channel-liquidity episode from the fourth-point sweep through
+reclaim, the next completed five-minute hold and the first valid return.  A
+causally formed OB/FVG owns its future first return.  When no visual footprint
+formed, absorption cannot enter directly: a completed five-minute control
+transfer must reclaim the boundary and interaction balance without a new
+adverse extreme, then the first later boundary return must close on the intended
+side.  The original sweep extreme owns invalidation and the first pre-existing
+opposing objective owns the target.
 
-Continuation requires a body break, the immediate next decision bar to hold outside, the first later return and the first completed micro response. A causal episode has one owner. Local continuations align with accepted 60-minute direction unless a live BTC/ETH-led common impulse supports the faster transition.
+Historical warmup and live Binance bars both preserve exact quote volume, trade
+count and taker-buy volume, so replay and paper/shadow use the same flow state.
 
 ## Long continuous command
 

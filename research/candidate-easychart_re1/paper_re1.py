@@ -33,15 +33,17 @@ import pandas as pd
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.identifiers import InstrumentId
 
-from data import load_range, resample, wrangler_frame
+from data import resample, wrangler_frame
+from data_re1_flow import FLOW_COLUMNS, load_range_flow, wrangler_flow_frame
 from domain import Candle
+from easychart_re1_flow import FlowCandle
 from execution_re1 import EasyChartMTFConfig, EasyChartRE1Strategy
 
 
 PUBLIC_FUTURES_KLINES = "https://fapi.binance.com/fapi/v1/klines"
 LIVE_REORDER_GRACE_NS = 3 * 60 * 1_000_000_000
 
-WarmupMap = dict[str, dict[int, list[Candle]]]
+WarmupMap = dict[str, dict[int, list[Candle | FlowCandle]]]
 
 
 def _request_json(url: str, attempts: int = 5) -> Any:
@@ -95,7 +97,7 @@ def _recent_one_minute_klines(
             break
     if not rows:
         return pd.DataFrame(
-            columns=["open_time_dt", "open", "high", "low", "close", "volume"],
+            columns=[*FLOW_COLUMNS, "close_time_ms"],
         )
     frame = pd.DataFrame(rows)
     return pd.DataFrame(
@@ -106,6 +108,10 @@ def _recent_one_minute_klines(
             "low": pd.to_numeric(frame[3], errors="raise"),
             "close": pd.to_numeric(frame[4], errors="raise"),
             "volume": pd.to_numeric(frame[5], errors="raise"),
+            "quote_volume": pd.to_numeric(frame[7], errors="raise"),
+            "count": pd.to_numeric(frame[8], errors="raise").astype("int64"),
+            "taker_buy_volume": pd.to_numeric(frame[9], errors="raise"),
+            "taker_buy_quote_volume": pd.to_numeric(frame[10], errors="raise"),
             "close_time_ms": frame[6].astype("int64"),
         },
     )
@@ -124,7 +130,7 @@ def load_warmup_frame(
     last_complete_open = current_open - pd.Timedelta(minutes=1)
     archive_end = now_utc.date() - timedelta(days=1)
     archive_start = archive_end - timedelta(days=warmup_days + 1)
-    archived = load_range(symbol, archive_start, archive_end, cache)
+    archived = load_range_flow(symbol, archive_start, archive_end, cache)
 
     last_archived_open = pd.Timestamp(archived["open_time_dt"].iloc[-1])
     recent_start = int((last_archived_open + pd.Timedelta(minutes=1)).timestamp() * 1000)
@@ -152,11 +158,35 @@ def load_warmup_frame(
         raise RuntimeError(
             f"warmup data for {symbol} is stale: {actual_latest} < {expected_latest}",
         )
-    return combined[["open_time_dt", "open", "high", "low", "close", "volume"]]
+    return combined[FLOW_COLUMNS]
 
 
-def _candles(frame: pd.DataFrame, symbol: str, timeframe: int, now: datetime) -> list[Candle]:
-    sampled = frame if timeframe == 1 else resample(frame, timeframe)
+def _candles(
+    frame: pd.DataFrame,
+    symbol: str,
+    timeframe: int,
+    now: datetime,
+) -> list[Candle | FlowCandle]:
+    if timeframe == 1:
+        closed = wrangler_flow_frame(frame)
+        latest_complete_close = pd.Timestamp(now).floor("1min")
+        closed = closed.loc[closed.index <= latest_complete_close]
+        return [
+            FlowCandle(
+                ts_close_ns=int(row.Index.value),
+                open=float(row.open),
+                high=float(row.high),
+                low=float(row.low),
+                close=float(row.close),
+                volume=float(row.volume),
+                quote_volume=float(row.quote_volume),
+                trade_count=int(row.count),
+                taker_buy_base_volume=float(row.taker_buy_volume),
+                taker_buy_quote_volume=float(row.taker_buy_quote_volume),
+            )
+            for row in closed.itertuples()
+        ]
+    sampled = resample(frame, timeframe)
     closed = wrangler_frame(sampled, timeframe)
     latest_complete_close = pd.Timestamp(now).floor(f"{timeframe}min")
     closed = closed.loc[closed.index <= latest_complete_close]
@@ -204,7 +234,7 @@ class EasyChartRE1PaperStrategy(EasyChartRE1Strategy):
         self._live_data_halted = False
 
     def _preload_warmup(self) -> None:
-        events: list[tuple[int, int, str, Candle]] = []
+        events: list[tuple[int, int, str, Candle | FlowCandle]] = []
         for instrument_id in self.config.instrument_ids:
             by_timeframe = self._warmup.get(str(instrument_id))
             if not by_timeframe:

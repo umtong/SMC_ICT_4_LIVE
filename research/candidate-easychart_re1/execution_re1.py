@@ -19,7 +19,7 @@ This module changes order transport only; it does not add trade management.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from nautilus_trader.model.enums import OrderSide, TimeInForce, TriggerType
@@ -97,6 +97,41 @@ class EasyChartRE1Strategy(EasyChartMTFStrategy):
         self._record("trade_slot_released_after_protective_cleanup", plan_id=plan_id)
         self._reset_trade_state()
 
+    def _quantity(self, instrument: Any, plan: Any, nav: Decimal) -> Any | None:
+        """Size only the declared structural stop to three percent of NAV.
+
+        Quantity creates the economic exposure.  Fees, funding, slippage and a
+        possible adverse gap remain real account costs, but they do not shrink
+        the structural three-percent rule.  Native quantity rounding is the
+        only accepted deviation from exactly three percent.
+        """
+        entry = instrument.make_price(plan.entry).as_decimal()
+        stop = instrument.make_price(plan.stop).as_decimal()
+        multiplier = instrument.multiplier.as_decimal()
+        structural_loss_per_unit = abs(entry - stop) * multiplier
+        if structural_loss_per_unit <= 0 or nav <= 0:
+            return None
+
+        risk_budget = nav * Decimal(str(self.config.risk_fraction))
+        raw = risk_budget / structural_loss_per_unit
+        step = instrument.size_increment.as_decimal()
+        rounded = (raw / step).to_integral_value(rounding=ROUND_HALF_UP) * step
+        if rounded <= 0:
+            return None
+        quantity = instrument.make_qty(rounded)
+        if instrument.min_quantity is not None and quantity < instrument.min_quantity:
+            return None
+        if instrument.max_quantity is not None and quantity > instrument.max_quantity:
+            return None
+
+        account = self.portfolio.account(instrument.id.venue)
+        if account is None:
+            return None
+        notional = instrument.notional_value(quantity, instrument.make_price(entry))
+        effective_leverage = notional.as_decimal() / nav
+        account.set_leverage(instrument.id, max(Decimal(1), effective_leverage))
+        return quantity
+
     def _submit_plan(self, instrument_id: InstrumentId, plan: Any) -> bool:
         instrument = self.instruments[instrument_id]
         nav = self._current_nav()
@@ -112,6 +147,12 @@ class EasyChartRE1Strategy(EasyChartMTFStrategy):
                 estimated_stop_slippage=float(stop_slippage),
             )
             return False
+
+        native_entry = instrument.make_price(plan.entry)
+        effective_leverage = instrument.notional_value(
+            quantity,
+            native_entry,
+        ).as_decimal() / nav
 
         plan_tag = f"PLAN:{plan.plan_id}"
         entry = self.order_factory.market(
@@ -142,6 +183,7 @@ class EasyChartRE1Strategy(EasyChartMTFStrategy):
             entry_client_order_id=str(self.active_entry_id),
             nav_at_submission=float(nav),
             risk_budget=float(nav * Decimal(str(self.config.risk_fraction))),
+            effective_leverage=float(effective_leverage),
             estimated_entry_slippage=float(entry_slippage),
             estimated_stop_slippage=float(stop_slippage),
             execution_policy=LIVE_PROTECTION_POLICY,
