@@ -150,6 +150,7 @@ class JourneyEvidence:
     control_impact_per_pressure: float | None
     realized_capacity_progression: tuple[float, ...]
     absorption_outcome_proxy_progression: tuple[float | None, ...]
+    reclaim_time_ns: int | None
     retest_time_ns: int | None
     response_time_ns: int | None
     response_close: float | None
@@ -181,6 +182,7 @@ class _IncrementalJourneyState:
     endpoint_seq: int
     break_seq: int | None = None
     retest_seq: int | None = None
+    retest_held: bool | None = None
     response_seq: int | None = None
     impulse_seq: int | None = None
     reclaim_seq: int | None = None
@@ -785,6 +787,7 @@ class EventTimeAuctionJourney:
             control_impact_per_pressure=None,
             realized_capacity_progression=(),
             absorption_outcome_proxy_progression=(),
+            reclaim_time_ns=None,
             retest_time_ns=None,
             response_time_ns=None,
             response_close=None,
@@ -858,9 +861,9 @@ class EventTimeAuctionJourney:
                 and prior_break is not None
                 and seq > prior_break
                 and touched
-                and outside_close
             ):
                 state.retest_seq = seq
+                state.retest_held = outside_close
             if state.impulse_seq is None and outside_extreme:
                 state.impulse_seq = seq
             if (
@@ -886,7 +889,11 @@ class EventTimeAuctionJourney:
             state.endpoint_seq = seq
             state.last_seq = seq
 
-            if state.retest_seq is not None and seq == state.retest_seq + 1:
+            if (
+                state.retest_seq is not None
+                and state.retest_held is True
+                and seq == state.retest_seq + 1
+            ):
                 state.response_seq = seq
                 break
 
@@ -1080,9 +1087,13 @@ class EventTimeAuctionJourney:
         response_confirms = False
         accepted_stop_intact: bool | None = None
         accepted_target_fresh: bool | None = None
-        if retest_bar is not None and response_bar is None:
+        if retest_bar is not None and state.retest_held is True and response_bar is None:
             accepted_resolution = "ACCEPTANCE_WAITING_FIRST_RESPONSE"
-        elif retest_bar is not None and response_bar is not None:
+        elif (
+            retest_bar is not None
+            and state.retest_held is True
+            and response_bar is not None
+        ):
             target_touched = (
                 response_bar.high >= target if outward > 0 else response_bar.low <= target
             ) if target is not None else False
@@ -1139,11 +1150,30 @@ class EventTimeAuctionJourney:
         impulse_energy = sum(components) / len(components) if components else None
 
         terminal_inside = not state.terminal_outside
+        role_flip_progress = (
+            interaction.inward_sign
+            * (
+                self._bar_by_seq(state.endpoint_seq).close
+                - self._bar_by_seq(state.retest_seq).close
+            )
+            if state.retest_seq is not None and state.retest_held is False
+            else None
+        )
+        role_flip_mature = (
+            state.retest_seq is None
+            or state.retest_held is not False
+            or (
+                state.endpoint_seq > state.retest_seq
+                and role_flip_progress is not None
+                and role_flip_progress > 0.0
+            )
+        )
         failed_complete = (
             state.impulse_seq is not None
             and state.reclaim_seq is not None
             and not state.outside_after_reclaim
             and terminal_inside
+            and role_flip_mature
             and control_transfer
         )
         defended_complete = (
@@ -1178,6 +1208,8 @@ class EventTimeAuctionJourney:
         elif failed_complete:
             family = "FAILED_AUCTION_REVERSAL"
             completed = True
+            if retest_bar is not None and state.retest_held is False:
+                states.extend(("OUTSIDE_BREAK", "FIRST_RETEST_FAILED"))
             states.extend(("OUTWARD_SWEEP", "RECLAIM", "HELD_INSIDE", "CONTROL_TRANSFER"))
             settlement = "SETTLED_INSIDE"
         elif defended_complete:
@@ -1188,6 +1220,16 @@ class EventTimeAuctionJourney:
         elif state.terminal_outside:
             states.append("OUTSIDE_UNSETTLED")
             settlement = "OUTSIDE_UNSETTLED"
+        elif retest_bar is not None and state.retest_held is False:
+            states.extend(
+                (
+                    "OUTSIDE_BREAK",
+                    "FIRST_RETEST_FAILED",
+                    "ROLE_FLIP_UNRESOLVED",
+                    "WAIT_DISPLACEMENT",
+                ),
+            )
+            settlement = "ROLE_FLIP_UNRESOLVED"
         elif state.impulse_seq is not None:
             states.append("SWEEP_UNRESOLVED")
             settlement = "INSIDE_UNRESOLVED"
@@ -1266,6 +1308,10 @@ class EventTimeAuctionJourney:
             ),
             absorption_outcome_proxy_progression=tuple(
                 block.absorption_outcome_proxy for block in blocks
+            ),
+            reclaim_time_ns=(
+                self._bar_by_seq(state.reclaim_seq).close_time_ns
+                if state.reclaim_seq is not None else None
             ),
             retest_time_ns=retest_bar.close_time_ns if retest_bar is not None else None,
             response_time_ns=response_bar.close_time_ns if response_bar is not None else None,
@@ -1354,22 +1400,23 @@ class EventTimeAuctionJourney:
             bar.low <= interaction.upper and bar.high >= interaction.lower for bar in episode
         ]
 
-        # Existing RE1 acceptance-response ownership (1142aca): once the first
-        # held retest has closed outside, the very first later completed bar is
-        # the whole response event.  It cannot be replaced by a more favorable
-        # candle observed later.  This is a structural transition, not a minute
-        # timeout.
+        # The first physical post-break return owns the continuation decision.
+        # A close back inside consumes continuation and leaves only a genuine
+        # failed-auction role flip; a later cleaner retest cannot revive it.
         break_index = self._first_index(outside_close_full)
         retest_index: int | None = None
         if break_index is not None:
-            held_retests = [
-                touched and outside
-                for touched, outside in zip(band_touch_full, outside_close_full, strict=True)
-            ]
-            retest_index = self._later_index(held_retests, break_index)
+            retest_index = self._later_index(band_touch_full, break_index)
+        retest_held = (
+            outside_close_full[retest_index] if retest_index is not None else None
+        )
         response_index = (
             retest_index + 1
-            if retest_index is not None and retest_index + 1 < len(episode)
+            if (
+                retest_index is not None
+                and retest_held is True
+                and retest_index + 1 < len(episode)
+            )
             else None
         )
         retest_bar = episode[retest_index] if retest_index is not None else None
@@ -1379,9 +1426,9 @@ class EventTimeAuctionJourney:
         response_confirms = False
         accepted_stop_intact: bool | None = None
         accepted_target_fresh: bool | None = None
-        if retest_bar is not None and response_bar is None:
+        if retest_bar is not None and retest_held is True and response_bar is None:
             accepted_resolution = "ACCEPTANCE_WAITING_FIRST_RESPONSE"
-        elif retest_bar is not None and response_bar is not None:
+        elif retest_bar is not None and retest_held is True and response_bar is not None:
             # Intrabar destination/stop touches own the outcome before the
             # response-close decision, in the same ordering as RE1.
             target_touched = (
@@ -1469,6 +1516,14 @@ class EventTimeAuctionJourney:
             and reclaim_index is not None
             and held_inside
             and terminal_inside
+            and (
+                retest_index is None
+                or retest_held is not False
+                or (
+                    len(episode) - 1 > retest_index
+                    and inward * (episode[-1].close - episode[retest_index].close) > 0.0
+                )
+            )
             and control_transfer
         )
 
@@ -1503,6 +1558,8 @@ class EventTimeAuctionJourney:
         elif failed_complete:
             family = "FAILED_AUCTION_REVERSAL"
             completed = True
+            if retest_bar is not None and retest_held is False:
+                states.extend(("OUTSIDE_BREAK", "FIRST_RETEST_FAILED"))
             states.extend(("OUTWARD_SWEEP", "RECLAIM", "HELD_INSIDE", "CONTROL_TRANSFER"))
             settlement = "SETTLED_INSIDE"
         elif defended_complete:
@@ -1514,6 +1571,16 @@ class EventTimeAuctionJourney:
             if terminal_outside:
                 states.append("OUTSIDE_UNSETTLED")
                 settlement = "OUTSIDE_UNSETTLED"
+            elif retest_bar is not None and retest_held is False:
+                states.extend(
+                    (
+                        "OUTSIDE_BREAK",
+                        "FIRST_RETEST_FAILED",
+                        "ROLE_FLIP_UNRESOLVED",
+                        "WAIT_DISPLACEMENT",
+                    ),
+                )
+                settlement = "ROLE_FLIP_UNRESOLVED"
             elif impulse_index is not None:
                 states.append("SWEEP_UNRESOLVED")
                 settlement = "INSIDE_UNRESOLVED"
@@ -1600,6 +1667,10 @@ class EventTimeAuctionJourney:
             ),
             absorption_outcome_proxy_progression=tuple(
                 block.absorption_outcome_proxy for block in blocks
+            ),
+            reclaim_time_ns=(
+                episode[reclaim_index].close_time_ns
+                if reclaim_index is not None else None
             ),
             retest_time_ns=retest_bar.close_time_ns if retest_bar is not None else None,
             response_time_ns=response_bar.close_time_ns if response_bar is not None else None,

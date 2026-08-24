@@ -77,10 +77,13 @@ class StructuralNode:
         return self.lower + shift, self.upper + shift
 
     def is_fresh(self, decision_time_ns: int) -> bool:
+        # A boundary retired by the current completed bar was still fresh when
+        # that bar opened.  It may own that first interaction exactly once and
+        # disappears from the next decision onward.
         return (
             self.observed_time_ns < decision_time_ns
-            and (self.consumed_time_ns is None or self.consumed_time_ns > decision_time_ns)
-            and (self.superseded_time_ns is None or self.superseded_time_ns > decision_time_ns)
+            and (self.consumed_time_ns is None or self.consumed_time_ns >= decision_time_ns)
+            and (self.superseded_time_ns is None or self.superseded_time_ns >= decision_time_ns)
         )
 
     def as_role(self, role: StructureRole) -> "StructuralNode":
@@ -102,6 +105,7 @@ class TrendLineVersion:
     observed_time_ns: int
     version: int
     superseded_time_ns: int | None = None
+    first_interaction_time_ns: int | None = None
 
     @property
     def slope_per_bar(self) -> float:
@@ -125,6 +129,7 @@ class ChannelVersion:
     opposite_edge_reached_time_ns: int | None = None
     first_edge_consumed_time_ns: int | None = None
     superseded_time_ns: int | None = None
+    edge_first_interaction_time_ns: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -159,6 +164,96 @@ class FeasibleTrendChannelBook:
         self.bars.append(bar)
         self._bar_serial_by_close[bar.close_time_ns] = serial
         self._advance_channel_phase(bar, serial)
+
+    @staticmethod
+    def _bar_touches_band(bar: Bar, lower: float, upper: float) -> bool:
+        return bar.low <= upper and bar.high >= lower
+
+    def _projection_serial(self, close_time_ns: int) -> float | None:
+        if not self.bars:
+            return None
+        elapsed = close_time_ns - self.bars[-1].close_time_ns
+        return len(self.bars) - 1 + elapsed / (self.timeframe_minutes * 60_000_000_000)
+
+    def observe_price(self, bar: Bar) -> None:
+        """Retire each projected line/channel edge after its first later touch.
+
+        This is the causal lifecycle from EasyChart's
+        ``LifecycleAwareStructureBook``.  The caller classifies the current
+        completed bar after this update; equality-aware freshness above keeps
+        the just-touched boundary available for that one interaction only.
+        """
+
+        serial = self._projection_serial(bar.close_time_ns)
+        if serial is None:
+            return
+        for line in self.lines:
+            if (
+                line.first_interaction_time_ns is not None
+                or line.observed_time_ns > bar.open_time_ns
+                or (
+                    line.superseded_time_ns is not None
+                    and line.superseded_time_ns <= bar.open_time_ns
+                )
+            ):
+                continue
+            value = line.value_at(serial)
+            if self._bar_touches_band(
+                bar,
+                value - self.tick_size,
+                value + self.tick_size,
+            ):
+                line.first_interaction_time_ns = bar.close_time_ns
+
+        for channel in self.channels:
+            if (
+                channel.observed_time_ns > bar.open_time_ns
+                or (
+                    channel.superseded_time_ns is not None
+                    and channel.superseded_time_ns <= bar.open_time_ns
+                )
+            ):
+                continue
+            # Before point four only the opposite edge is a visible price
+            # fact.  A minute touch of that edge completes the channel phase;
+            # the formerly hidden main edge becomes eligible only afterwards,
+            # never retroactively on the same bar.
+            phase_was_complete = (
+                channel.opposite_edge_reached_time_ns is not None
+                and channel.opposite_edge_reached_time_ns <= bar.open_time_ns
+            )
+            eligible_edges = (
+                ("LOWER", "UPPER")
+                if phase_was_complete
+                else (self._first_edge(channel),)
+            )
+            for edge in eligible_edges:
+                first_edge = edge == self._first_edge(channel)
+                prior_interaction = channel.edge_first_interaction_time_ns.get(edge)
+                if prior_interaction is None and first_edge:
+                    prior_interaction = channel.first_edge_consumed_time_ns
+                    if prior_interaction is not None:
+                        channel.edge_first_interaction_time_ns[edge] = prior_interaction
+                if prior_interaction is not None:
+                    continue
+                value = self._edge_value(channel, edge, serial)
+                if self._bar_touches_band(
+                    bar,
+                    value - self.tick_size,
+                    value + self.tick_size,
+                ):
+                    channel.edge_first_interaction_time_ns[edge] = bar.close_time_ns
+                    if first_edge:
+                        channel.first_edge_consumed_time_ns = (
+                            bar.close_time_ns
+                            if channel.first_edge_consumed_time_ns is None
+                            else min(
+                                channel.first_edge_consumed_time_ns,
+                                bar.close_time_ns,
+                            )
+                        )
+                        if not phase_was_complete:
+                            channel.opposite_edge_reached_time_ns = bar.close_time_ns
 
     def _pivot_serial(self, pivot: Pivot) -> int:
         try:
@@ -265,9 +360,28 @@ class FeasibleTrendChannelBook:
             observed_time_ns=max(first.observed_time_ns, pivot.observed_time_ns),
             version=version,
         )
+        superseded_line_ids: set[str] = set()
         for old in self.lines:
             if old.side == line.side and old.second_pivot_id == first.pivot_id:
-                old.superseded_time_ns = line.observed_time_ns
+                old.superseded_time_ns = (
+                    line.observed_time_ns
+                    if old.superseded_time_ns is None
+                    else min(old.superseded_time_ns, line.observed_time_ns)
+                )
+                superseded_line_ids.add(old.line_id)
+        # A channel cannot outlive the chained main line which defined it.
+        # Supersession is therefore caused by the successor line itself, even
+        # when that successor does not also form a valid new channel.
+        for old_channel in self.channels:
+            if old_channel.main_line_id in superseded_line_ids:
+                old_channel.superseded_time_ns = (
+                    line.observed_time_ns
+                    if old_channel.superseded_time_ns is None
+                    else min(
+                        old_channel.superseded_time_ns,
+                        line.observed_time_ns,
+                    )
+                )
         self.lines.append(line)
 
         opposite = self._opposite_between(first, pivot)
@@ -305,7 +419,11 @@ class FeasibleTrendChannelBook:
                 and old_line is not None
                 and old_line.second_pivot_id == first.pivot_id
             ):
-                old.superseded_time_ns = channel.observed_time_ns
+                old.superseded_time_ns = (
+                    channel.observed_time_ns
+                    if old.superseded_time_ns is None
+                    else min(old.superseded_time_ns, channel.observed_time_ns)
+                )
         self.channels.append(channel)
         return line, channel
 
@@ -340,7 +458,16 @@ class FeasibleTrendChannelBook:
             value = self._edge_value(channel, self._first_edge(channel), serial)
             if bar.low <= value + self.tick_size and bar.high >= value - self.tick_size:
                 channel.opposite_edge_reached_time_ns = bar.close_time_ns
-                channel.first_edge_consumed_time_ns = bar.close_time_ns
+                edge = self._first_edge(channel)
+                channel.edge_first_interaction_time_ns.setdefault(
+                    edge,
+                    bar.close_time_ns,
+                )
+                channel.first_edge_consumed_time_ns = (
+                    bar.close_time_ns
+                    if channel.first_edge_consumed_time_ns is None
+                    else min(channel.first_edge_consumed_time_ns, bar.close_time_ns)
+                )
 
     def projected_nodes(self, decision_time_ns: int, serial: int) -> list[StructuralNode]:
         """Return only versions and channel phases available before decision."""
@@ -350,13 +477,24 @@ class FeasibleTrendChannelBook:
             item
             for item in self.channels
             if item.observed_time_ns < decision_time_ns
-            and (item.superseded_time_ns is None or item.superseded_time_ns > decision_time_ns)
+            and (item.superseded_time_ns is None or item.superseded_time_ns >= decision_time_ns)
+            and (
+                (main_line := self._line(item.main_line_id)) is not None
+                and (
+                    main_line.superseded_time_ns is None
+                    or main_line.superseded_time_ns >= decision_time_ns
+                )
+            )
         ]
         channel_line_ids = {item.main_line_id for item in active_channels}
         for line in self.lines:
             if (
                 line.observed_time_ns >= decision_time_ns
-                or (line.superseded_time_ns is not None and line.superseded_time_ns <= decision_time_ns)
+                or (line.superseded_time_ns is not None and line.superseded_time_ns < decision_time_ns)
+                or (
+                    line.first_interaction_time_ns is not None
+                    and line.first_interaction_time_ns < decision_time_ns
+                )
             ):
                 continue
             channel = next((item for item in active_channels if item.main_line_id == line.line_id), None)
@@ -385,13 +523,25 @@ class FeasibleTrendChannelBook:
                         if line.side == "LOW"
                         else value + 2.0 * self.tick_size
                     ),
+                    consumed_time_ns=line.first_interaction_time_ns,
                     superseded_time_ns=line.superseded_time_ns,
                 )
             )
         for channel in active_channels:
             for edge in ("LOWER", "UPPER"):
                 is_main = edge == self._main_edge(channel)
-                if is_main and channel.opposite_edge_reached_time_ns is None:
+                if is_main and (
+                    channel.opposite_edge_reached_time_ns is None
+                    or channel.opposite_edge_reached_time_ns >= decision_time_ns
+                ):
+                    continue
+                first_interaction = channel.edge_first_interaction_time_ns.get(edge)
+                if first_interaction is None and edge == self._first_edge(channel):
+                    first_interaction = channel.first_edge_consumed_time_ns
+                if (
+                    first_interaction is not None
+                    and first_interaction < decision_time_ns
+                ):
                     continue
                 value = self._edge_value(channel, edge, serial)
                 side = "LOW" if edge == "LOWER" else "HIGH"
@@ -411,12 +561,44 @@ class FeasibleTrendChannelBook:
                         version=channel.version,
                         invalidation=value - 2.0 * self.tick_size if side == "LOW" else value + 2.0 * self.tick_size,
                         consumed_time_ns=(
-                            channel.first_edge_consumed_time_ns
-                            if edge == self._first_edge(channel)
-                            else None
+                            first_interaction
                         ),
                         superseded_time_ns=channel.superseded_time_ns,
                     )
+                )
+        return output
+
+    def known_node_ids(self, decision_time_ns: int) -> set[str]:
+        """Return non-superseded identities, including a retired episode source."""
+
+        output = {
+            line.line_id
+            for line in self.lines
+            if line.observed_time_ns < decision_time_ns
+            and (
+                line.superseded_time_ns is None
+                or line.superseded_time_ns >= decision_time_ns
+            )
+        }
+        for channel in self.channels:
+            main_line = self._line(channel.main_line_id)
+            if (
+                channel.observed_time_ns < decision_time_ns
+                and (
+                    channel.superseded_time_ns is None
+                    or channel.superseded_time_ns >= decision_time_ns
+                )
+                and main_line is not None
+                and (
+                    main_line.superseded_time_ns is None
+                    or main_line.superseded_time_ns >= decision_time_ns
+                )
+            ):
+                output.update(
+                    {
+                        f"{channel.channel_id}:LOWER",
+                        f"{channel.channel_id}:UPPER",
+                    }
                 )
         return output
 

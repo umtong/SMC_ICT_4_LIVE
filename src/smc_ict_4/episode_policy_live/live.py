@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -1307,26 +1307,11 @@ if NT is not None:
                 )
             immediate_acceptance = self._is_immediate_acceptance(plan)
             planned_entry = Decimal(str(plan.entry))
-            execution_limit = planned_entry
-            if immediate_acceptance:
-                # A naked MARKET order can gap beyond both the target and the
-                # 3% risk geometry.  The response is a one-shot IOC at the
-                # worst native price which still preserves gross RR >= 1.
-                tick = instrument.price_increment.as_decimal()
-                raw_stop = Decimal(str(plan.stop)) / tick
-                stop_rounding = ROUND_FLOOR if plan.side == "LONG" else ROUND_CEILING
-                native_stop_hint = raw_stop.to_integral_value(rounding=stop_rounding) * tick
-                native_target_hint = Decimal(str(instrument.make_price(plan.target)))
-                midpoint = (native_stop_hint + native_target_hint) / Decimal(2)
-                units = midpoint / tick
-                bound_rounding = ROUND_FLOOR if plan.side == "LONG" else ROUND_CEILING
-                execution_limit = units.to_integral_value(rounding=bound_rounding) * tick
             sizing = size_three_percent_stop_risk(
                 instrument,
                 side=plan.side,
-                # Size the declared structural entry-to-stop risk.  The IOC
-                # limit below is only a worst acceptable execution guard;
-                # using it here silently under-risks every response entry.
+                # Size the declared structural entry-to-stop risk.  The same
+                # native entry price is also the no-chase IOC limit below.
                 entry=planned_entry,
                 stop=plan.stop,
                 nav=nav,
@@ -1342,7 +1327,11 @@ if NT is not None:
                     details={"details": dict(sizing.details)},
                 )
             target_price = instrument.make_price(plan.target)
-            execution_limit_price = instrument.make_price(execution_limit)
+            # The completed response close is the entry decision, not a signal
+            # to chase.  An IOC may fill at that native price or better; any
+            # adverse gap remains unfilled.  This keeps actual entry-to-stop
+            # exposure at no more than the declared approximately 3% quantity.
+            execution_limit_price = sizing.entry_price
             native_entry = sizing.entry_price.as_decimal()
             native_stop = sizing.stop_trigger_price.as_decimal()
             native_target = target_price.as_decimal()
@@ -1372,9 +1361,7 @@ if NT is not None:
                         "native_target": str(native_target),
                     },
                 )
-            # A marketable IOC can execute away from the structural entry.
-            # Preserve 3% structural quantity while proving the whole order is
-            # still feasible at its worst accepted native price.
+            # Quantity, leverage and margin all use the same declared entry.
             execution_notional = instrument.notional_value(
                 sizing.quantity,
                 execution_limit_price,
@@ -1412,7 +1399,7 @@ if NT is not None:
             side = OrderSide.BUY if plan.side == "LONG" else OrderSide.SELL
             if immediate_acceptance:
                 # IOC guarantees there is no resting second-return order.  The
-                # limit is the economic fail-closed bound, not an entry target.
+                # completed response price is also the adverse fill boundary.
                 order = self.order_factory.limit(
                     instrument_id=instrument.id,
                     order_side=side,
@@ -1920,18 +1907,55 @@ if NT is not None:
                     )
                     actual = event.last_px.as_decimal()
                     plan = self.active_plan
-                    outside_bound = plan is None or (
-                        plan.side == "LONG" and actual > bound
-                    ) or (
-                        plan.side == "SHORT" and actual < bound
+                    # Nautilus's configured adverse FillModel can print one
+                    # simulated tick through a LIMIT price.  A real venue limit
+                    # cannot do that, so keep live/testnet no-chase strict and
+                    # admit exactly that native backtest transport tick only
+                    # when the post-fill geometry still has gross RR >= 1.
+                    backtest_tick = (
+                        self.instruments[plan.symbol].price_increment.as_decimal()
+                        if plan is not None and self.config.execution_mode == "BACKTEST"
+                        else Decimal(0)
                     )
+                    adverse_bound = (
+                        bound + backtest_tick
+                        if plan is not None and plan.side == "LONG"
+                        else bound - backtest_tick
+                    )
+                    actual_stop = Decimal(
+                        str(self.active_sizing.get("stop_trigger_price", plan.stop if plan else 0)),
+                    )
+                    actual_target = Decimal(
+                        str(self.active_sizing.get("target_price", plan.target if plan else 0)),
+                    )
+                    actual_risk = abs(actual - actual_stop)
+                    actual_reward = abs(actual_target - actual)
+                    geometry_intact = (
+                        plan is not None
+                        and actual_risk > 0
+                        and actual_reward / actual_risk >= Decimal(1)
+                        and (
+                            actual_stop < actual < actual_target
+                            if plan.side == "LONG"
+                            else actual_target < actual < actual_stop
+                        )
+                    )
+                    outside_bound = plan is None or (
+                        plan.side == "LONG" and actual > adverse_bound
+                    ) or (
+                        plan.side == "SHORT" and actual < adverse_bound
+                    ) or not geometry_intact
                     if outside_bound:
                         if plan is not None:
                             self._terminal_reject_plan(
                                 plan,
                                 reason="IMMEDIATE_RESPONSE_PRICE_BOUND_BREACH",
                                 event_type="EXECUTION_PRICE_BOUND_BREACH",
-                                details={"actual": str(actual), "bound": str(bound)},
+                                details={
+                                    "actual": str(actual),
+                                    "bound": str(bound),
+                                    "adverse_bound": str(adverse_bound),
+                                },
                                 time_ns=int(event.ts_event),
                             )
                         self.entry_filled_quantity += event.last_qty.as_decimal()

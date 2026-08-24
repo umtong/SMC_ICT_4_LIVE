@@ -216,6 +216,7 @@ class TradePlan:
             "FAILED_AUCTION_REVERSAL",
             "ACCEPTED_AUCTION_CONTINUATION",
             "INITIATIVE_MITIGATION_CONTINUATION",
+            "LOCAL_AUCTION_CONTINUATION",
         }:
             raise PolicyError(f"unknown plan family: {self.family}")
         if self.expires_time_ns <= self.decision_time_ns:

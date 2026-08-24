@@ -417,6 +417,63 @@ class ObjectiveBook:
             != source_boundary_id
         ]
 
+    def active_at(
+        self,
+        decision_time_ns: int,
+        *,
+        source_boundary_id: str | None = None,
+    ) -> list[LiquidityBoundary]:
+        """Reconstruct the objective book exactly as it existed at ``time``.
+
+        Consumed objectives remain in ``objectives`` for this purpose.  This
+        lets an auction commit its first destination at settlement and later
+        reject the episode if that destination was spent before entry, instead
+        of silently substituting a farther target.
+        """
+
+        return [
+            objective
+            for objective_id, objective in self.objectives.items()
+            if objective.observed_time_ns < decision_time_ns
+            and (
+                objective.consumed_time_ns is None
+                or objective.consumed_time_ns > decision_time_ns
+            )
+            and self.source_boundary_by_objective.get(objective_id)
+            != source_boundary_id
+        ]
+
+    def destination_candidates_at(
+        self,
+        *,
+        side: str,
+        reference_price: float,
+        decision_time_ns: int,
+        source_boundary_id: str | None = None,
+    ) -> list[LiquidityBoundary]:
+        """Return the first opposing objectives visible at a past settlement."""
+
+        wanted = "HIGH" if side == "LONG" else "LOW"
+        direction = 1.0 if side == "LONG" else -1.0
+        output = [
+            objective
+            for objective in self.active_at(
+                decision_time_ns,
+                source_boundary_id=source_boundary_id,
+            )
+            if objective.side == wanted
+            and direction * (objective.price - reference_price) > self.tick_size
+        ]
+        return sorted(
+            output,
+            key=lambda item: (
+                direction * (item.price - reference_price),
+                -item.timeframe_minutes,
+                -item.strength,
+                item.boundary_id,
+            ),
+        )
+
     def destination_candidates(
         self,
         *,

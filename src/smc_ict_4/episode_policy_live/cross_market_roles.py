@@ -89,6 +89,62 @@ class AcceptedRepricingPhase(StrEnum):
     LAGGARD_TRANSFER = "LAGGARD_TRANSFER"
 
 
+class SourceOwnershipRole(StrEnum):
+    """Who owns the completed directional delivery at a local source."""
+
+    UNKNOWN = "UNKNOWN"
+    NO_DIRECTIONAL_DELIVERY = "NO_DIRECTIONAL_DELIVERY"
+    LOCAL_SOURCE_OWNER = "LOCAL_SOURCE_OWNER"
+    COMMON_MARKET_OWNER_ONLY = "COMMON_MARKET_OWNER_ONLY"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceOwnershipDecision:
+    """Counterfactual ownership in pre-event volatility units.
+
+    Zero is a semantic boundary, not a fitted threshold: a local source owns
+    delivery only when the symbol moved in the proposed direction *and* moved
+    farther than the synchronous peer-market component.
+    """
+
+    role: SourceOwnershipRole
+    local_units: float | None
+    common_units: float | None
+    residual_units: float | None
+
+
+def classify_source_ownership(
+    *,
+    local_units: float | None,
+    peer_units: Sequence[float],
+) -> SourceOwnershipDecision:
+    """Separate local source control from a coincident common-market move."""
+
+    if local_units is None or not math.isfinite(float(local_units)):
+        return SourceOwnershipDecision(SourceOwnershipRole.UNKNOWN, None, None, None)
+    local = float(local_units)
+    if local <= 0.0:
+        return SourceOwnershipDecision(
+            SourceOwnershipRole.NO_DIRECTIONAL_DELIVERY,
+            local,
+            None,
+            None,
+        )
+    peers = [float(value) for value in peer_units if math.isfinite(float(value))]
+    if not peers:
+        return SourceOwnershipDecision(SourceOwnershipRole.UNKNOWN, local, None, None)
+    common = float(median(peers))
+    residual = local - common
+    role = (
+        SourceOwnershipRole.LOCAL_SOURCE_OWNER
+        if residual > 0.0
+        else SourceOwnershipRole.COMMON_MARKET_OWNER_ONLY
+        if common > 0.0
+        else SourceOwnershipRole.LOCAL_SOURCE_OWNER
+    )
+    return SourceOwnershipDecision(role, local, common, residual)
+
+
 @dataclass(frozen=True, slots=True)
 class EventPrice:
     """One causally observed close in the sweep-to-decision event path."""
@@ -516,6 +572,9 @@ __all__ = [
     "EventLeadershipRole",
     "EventPrice",
     "PeerParticipation",
+    "SourceOwnershipDecision",
+    "SourceOwnershipRole",
     "TrailingAuctionRole",
     "analyze_cross_market_roles",
+    "classify_source_ownership",
 ]
