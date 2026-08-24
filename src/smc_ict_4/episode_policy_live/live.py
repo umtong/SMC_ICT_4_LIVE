@@ -21,7 +21,13 @@ import time
 from typing import Any, Callable, Iterable, Mapping
 
 from .domain import Bar as PolicyBar
-from .domain import DEFAULT_CONTRACTS, SYMBOLS, TradePlan
+from .domain import (
+    DEFAULT_CONTRACTS,
+    ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+    ENTRY_LIFECYCLE_RESTING_FIRST_RETURN,
+    SYMBOLS,
+    TradePlan,
+)
 from .live_bars import DEFAULT_WARMUP_MINUTES
 from .live_bars import fetch_recent_binance_bars as _fetch_recent_binance_bars
 from .live_inventory import (
@@ -565,11 +571,6 @@ if NT is not None:
             self._funding_state: dict[str, dict[str, float | int]] = (
                 dict(runtime.get("funding_state", {})) if isinstance(runtime, Mapping) else {}
             )
-            self._restored_policy_state: Mapping[str, object] | None = (
-                runtime.get("policy_state")
-                if isinstance(runtime, Mapping) and isinstance(runtime.get("policy_state"), Mapping)
-                else None
-            )
             self._replayed = False
             self._halted = bool(runtime.get("halted", False)) if isinstance(runtime, Mapping) else False
             self.policy_flow_by_key: dict[tuple[str, int], Any] = {}
@@ -635,8 +636,6 @@ if NT is not None:
                 },
             )
             self._replay_store()
-            if self._restored_policy_state is not None:
-                self.coordinator.restore_state(self._restored_policy_state)
             self._reconcile_runtime()
             self.store.append_event(
                 time_ns=self.clock.timestamp_ns(),
@@ -651,6 +650,18 @@ if NT is not None:
         def _replay_store(self) -> None:
             if self._replayed:
                 return
+            decision_events = self.store.load_events(
+                event_types=("POLICY_EPISODE_STARTED", "POLICY_EPISODE_TERMINAL"),
+            )
+            terminals_by_time: dict[int, list[Mapping[str, object]]] = {}
+            for event in decision_events:
+                if event.get("event_type") != "POLICY_EPISODE_TERMINAL":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, Mapping):
+                    raise RuntimeError("durable terminal decision has no payload")
+                terminal_time = int(payload.get("terminal_time_ns", -1))
+                terminals_by_time.setdefault(terminal_time, []).append(event)
             raw_bars = self.store.load_bars(interval_minutes=1, symbols=SYMBOLS)
             bars, clock_evidence = _canonical_stored_bars(raw_bars)
             self._known_policy_minutes = {
@@ -680,14 +691,16 @@ if NT is not None:
                 # first missing live members complete the minute exactly once.
                 for symbol in sorted(group):
                     self.coordinator.push_bar(group[symbol])
-                    self._persist_policy_decisions()
                 if set(group) == set(SYMBOLS):
                     complete_groups += 1
+                    for event in terminals_by_time.get(close_ns, ()):
+                        self._apply_replayed_terminal_decision(event)
                 else:
                     pending_members += len(group)
-            decision_events = self.store.load_events(
-                event_types=("POLICY_EPISODE_STARTED", "POLICY_EPISODE_TERMINAL"),
-            )
+            # Reconstructed intents are checked against the authoritative
+            # durable rows below; they must never be appended again during
+            # startup replay.
+            self.coordinator.drain_decision_events()
             decision_restorer = getattr(self.coordinator, "restore_decision_events", None)
             if callable(decision_restorer):
                 decision_restorer(decision_events)
@@ -702,6 +715,39 @@ if NT is not None:
                     "durable_policy_decision_events": len(decision_events),
                     **clock_evidence,
                 },
+            )
+
+        def _apply_replayed_terminal_decision(
+            self,
+            event: Mapping[str, object],
+        ) -> None:
+            """Reapply account admissions at their original causal close."""
+
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping):
+                raise RuntimeError("durable terminal decision has no payload")
+            outcome = payload.get("outcome")
+            stage = payload.get("terminal_stage")
+            raw_plan = payload.get("plan")
+            if outcome == "SELECTED":
+                if not isinstance(raw_plan, Mapping):
+                    raise RuntimeError("selected durable decision has no plan")
+                self.coordinator.claim(
+                    TradePlan.from_dict(raw_plan),
+                    time_ns=int(payload["terminal_time_ns"]),
+                )
+                return
+            if outcome != "NO_TRADE" or stage != "EXECUTION_ADMISSION":
+                return
+            if not isinstance(raw_plan, Mapping):
+                raise RuntimeError("execution rejection has no durable plan")
+            reason = payload.get("terminal_reason")
+            if not isinstance(reason, str) or not reason:
+                raise RuntimeError("execution rejection has no durable reason")
+            self.coordinator.reject_proposal(
+                TradePlan.from_dict(raw_plan),
+                reason,
+                time_ns=int(payload["terminal_time_ns"]),
             )
 
         def _persist_policy_decisions(self) -> None:
@@ -1029,7 +1075,7 @@ if NT is not None:
 
             The coordinator returns the next ranked proposal when its current
             winner is terminally rejected.  Consume that cascade synchronously;
-            otherwise an acceptance response can become a stale next-bar entry.
+            otherwise an immediate response can become a stale next-bar entry.
             """
 
             queue = list(plans)
@@ -1052,7 +1098,7 @@ if NT is not None:
             ):
                 return []
             if self._global_slot_busy():
-                if self._is_immediate_acceptance(plan):
+                if self._is_immediate_response(plan):
                     self.plans_blocked_by_global_slot += 1
                     return self._terminal_reject_plan(
                         plan,
@@ -1060,7 +1106,7 @@ if NT is not None:
                         event_type="IMMEDIATE_RESPONSE_MISSED_GLOBAL_SLOT",
                         time_ns=decision_bar.close_time_ns,
                     )
-                if self._is_failed_future_first_return(plan):
+                if self._is_resting_first_return(plan):
                     first_wait = plan.plan_id not in self._waiting_global_slot_plans
                     self._waiting_global_slot_plans[plan.plan_id] = plan
                     if first_wait:
@@ -1070,7 +1116,7 @@ if NT is not None:
                             event_type="PLAN_WAITING_GLOBAL_SLOT",
                             payload={
                                 "plan_id": plan.plan_id,
-                                "reason": "FAILED_AUCTION_FUTURE_FIRST_RETURN_REMAINS_LIVE",
+                                "reason": "CAUSAL_FIRST_RETURN_REMAINS_LIVE",
                             },
                         )
                         self._checkpoint(decision_bar.close_time_ns)
@@ -1173,18 +1219,12 @@ if NT is not None:
             return next_plans
 
         @staticmethod
-        def _is_immediate_acceptance(plan: TradePlan) -> bool:
-            return str(plan.evidence.get("entry_event", "")) == (
-                "ACCEPTANCE_FIRST_RESPONSE_CLOSE"
-            )
+        def _is_immediate_response(plan: TradePlan) -> bool:
+            return plan.entry_lifecycle == ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE
 
         @staticmethod
-        def _is_failed_future_first_return(plan: TradePlan) -> bool:
-            return (
-                plan.family == "FAILED_AUCTION_REVERSAL"
-                and str(plan.evidence.get("entry_event", ""))
-                == "FAILED_AUCTION_FUTURE_FIRST_RETURN"
-            )
+        def _is_resting_first_return(plan: TradePlan) -> bool:
+            return plan.entry_lifecycle == ENTRY_LIFECYCLE_RESTING_FIRST_RETURN
 
         @staticmethod
         def _waiting_touch_reason(plan: TradePlan, bar: PolicyBar) -> str | None:
@@ -1257,7 +1297,7 @@ if NT is not None:
             self,
             bar: PolicyBar,
         ) -> list[TradePlan]:
-            """Refresh deferred failed-auction validity on every completed bar."""
+            """Refresh deferred causal-first-return validity on every completed bar."""
 
             cascaded: list[TradePlan] = []
             for plan_id, plan in list(self._waiting_global_slot_plans.items()):
@@ -1305,7 +1345,7 @@ if NT is not None:
                         "missing_price_instruments": [str(item) for item in missing_prices],
                     },
                 )
-            immediate_acceptance = self._is_immediate_acceptance(plan)
+            immediate_response = self._is_immediate_response(plan)
             planned_entry = Decimal(str(plan.entry))
             sizing = size_three_percent_stop_risk(
                 instrument,
@@ -1397,7 +1437,7 @@ if NT is not None:
                 )
             quantity = sizing.quantity
             side = OrderSide.BUY if plan.side == "LONG" else OrderSide.SELL
-            if immediate_acceptance:
+            if immediate_response:
                 # IOC guarantees there is no resting second-return order.  The
                 # completed response price is also the adverse fill boundary.
                 order = self.order_factory.limit(
@@ -1503,7 +1543,7 @@ if NT is not None:
                     "time_in_force": str(order.time_in_force),
                 },
             )
-            if not immediate_acceptance:
+            if not immediate_response:
                 # Preserve the existing evidence contract for first-return
                 # resting parents without mislabeling response market orders.
                 self.store.append_event(
@@ -2337,11 +2377,10 @@ if NT is not None:
             )
             self._halted = bool(payload.get("halted", False))
             self._funding_state = dict(payload.get("funding_state", {}))
-            if isinstance(payload.get("policy_state"), Mapping):
-                # Apply after completed-bar replay in on_start.  The overlay is
-                # monotonic and idempotent, so an SQLite snapshot and a
-                # Nautilus state snapshot can safely carry the same state.
-                self._restored_policy_state = payload["policy_state"]
+            # Policy state is reconstructed from the durable completed bars
+            # and terminal decision events in ``_replay_store``.  Applying a
+            # possibly older Nautilus/SQLite snapshot afterwards would move a
+            # common campaign backward across the crash window.
 
 
 def build_node(

@@ -16,6 +16,14 @@ from typing import Any, Iterable, Mapping
 
 SYMBOLS: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
 RISK_FRACTION = Decimal("0.03")
+ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE = "IMMEDIATE_RESPONSE"
+ENTRY_LIFECYCLE_RESTING_FIRST_RETURN = "RESTING_FIRST_RETURN"
+ENTRY_LIFECYCLES = frozenset(
+    {
+        ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+        ENTRY_LIFECYCLE_RESTING_FIRST_RETURN,
+    },
+)
 
 
 class PolicyError(ValueError):
@@ -205,7 +213,7 @@ class TradePlan:
     source_boundary_id: str
     destination_boundary_id: str
     entry_zone: EntryZone
-    evidence: Mapping[str, float | str | int]
+    evidence: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         if self.symbol not in SYMBOLS:
@@ -217,8 +225,21 @@ class TradePlan:
             "ACCEPTED_AUCTION_CONTINUATION",
             "INITIATIVE_MITIGATION_CONTINUATION",
             "LOCAL_AUCTION_CONTINUATION",
+            "COMMON_CASCADE_CONTINUATION",
+            "FAILED_COMMON_CASCADE_REVERSAL",
+            "VALUE_DISTRIBUTION_AUCTION",
+            "STRUCTURAL_TRAP_REVERSAL",
         }:
             raise PolicyError(f"unknown plan family: {self.family}")
+        explicit_entry_lifecycle = self.evidence.get("entry_lifecycle")
+        if (
+            explicit_entry_lifecycle is not None
+            and str(explicit_entry_lifecycle) not in ENTRY_LIFECYCLES
+        ):
+            raise PolicyError(
+                "entry_lifecycle must be IMMEDIATE_RESPONSE or "
+                "RESTING_FIRST_RETURN",
+            )
         if self.expires_time_ns <= self.decision_time_ns:
             raise PolicyError("plan expiry must be after decision")
         for name in ("entry", "stop", "target"):
@@ -243,6 +264,25 @@ class TradePlan:
     @property
     def gross_rr(self) -> float:
         return self.reward_distance / self.risk_distance
+
+    @property
+    def entry_lifecycle(self) -> str:
+        """Return the strategy-family-neutral parent-order lifecycle.
+
+        New plans declare ``evidence['entry_lifecycle']`` directly.  The
+        legacy entry-event inference preserves persisted plans written before
+        that contract existed; every former non-immediate plan used a resting
+        first-return parent.
+        """
+
+        explicit = self.evidence.get("entry_lifecycle")
+        if explicit is not None:
+            return str(explicit)
+        if str(self.evidence.get("entry_event", "")) == (
+            "ACCEPTANCE_FIRST_RESPONSE_CLOSE"
+        ):
+            return ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE
+        return ENTRY_LIFECYCLE_RESTING_FIRST_RETURN
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

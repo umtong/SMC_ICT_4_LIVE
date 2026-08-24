@@ -1,37 +1,21 @@
-"""One streaming source-to-destination auction policy for replay and paper.
+"""Unified streaming auction policy for replay and paper.
 
-This is a production synthesis of mechanisms which already existed in the
-research branches.  It is deliberately not described as a new ``Missing
-Piece``:
+The active decision path is not the former two-family policy.  A pre-existing
+public structure owns one parent auction campaign, or a sealed prior value
+distribution owns one value-auction episode.  Those owners interpret price and
+volume, commit their own entry/invalidation/destination geometry, and only then
+route the completed opportunity through symmetric four-market causal
+ownership.  Local residual delivery keeps the native family; common delivery
+is handled only when the derivatives-inventory responsibility is observable.
 
-* candidate 4t supplies local-minus-common, counterfactual ownership;
-* structural-auction-control v5 supplies the event-time auction journey and
-  one owner for one structure interaction;
-* directional-liquidity-policy v2 supplies direction/liquidity context;
-* EasyChart RE1 supplies accepted-break first response, complete-episode
-  invalidation, its causal pivot-only 1m/5m/15m objective book, FVG-with-OB
-  responsibility and latest-accepted-level ownership;
-* later EasyChart RE1 local-auction continuation supplies local 15m BOS,
-  flow-validated 5m OB location and veto-only common-market context; and
-* candidate 3b supplies delivery proof, retained here as completion evidence
-  rather than a target cap or a separate entry family.
-
-The executable law has two source-owned paths which converge on the same
-entry, invalidation, destination and account contract::
-
-    pre-existing structural source -> completed auction ownership transfer
-    local 15m BOS -> flow-validated 5m OB continuation location
-    -> one future first return and first completed response
-    -> complete-episode stop and first live horizontal day-trade objective
-
-An FVG cannot originate an episode.  Control observations are not accumulated
-into an age-dependent quality score.  A completed delivery proof cannot replace
-or cap the first live structural destination.
+Older watch, journey and local-continuation methods remain in this module for
+persisted-state compatibility.  The synchronized one-minute coordinator does
+not call them as alpha and they are not treated as a standard to improve.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import log
 from statistics import median
 
@@ -57,21 +41,54 @@ from .cross_market_roles import (
     analyze_cross_market_roles,
     classify_source_ownership,
 )
+from .campaign_ownership import (
+    observe_interval_ownership,
+    source_campaign_root_id,
+)
+from .common_episode_ledger import (
+    CommonCandidateAuthorization,
+    CommonEpisodeError,
+    CommonEpisodeFamily,
+    CommonEpisodeLedger,
+    CommonEpisodeState,
+)
+from .common_price_campaign import (
+    CommonPriceCampaignBook,
+    CommonPriceOpportunity,
+    CommonSourceJoin,
+)
+from .control_router import (
+    ControlEpisodeRouter,
+    causal_root_id,
+)
 from .directional_context import (
     boundary_role,
     build_active_liquidity_context,
     build_directional_context,
     build_directional_update,
 )
-from .domain import Bar, EntryZone, LiquidityBoundary, Pivot, TradePlan, stable_id
+from .domain import (
+    ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+    Bar,
+    EntryZone,
+    LiquidityBoundary,
+    Pivot,
+    TradePlan,
+    stable_id,
+)
 from .factor_continuation import (
     CausalFlowAnalyzer,
     CommonFactorState,
-    CommonFactorTracker,
     LocalAuctionContinuationSetup,
     five_minute_engulfing_ob,
 )
-from .inventory_ownership import InventoryInterpretation, InventoryTimeline
+from .inventory_ownership import (
+    InventoryDecision,
+    InventoryInterpretation,
+    InventoryRegime,
+    InventoryTimeline,
+    OwnershipBranch,
+)
 from .market_state import NS_PER_MINUTE, SymbolMarketState
 from .structural_liquidity import (
     FeasibleTrendChannelBook,
@@ -81,12 +98,37 @@ from .structural_liquidity import (
     event_local_locations,
     structural_stop,
 )
+from .structural_campaign import (
+    CampaignHypothesis,
+    CampaignObservation,
+    CampaignSeed,
+    CampaignSnapshot,
+    EntryRefinement,
+    FlowBaseline,
+    HypothesisGeometry,
+    ParentCampaignOwner,
+    StructuralOpportunity,
+)
+from .value_distribution import (
+    ValueDistributionAuctionBook,
+    ValueDistributionCandidate,
+)
 
 MAX_CAUSAL_ORDER_TIME_NS = (1 << 63) - 1
-POLICY_DECISION_SCHEMA_VERSION = 1
+POLICY_DECISION_SCHEMA_VERSION = 2
 POLICY_FINGERPRINT = (
-    "liquidity-episode-source-transfer-v5-local-auction-objective-reconstitution"
+    "unified-causal-auction-control-route-v4"
 )
+
+
+def _decision_tree(value: object) -> object:
+    """Use the same list-based tree in memory and in durable JSON events."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _decision_tree(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_decision_tree(item) for item in value]
+    return value
 
 
 @dataclass(slots=True)
@@ -120,9 +162,8 @@ class EpisodeWatch:
 
 @dataclass(frozen=True, slots=True)
 class PolicyConfig:
-    # Legacy fields stay accepted by deployed configuration files.  Only
-    # min_history_5m is an admission precondition; the remaining thresholds and
-    # lifetimes do not own decisions in the integrated law.
+    # Legacy fields stay accepted by deployed configuration files but do not
+    # own decisions in the active parent-campaign/value-auction law.
     min_history_5m: int = 72
     failed_confirmation_bars: int = 3
     accepted_lifetime_bars: int = 8
@@ -131,6 +172,22 @@ class PolicyConfig:
     min_activity_ratio: float = 0.75
     min_control_score: float = 0.15
     max_source_distance_atr: float = 1.5
+
+
+@dataclass(frozen=True, slots=True)
+class RouterSource:
+    boundary: LiquidityBoundary
+    generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class RouterPrebarContext:
+    """Facts which existed before the current minute began."""
+
+    sequence: int
+    structure_serial: int
+    sources: tuple[RouterSource, ...]
+    flow_baseline: FlowBaseline | None
 
 
 class SymbolEpisodePolicy:
@@ -187,6 +244,12 @@ class SymbolEpisodePolicy:
             SourceKey, tuple[LiquidityBoundary, str]
         ] = {}
         self._source_keys_by_boundary_id: dict[str, SourceKey] = {}
+        # Active alpha state.  The legacy watches above are intentionally not
+        # consulted by the synchronized minute path.
+        self._structural_campaigns: dict[str, CampaignSnapshot] = {}
+        self._structural_campaign_roots: dict[str, str] = {}
+        self._router_opened_sources: set[tuple[str, int]] = set()
+        self._value_distribution = ValueDistributionAuctionBook(symbol)
         self._last_plan_time_ns = -1
         self._diagnostic_counts: dict[str, int] = {}
         self._rejections: list[dict[str, float | str | int]] = []
@@ -206,6 +269,14 @@ class SymbolEpisodePolicy:
             "source_campaigns": len(self._campaign_sources),
             "active_local_continuations": len(self._continuation_setups),
             "continuation_local_side": self._continuation_local_side,
+            "active_structural_campaigns": sum(
+                not state.terminal for state in self._structural_campaigns.values()
+            ),
+            "active_value_profile": (
+                None
+                if self._value_distribution.active_profile is None
+                else self._value_distribution.active_profile.profile_id
+            ),
         }
 
     @property
@@ -310,10 +381,13 @@ class SymbolEpisodePolicy:
         *,
         label: str,
     ) -> None:
+        normalized = _decision_tree(payload)
+        if not isinstance(normalized, dict):
+            raise TypeError("decision payload normalization did not produce a mapping")
         existing = target.get(episode_id)
-        if existing is not None and existing != payload:
+        if existing is not None and existing != normalized:
             raise RuntimeError(f"conflicting {label} for episode {episode_id}")
-        target[episode_id] = payload
+        target[episode_id] = normalized
 
     def _queue_episode_started(
         self,
@@ -526,10 +600,9 @@ class SymbolEpisodePolicy:
         return output
 
     def ingest_one_minute(self, bar: Bar) -> Bar | None:
-        # EventTimeAuctionJourney owns the micro response; SymbolMarketState
-        # continues to own completed 5m/15m/60m public structure.
-        self.journey.observe(bar)
-        self.factor_flow.observe(bar)
+        # The active law owns micro response in ParentCampaignOwner and the
+        # shared price campaign.  Legacy journey/factor state is deliberately
+        # not advanced on the production path.
         five, _ = self.market.push_one_minute(bar)
         if five is not None:
             self._sync_structural_books()
@@ -538,11 +611,939 @@ class SymbolEpisodePolicy:
         return five
 
     def ingest_five_minute(self, bar: Bar) -> Bar:
-        self.market.push_five_minute(bar)
-        self._sync_structural_books()
-        for book in self._trend_channel_books.values():
-            book.observe_price(bar)
-        return bar
+        raise RuntimeError(
+            "direct five-minute ingestion is not an active policy path; "
+            "use the synchronized four-market one-minute coordinator",
+        )
+
+    def prepare_router_minute(self, bar: Bar) -> RouterPrebarContext:
+        """Freeze source facts before ``bar`` can update any registry."""
+
+        if bar.symbol != self.symbol or bar.interval_minutes != 1:
+            raise ValueError("router preparation requires this symbol's one-minute bar")
+        # The incoming minute belongs to the next forming five-minute
+        # coordinate.  Freezing that coordinate prevents four stale dynamic
+        # projections followed by a jump only on the fifth minute.
+        serial = self.market.serial_5m + 1
+        candidates: list[RouterSource] = []
+        for source in self.market.boundary_book.active(bar.open_time_ns):
+            if source.observed_time_ns > bar.open_time_ns:
+                continue
+            if any(
+                token in source.kind
+                for token in (
+                    "UPTREND_LINE",
+                    "DOWNTREND_LINE",
+                    "DIAGONAL_LIQUIDITY",
+                )
+            ):
+                continue
+            if not boundary_role(source).direction_source:
+                continue
+            candidates.append(RouterSource(source, 1))
+        for node in self._projected_structural_nodes(
+            bar.open_time_ns + 1,
+            serial,
+        ):
+            if node.role is not StructureRole.SOURCE:
+                continue
+            if node.observed_time_ns > bar.open_time_ns or not node.is_fresh(
+                bar.open_time_ns,
+            ):
+                continue
+            candidates.append(
+                RouterSource(
+                    self._boundary_from_structural_node(node, serial),
+                    node.version,
+                )
+            )
+
+        touched: list[RouterSource] = []
+        for item in candidates:
+            lower, upper = item.boundary.band_at(serial)
+            if bar.low <= upper and bar.high >= lower:
+                touched.append(item)
+
+        # Tick-connected aliases of the same same-side price fact have one
+        # parent.  Selection uses only structure known before this bar.
+        canonical: list[RouterSource] = []
+        for side in ("HIGH", "LOW"):
+            ordered = sorted(
+                (item for item in touched if item.boundary.side == side),
+                key=lambda item: (
+                    item.boundary.band_at(serial)[0],
+                    item.boundary.band_at(serial)[1],
+                    item.boundary.boundary_id,
+                ),
+            )
+            components: list[list[RouterSource]] = []
+            component_upper: list[float] = []
+            for item in ordered:
+                lower, upper = item.boundary.band_at(serial)
+                if not components or lower > component_upper[-1] + self.tick_size:
+                    components.append([item])
+                    component_upper.append(upper)
+                else:
+                    components[-1].append(item)
+                    component_upper[-1] = max(component_upper[-1], upper)
+            for component in components:
+                canonical.append(
+                    min(
+                        component,
+                        key=lambda item: (
+                            -item.boundary.timeframe_minutes,
+                            -int(self._is_versioned_structural_kind(item.boundary.kind)),
+                            -item.boundary.strength,
+                            -item.boundary.observed_time_ns,
+                            item.boundary.band_at(serial)[1]
+                            - item.boundary.band_at(serial)[0],
+                            item.boundary.boundary_id,
+                        ),
+                    )
+                )
+        prior = tuple(self.market.one_minute)[-60:]
+        usable_prior = tuple(item for item in prior if item.quote_volume > 0.0)
+        baseline = (
+            FlowBaseline.from_prior_bars(usable_prior)
+            if len(prior) == 60 and len(usable_prior) == 60
+            else None
+        )
+        return RouterPrebarContext(
+            sequence=len(self.market.one_minute),
+            structure_serial=serial,
+            sources=tuple(canonical),
+            flow_baseline=baseline,
+        )
+
+    def _router_route_obstacles(
+        self,
+        *,
+        visible_time_ns: int,
+        serial: int,
+    ) -> tuple[StructuralNode, ...]:
+        return tuple(
+            node
+            for node in self._projected_structural_nodes(
+                visible_time_ns + 1,
+                serial,
+            )
+            if node.role is StructureRole.ROUTE_OBSTACLE
+            and node.observed_time_ns <= visible_time_ns
+            and node.is_fresh(visible_time_ns)
+        )
+
+    def _router_route_clear(
+        self,
+        *,
+        source: LiquidityBoundary,
+        side: str,
+        target: float,
+        visible_time_ns: int,
+        serial: int,
+    ) -> bool:
+        direction = 1.0 if side == "LONG" else -1.0
+        source_lower, source_upper = source.band_at(serial)
+        reference = source_upper if side == "LONG" else source_lower
+        for obstacle in self._router_route_obstacles(
+            visible_time_ns=visible_time_ns,
+            serial=serial,
+        ):
+            obstacle_lower, obstacle_upper = obstacle.band_at(serial)
+            obstacle_price = (
+                obstacle_lower if side == "LONG" else obstacle_upper
+            )
+            if (
+                direction * (obstacle_price - reference) > self.tick_size
+                and direction * (target - obstacle_price) > 0.0
+            ):
+                return False
+        return True
+
+    def _router_destination_geometry(
+        self,
+        *,
+        source: LiquidityBoundary,
+        side: str,
+        family: str,
+        decision_bar: Bar,
+        serial: int,
+    ) -> HypothesisGeometry | None:
+        """Choose the owning family's destination before any RR calculation."""
+
+        direction = 1.0 if side == "LONG" else -1.0
+        wanted = "HIGH" if side == "LONG" else "LOW"
+        source_lower, source_upper = source.band_at(serial)
+        reference = source_upper if side == "LONG" else source_lower
+        visible_time = decision_bar.close_time_ns
+        destinations: dict[str, LiquidityBoundary] = {}
+
+        if family == "ACCEPTANCE":
+            # Continuation exits at the first still-live outward obstacle.
+            # A nearby confirmed liquidity objective cannot be skipped merely
+            # to advertise a farther higher-timeframe reward.
+            for item in self.market.objective_book.active_at(
+                visible_time,
+                source_boundary_id=source.boundary_id,
+            ):
+                if item.side == wanted:
+                    destinations[item.boundary_id] = item
+            for item in self.market.boundary_book.boundaries.values():
+                if (
+                    item.boundary_id != source.boundary_id
+                    and item.side == wanted
+                    and item.observed_time_ns <= visible_time
+                    and item.is_fresh(visible_time)
+                ):
+                    destinations[item.boundary_id] = item
+        elif family == "REVERSAL":
+            # Rejection/trap returns to the first internal opposing liquidity;
+            # the horizontal registry is its own family-specific objective set.
+            for item in self.market.objective_book.active_at(
+                visible_time,
+                source_boundary_id=source.boundary_id,
+            ):
+                if item.side == wanted:
+                    destinations[item.boundary_id] = item
+        else:
+            raise ValueError(f"unknown structural geometry family: {family}")
+
+        feasible = [
+            item
+            for item in destinations.values()
+            if direction * (item.price_at(serial) - reference) > self.tick_size
+            and not (
+                side == "LONG" and decision_bar.high >= item.price_at(serial)
+                or side == "SHORT" and decision_bar.low <= item.price_at(serial)
+            )
+        ]
+        if not feasible:
+            return None
+        destination = min(
+            feasible,
+            key=lambda item: (
+                direction * (item.price_at(serial) - reference),
+                -item.timeframe_minutes,
+                -item.strength,
+                item.boundary_id,
+            ),
+        )
+        target = destination.price_at(serial)
+        if not self._router_route_clear(
+            source=source,
+            side=side,
+            target=target,
+            visible_time_ns=visible_time,
+            serial=serial,
+        ):
+            return None
+        invalidation = (
+            source_lower - self.tick_size
+            if side == "LONG"
+            else source_upper + self.tick_size
+        )
+        return HypothesisGeometry(
+            destination=destination,
+            invalidation_price=invalidation,
+            target_price=target,
+        )
+
+    def _prior_adverse_wick_noise(self, side: str, before_time_ns: int) -> float:
+        """Return causal ordinary wick noise from the prior two trading hours."""
+
+        recent = [
+            item
+            for item in self.market.one_minute
+            if item.close_time_ns < before_time_ns
+        ][-120:]
+        if not recent:
+            return 2.0 * self.tick_size
+        if side == "LONG":
+            wicks = [min(item.open, item.close) - item.low for item in recent]
+        else:
+            wicks = [item.high - max(item.open, item.close) for item in recent]
+        usable = [value for value in wicks if value >= 0.0]
+        value = median(usable) if usable else 0.0
+        if value <= 0.0:
+            value = median(item.high - item.low for item in recent) / 2.0
+        return max(2.0 * self.tick_size, value)
+
+    def _router_refinement(
+        self,
+        state: CampaignSnapshot,
+        bar: Bar,
+        serial: int,
+    ) -> EntryRefinement | None:
+        side = state.active_side
+        if side is None:
+            return None
+        source_lower, source_upper = state.source.band_at(serial)
+        locations = event_local_locations(
+            tuple(self.market.one_minute),
+            side=side,
+            event_start_time_ns=state.interaction_open_time_ns,
+            decision_time_ns=bar.close_time_ns,
+            source_lower=source_lower,
+            source_upper=source_upper,
+            tick_size=self.tick_size,
+        )
+        order_blocks = [
+            item
+            for item in locations
+            if item.kind == "ORDER_BLOCK"
+            and max(item.lower, source_lower) < min(item.upper, source_upper)
+        ]
+
+        def exact_source_retest() -> EntryRefinement | None:
+            confirmation = state.confirmation_time_ns
+            if confirmation is None or bar.close_time_ns <= confirmation:
+                return None
+            frozen_lower, frozen_upper = state.source.band_at(
+                serial,
+            )
+            source_invalidation = (
+                frozen_lower - self.tick_size
+                if side == "LONG"
+                else frozen_upper + self.tick_size
+            )
+            stop = structural_stop(
+                side=side,
+                micro_stop=source_invalidation,
+                event_extreme=(
+                    state.episode_low if side == "LONG" else state.episode_high
+                ),
+                tick_size=self.tick_size,
+                source_invalidation=source_invalidation,
+                adverse_noise=self._prior_adverse_wick_noise(
+                    side,
+                    bar.close_time_ns,
+                ),
+            )
+            confirmation_bar = next(
+                (
+                    item
+                    for item in reversed(self.market.one_minute)
+                    if item.close_time_ns == confirmation
+                ),
+                None,
+            )
+            return EntryRefinement(
+                zone=EntryZone(
+                    kind="STRUCTURAL_SOURCE_FIRST_RETEST",
+                    lower=frozen_lower,
+                    upper=frozen_upper,
+                    observed_time_ns=confirmation,
+                    source_bar_open_time_ns=(
+                        confirmation - NS_PER_MINUTE
+                        if confirmation_bar is None
+                        else confirmation_bar.open_time_ns
+                    ),
+                ),
+                side=side,
+                structural_stop=stop,
+                invalidation_id=stable_id(
+                    state.campaign_id,
+                    confirmation,
+                    "STRUCTURAL_SOURCE_FIRST_RETEST",
+                    prefix="LOC:",
+                ),
+            )
+
+        if not order_blocks:
+            return exact_source_retest()
+        owner = min(
+            order_blocks,
+            key=lambda item: (
+                -item.observed_time_ns,
+                -item.source_time_ns,
+                item.location_id,
+            ),
+        )
+        overlaps = [
+            item
+            for item in locations
+            if item.kind == "FAIR_VALUE_GAP"
+            and max(item.lower, owner.lower, source_lower)
+            < min(item.upper, owner.upper, source_upper)
+        ]
+        if overlaps:
+            fvg = min(
+                overlaps,
+                key=lambda item: (
+                    -item.observed_time_ns,
+                    -item.source_time_ns,
+                    item.location_id,
+                ),
+            )
+            lower = max(owner.lower, fvg.lower, source_lower)
+            upper = min(owner.upper, fvg.upper, source_upper)
+            kind = "SOURCE_ORDER_BLOCK_FVG"
+            observed = max(owner.observed_time_ns, fvg.observed_time_ns)
+            invalidation = (
+                min(owner.invalidation, fvg.invalidation)
+                if side == "LONG"
+                else max(owner.invalidation, fvg.invalidation)
+            )
+            location_id = stable_id(owner.location_id, fvg.location_id, prefix="LOC:")
+        else:
+            lower = max(owner.lower, source_lower)
+            upper = min(owner.upper, source_upper)
+            kind = "SOURCE_ORDER_BLOCK"
+            observed = owner.observed_time_ns
+            invalidation = owner.invalidation
+            location_id = owner.location_id
+        if lower >= upper:
+            return exact_source_retest()
+        source_invalidation = (
+            source_lower - self.tick_size
+            if side == "LONG"
+            else source_upper + self.tick_size
+        )
+        stop = structural_stop(
+            side=side,
+            micro_stop=invalidation,
+            event_extreme=(state.episode_low if side == "LONG" else state.episode_high),
+            tick_size=self.tick_size,
+            source_invalidation=source_invalidation,
+            location_invalidation=invalidation,
+            adverse_noise=self._prior_adverse_wick_noise(
+                side,
+                bar.close_time_ns,
+            ),
+        )
+        return EntryRefinement(
+            zone=EntryZone(
+                kind=kind,
+                lower=lower,
+                upper=upper,
+                observed_time_ns=observed,
+                source_bar_open_time_ns=owner.source_time_ns,
+            ),
+            side=side,
+            structural_stop=stop,
+            invalidation_id=location_id,
+        )
+
+    def _router_attack_measurement(
+        self,
+        *,
+        interval_open_time_ns: int,
+        decision_time_ns: int,
+    ) -> tuple[float, float] | None:
+        """Measure the first completed source-attack bucket causally."""
+
+        event = tuple(
+            item
+            for item in self.market.one_minute
+            if item.open_time_ns >= interval_open_time_ns
+            and item.close_time_ns <= decision_time_ns
+        )
+        if not event:
+            return None
+        attack_close = (
+            (interval_open_time_ns // (5 * NS_PER_MINUTE)) + 1
+        ) * (5 * NS_PER_MINUTE)
+        attack = tuple(
+            item for item in event if item.close_time_ns <= attack_close
+        ) or event[:1]
+        return (
+            attack[-1].close - attack[0].open,
+            sum(item.signed_quote_flow for item in attack),
+        )
+
+    def _router_inventory(
+        self,
+        *,
+        shock_side: str,
+        interval_open_time_ns: int,
+        decision_time_ns: int,
+        price_move: float,
+        signed_taker_flow: float,
+    ):
+        if self.inventory_timeline is None:
+            return None
+        return self.inventory_timeline.evaluate(
+            shock_side="BUY" if shock_side == "LONG" else "SELL",
+            episode_start_ns=interval_open_time_ns,
+            decision_ts_ns=decision_time_ns,
+            price_move=price_move,
+            signed_taker_flow=signed_taker_flow,
+        )
+
+    @staticmethod
+    def _interval_open_from_source_time(
+        bars: Sequence[Bar],
+        source_time_ns: int,
+    ) -> int | None:
+        match = next(
+            (item for item in bars if item.close_time_ns == source_time_ns),
+            None,
+        )
+        return None if match is None else match.open_time_ns
+
+    def _route_completed_opportunity(
+        self,
+        candidate: StructuralOpportunity | ValueDistributionCandidate,
+        *,
+        interval_open_time_ns: int,
+        campaign_root: str,
+        bars_by_symbol: Mapping[str, Sequence[Bar]],
+        interaction_time_ns: int,
+        first_return_time_ns: int,
+        common_episodes: CommonEpisodeLedger | None = None,
+    ) -> TradePlan | None:
+        ownership = observe_interval_ownership(
+            observed_bars_by_symbol=bars_by_symbol,
+            side=candidate.side,
+            interval_open_time_ns=interval_open_time_ns,
+            interval_close_time_ns=candidate.decision_time_ns,
+            observed_time_ns=candidate.decision_time_ns,
+            campaign_root_id=campaign_root,
+        )
+        control_completion_time_ns = (
+            candidate.control_transfer_time_ns
+            if isinstance(candidate, StructuralOpportunity)
+            else candidate.decision_time_ns
+        )
+        if first_return_time_ns >= control_completion_time_ns:
+            return None
+        control_histories = {
+            symbol: tuple(
+                bar
+                for bar in history
+                if bar.close_time_ns <= control_completion_time_ns
+            )
+            for symbol, history in bars_by_symbol.items()
+        }
+        control_ownership = observe_interval_ownership(
+            observed_bars_by_symbol=control_histories,
+            side=candidate.side,
+            interval_open_time_ns=first_return_time_ns,
+            interval_close_time_ns=control_completion_time_ns,
+            observed_time_ns=control_completion_time_ns,
+            campaign_root_id=campaign_root,
+        )
+        selected = control_ownership.for_symbol(self.symbol)
+
+        inventory: InventoryDecision | None = None
+        attack_evidence: dict[str, float | str | int | bool] = {}
+        if isinstance(candidate, StructuralOpportunity):
+            shock_side = (
+                candidate.side
+                if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
+                else "SHORT" if candidate.side == "LONG" else "LONG"
+            )
+            measurement = self._router_attack_measurement(
+                interval_open_time_ns=interval_open_time_ns,
+                decision_time_ns=candidate.decision_time_ns,
+            )
+            if measurement is not None:
+                price_move, signed_flow = measurement
+                sign = 1.0 if shock_side == "LONG" else -1.0
+                attack_evidence = {
+                    "source_attack_side": shock_side,
+                    "source_attack_price_move": price_move,
+                    "source_attack_signed_taker_flow": signed_flow,
+                    "source_attack_price_flow_aligned": (
+                        sign * price_move > 0.0 and sign * signed_flow > 0.0
+                    ),
+                }
+                inventory = self._router_inventory(
+                    shock_side=shock_side,
+                    interval_open_time_ns=interval_open_time_ns,
+                    decision_time_ns=candidate.decision_time_ns,
+                    price_move=price_move,
+                    signed_taker_flow=signed_flow,
+                )
+        common_attack = None
+        authorization: CommonCandidateAuthorization | None = None
+        if common_episodes is not None:
+            try:
+                common_attack = common_episodes.attack(campaign_root)
+            except CommonEpisodeError:
+                common_attack = None
+        if (
+            selected.role is SourceOwnershipRole.COMMON_MARKET_OWNER_ONLY
+            and common_attack is not None
+            and isinstance(candidate, StructuralOpportunity)
+        ):
+            branch = (
+                CommonEpisodeFamily.CONTINUATION
+                if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
+                else CommonEpisodeFamily.REVERSAL
+            )
+            authorization = common_episodes.authorize_candidate(
+                campaign_root,
+                symbol=self.symbol,
+                family=branch,
+                side=candidate.side,
+                candidate_time_ns=candidate.decision_time_ns,
+                source_campaign_root_id=campaign_root,
+            )
+        plan = ControlEpisodeRouter.route(
+            candidate,
+            ownership,
+            inventory=inventory,
+            control_ownership=control_ownership,
+            common_authorization=authorization,
+            interaction_time_ns=interaction_time_ns,
+            first_return_time_ns=first_return_time_ns,
+        )
+        if plan is None:
+            return plan
+        if attack_evidence:
+            plan = replace(
+                plan,
+                evidence={
+                    **dict(plan.evidence),
+                    **attack_evidence,
+                },
+            )
+        if common_attack is None:
+            return plan
+        # Even a locally owned residual response can originate inside a broad
+        # physical attack.  It keeps its native family, while this association
+        # lets an eventual account claim consume every sibling source root.
+        if plan.evidence.get("route_owner") == "LOCAL_SOURCE_CAMPAIGN":
+            plan = replace(
+                plan,
+                evidence={
+                    **dict(plan.evidence),
+                    "mapped_common_root_id": common_attack.root_id,
+                    "mapped_common_sibling_root_id": common_attack.sibling_root_id,
+                    "mapped_common_attack_side": common_attack.attack_side,
+                    "mapped_common_attack_time_ns": common_attack.attack_time_ns,
+                    "mapped_common_participant_source_roots": (
+                        common_attack.participant_source_roots
+                    ),
+                },
+            )
+        return plan
+
+    def evaluate_router_minute(
+        self,
+        bar: Bar,
+        context: RouterPrebarContext,
+        *,
+        decision_bar: Bar | None,
+        bars_by_symbol: Mapping[str, Sequence[Bar]],
+        emit_plan: bool,
+        common_episodes: CommonEpisodeLedger | None = None,
+    ) -> list[TradePlan]:
+        """Advance every active owner; ``emit_plan`` only gates submission."""
+
+        serial = context.structure_serial
+        is_decision_close = decision_bar is not None
+        geometry_bar = decision_bar or bar
+        opportunities: list[
+            tuple[
+                StructuralOpportunity | ValueDistributionCandidate,
+                int,
+                str,
+                int,
+                int,
+            ]
+        ] = []
+        newly_opened: set[str] = set()
+        newly_opened_static_source_ids: set[str] = set()
+
+        if context.flow_baseline is not None:
+            for item in context.sources:
+                source_key = (item.boundary.boundary_id, item.generation)
+                if source_key in self._router_opened_sources:
+                    continue
+                root = source_campaign_root_id(
+                    source_identity=item.boundary.boundary_id,
+                    source_generation=item.generation,
+                    interaction_time_ns=bar.open_time_ns,
+                )
+                outward = "LONG" if item.boundary.side == "HIGH" else "SHORT"
+                reversal = "SHORT" if outward == "LONG" else "LONG"
+                acceptance_geometry = self._router_destination_geometry(
+                    source=item.boundary,
+                    side=outward,
+                    family="ACCEPTANCE",
+                    decision_bar=geometry_bar,
+                    serial=context.structure_serial,
+                )
+                reversal_geometry = self._router_destination_geometry(
+                    source=item.boundary,
+                    side=reversal,
+                    family="REVERSAL",
+                    decision_bar=geometry_bar,
+                    serial=context.structure_serial,
+                )
+                observation = CampaignObservation(
+                    sequence=context.sequence,
+                    structure_serial=context.structure_serial,
+                    bar=bar,
+                    is_decision_close=is_decision_close,
+                    decision_bar=decision_bar,
+                    acceptance_geometry=acceptance_geometry,
+                    reversal_geometry=reversal_geometry,
+                    acceptance_route_clear=acceptance_geometry is not None,
+                    reversal_route_clear=reversal_geometry is not None,
+                )
+                transition = ParentCampaignOwner.open(
+                    CampaignSeed(
+                        source=item.boundary,
+                        interaction=observation,
+                        flow_baseline=context.flow_baseline,
+                        tick_size=self.tick_size,
+                    )
+                )
+                self._router_opened_sources.add(source_key)
+                self._structural_campaigns[root] = transition.current
+                self._structural_campaign_roots[transition.current.campaign_id] = root
+                newly_opened.add(root)
+                if item.boundary.boundary_id in self.market.boundary_book.boundaries:
+                    newly_opened_static_source_ids.add(item.boundary.boundary_id)
+                if transition.opportunity is not None:
+                    opportunities.append(
+                        (
+                            transition.opportunity,
+                            bar.open_time_ns,
+                            root,
+                            transition.current.interaction_time_ns,
+                            transition.opportunity.first_return_time_ns,
+                        )
+                    )
+
+        for root, prior in tuple(self._structural_campaigns.items()):
+            if root in newly_opened or prior.terminal:
+                continue
+            acceptance_side = prior.outward_side
+            reversal_side = prior.reversal_side
+            acceptance_geometry = self._router_destination_geometry(
+                source=prior.source,
+                side=acceptance_side,
+                family="ACCEPTANCE",
+                decision_bar=geometry_bar,
+                serial=serial,
+            )
+            reversal_geometry = self._router_destination_geometry(
+                source=prior.source,
+                side=reversal_side,
+                family="REVERSAL",
+                decision_bar=geometry_bar,
+                serial=serial,
+            )
+            acceptance_target = (
+                prior.committed_geometry.committed_target
+                if prior.hypothesis is CampaignHypothesis.ACCEPTANCE
+                and prior.committed_geometry is not None
+                else (
+                    None
+                    if acceptance_geometry is None
+                    else acceptance_geometry.committed_target
+                )
+            )
+            reversal_target = (
+                prior.committed_geometry.committed_target
+                if prior.hypothesis
+                in {CampaignHypothesis.REJECTION, CampaignHypothesis.TRAP}
+                and prior.committed_geometry is not None
+                else (
+                    None
+                    if reversal_geometry is None
+                    else reversal_geometry.committed_target
+                )
+            )
+            observation = CampaignObservation(
+                sequence=context.sequence,
+                structure_serial=serial,
+                bar=bar,
+                is_decision_close=is_decision_close,
+                decision_bar=decision_bar,
+                refinement=self._router_refinement(prior, bar, serial),
+                acceptance_geometry=acceptance_geometry,
+                reversal_geometry=reversal_geometry,
+                acceptance_route_clear=(
+                    acceptance_target is not None
+                    and self._router_route_clear(
+                        source=prior.source,
+                        side=acceptance_side,
+                        target=acceptance_target,
+                        visible_time_ns=geometry_bar.close_time_ns,
+                        serial=serial,
+                    )
+                ),
+                reversal_route_clear=(
+                    reversal_target is not None
+                    and self._router_route_clear(
+                        source=prior.source,
+                        side=reversal_side,
+                        target=reversal_target,
+                        visible_time_ns=geometry_bar.close_time_ns,
+                        serial=serial,
+                    )
+                ),
+            )
+            transition = ParentCampaignOwner.advance(prior, observation)
+            self._structural_campaigns[root] = transition.current
+            if transition.opportunity is not None:
+                opportunities.append(
+                    (
+                        transition.opportunity,
+                        prior.interaction_open_time_ns,
+                        root,
+                        prior.interaction_time_ns,
+                        transition.opportunity.first_return_time_ns,
+                    )
+                )
+
+        value_candidates = self._value_distribution.on_bar(bar, spot_return=None)
+        for candidate in value_candidates:
+            if isinstance(candidate.evidence, dict):
+                candidate.evidence["spot_confirmation"] = "UNAVAILABLE_FLOW_ONLY"
+            source_time = int(
+                candidate.evidence.get(
+                    "departure_time_ns",
+                    candidate.evidence.get(
+                        "contact_time_ns",
+                        candidate.entry_zone.source_bar_open_time_ns,
+                    ),
+                )
+            )
+            interval_open = self._interval_open_from_source_time(
+                tuple(self.market.one_minute),
+                source_time,
+            )
+            if interval_open is None:
+                interval_open = candidate.entry_zone.source_bar_open_time_ns
+            root = source_campaign_root_id(
+                source_identity=candidate.source_object_id,
+                source_generation=0,
+                interaction_time_ns=interval_open,
+            )
+            opportunities.append(
+                (
+                    candidate,
+                    interval_open,
+                    root,
+                    source_time,
+                    int(
+                        candidate.evidence.get(
+                            "retest_time_ns",
+                            candidate.entry_zone.observed_time_ns,
+                        )
+                    ),
+                )
+            )
+
+        plans: list[TradePlan] = []
+        for candidate, interval_open, root, interaction, first_return in opportunities:
+            plan = self._route_completed_opportunity(
+                candidate,
+                interval_open_time_ns=interval_open,
+                campaign_root=root,
+                bars_by_symbol=bars_by_symbol,
+                interaction_time_ns=interaction,
+                first_return_time_ns=first_return,
+                common_episodes=common_episodes,
+            )
+            if plan is not None and emit_plan:
+                plans.append(plan)
+        for root, state in tuple(self._structural_campaigns.items()):
+            if not state.terminal:
+                continue
+            self._structural_campaigns.pop(root, None)
+            self._structural_campaign_roots.pop(state.campaign_id, None)
+        # Source discovery was frozen before ingest and every campaign has now
+        # seen this physical touch.  A canonical static source is spent by its
+        # first contact, but only after that contact has opened its one parent.
+        for boundary_id in newly_opened_static_source_ids:
+            source = self.market.boundary_book.boundaries.get(boundary_id)
+            if source is not None and source.consumed_time_ns is None:
+                self.market.boundary_book.boundaries[boundary_id] = replace(
+                    source,
+                    consumed_time_ns=bar.close_time_ns,
+                )
+        self.market.boundary_book.mark_consumed(bar, context.structure_serial)
+        return self._refresh_router_proposals(plans, bar) if emit_plan else []
+
+    def _refresh_router_proposals(
+        self,
+        plans: Sequence[TradePlan],
+        bar: Bar,
+    ) -> list[TradePlan]:
+        """Maintain family-owned plans without global objective replacement."""
+
+        for episode_id, proposal in tuple(self._proposals.items()):
+            reason = ""
+            if episode_id in self._used_episodes:
+                reason = "PROPOSAL_ALREADY_CLAIMED"
+            elif (
+                proposal.entry_lifecycle == "IMMEDIATE_RESPONSE"
+                and bar.close_time_ns > proposal.decision_time_ns
+            ):
+                reason = "IMMEDIATE_RESPONSE_DECISION_EXPIRED"
+            elif bar.close_time_ns > proposal.decision_time_ns:
+                if (
+                    proposal.side == "LONG" and bar.low <= proposal.stop
+                    or proposal.side == "SHORT" and bar.high >= proposal.stop
+                ):
+                    reason = "FAMILY_INVALIDATION_REACHED_BEFORE_ENTRY"
+                elif (
+                    proposal.side == "LONG" and bar.high >= proposal.target
+                    or proposal.side == "SHORT" and bar.low <= proposal.target
+                ):
+                    reason = "FAMILY_DESTINATION_SPENT_BEFORE_ENTRY"
+                elif (
+                    proposal.entry_lifecycle == "RESTING_FIRST_RETURN"
+                    and (
+                        proposal.side == "LONG" and bar.low <= proposal.entry
+                        or proposal.side == "SHORT" and bar.high >= proposal.entry
+                    )
+                ):
+                    reason = "FIRST_RETURN_ALREADY_PASSED"
+            if not reason:
+                continue
+            self._record(reason, None, bar, plan_id=proposal.plan_id)
+            self._queue_terminal_decision(
+                outcome="NO_TRADE",
+                stage="POLICY",
+                reason=reason,
+                terminal_time_ns=bar.close_time_ns,
+                plan=proposal,
+            )
+            self._proposals.pop(episode_id, None)
+
+        for plan in ControlEpisodeRouter.arbitrate(plans):
+            if (
+                plan.episode_id not in self._used_episodes
+                and plan.episode_id not in self._terminalized_episodes
+            ):
+                existing = self._proposals.get(plan.episode_id)
+                if existing is None:
+                    self._proposals[plan.episode_id] = plan
+                else:
+                    self._proposals[plan.episode_id] = ControlEpisodeRouter.arbitrate(
+                        (existing, plan)
+                    )[0]
+        return list(ControlEpisodeRouter.arbitrate(tuple(self._proposals.values())))
+
+    def suppress_claimed_root(
+        self,
+        root_id: str,
+        selected_plan_id: str,
+        *,
+        time_ns: int,
+    ) -> None:
+        """Consume every unselected sibling of a claimed physical root."""
+
+        for episode_id, proposal in tuple(self._proposals.items()):
+            if causal_root_id(proposal) != root_id or proposal.plan_id == selected_plan_id:
+                continue
+            self._queue_terminal_decision(
+                outcome="NO_TRADE",
+                stage="ARBITRATION",
+                reason="CAUSAL_ROOT_CLAIMED_BY_SIBLING",
+                terminal_time_ns=time_ns,
+                plan=proposal,
+                details={"selected_plan_id": selected_plan_id},
+            )
+            self._proposals.pop(episode_id, None)
+            self._terminalized_episodes[episode_id] = "CAUSAL_ROOT_CLAIMED_BY_SIBLING"
 
     def _sync_structural_books(self) -> None:
         """Feed causal bars/pivots into RE1's versioned feasible geometry."""
@@ -1274,23 +2275,10 @@ class SymbolEpisodePolicy:
         *,
         bars_by_symbol: Mapping[str, Sequence[Bar]] | None = None,
     ) -> list[TradePlan]:
-        """Advance an existing 5m structural thesis on each synchronized minute.
-
-        This is not a separate one-minute strategy.  The minute tape may only
-        interact with already-observed public structure, and is used so the RE1
-        first response is not discovered up to four minutes late.
-        """
-
-        if bar.interval_minutes != 1:
-            raise ValueError("minute evaluation requires a completed one-minute bar")
-        if len(self.market.five_minute) < self.config.min_history_5m:
-            return []
-        serial = self.market.serial_5m
-        atr = max(self.market.atr(self.market.five_minute), self.tick_size)
-        self._create_boundary_watches(bar, serial, atr, 0.0)
-        plans = self._advance_watches(bar, serial, atr, 0.0, bars_by_symbol)
-        continuation_plans = self._advance_local_continuation_setups(bar, serial)
-        return self._refresh_proposals([*plans, *continuation_plans], bar)
+        raise RuntimeError(
+            "legacy per-symbol evaluation is disabled; use "
+            "LiquidityEpisodeCoordinator.push_bar()",
+        )
 
     def evaluate_five_minute(
         self,
@@ -1300,33 +2288,10 @@ class SymbolEpisodePolicy:
         *,
         interaction_bar: Bar | None = None,
     ) -> list[TradePlan]:
-        if bar.interval_minutes != 5:
-            raise ValueError("policy decisions require a completed 5-minute bar")
-        decision_bar = interaction_bar or bar
-        if interaction_bar is not None and (
-            interaction_bar.symbol != bar.symbol
-            or interaction_bar.interval_minutes != 1
-            or interaction_bar.close_time_ns != bar.close_time_ns
-        ):
-            raise ValueError("fifth minute must close on the completed five-minute bar")
-        serial = self.market.serial_5m
-        atr = max(self.market.atr(self.market.five_minute), self.tick_size)
-        self._observe_local_continuation_five(bar)
-        if len(self.market.five_minute) >= self.config.min_history_5m:
-            self._create_boundary_watches(
-                decision_bar, serial, atr, common_breadth,
-            )
-        # A touched decision-bar level can establish the current interaction but
-        # cannot remain available as its own future destination.
-        self.market.boundary_book.mark_consumed(bar, serial)
-        plans = self._advance_watches(
-            decision_bar, serial, atr, common_breadth, bars_by_symbol,
+        raise RuntimeError(
+            "legacy five-minute evaluation is disabled; use "
+            "LiquidityEpisodeCoordinator.push_bar()",
         )
-        continuation_plans = self._advance_local_continuation_setups(
-            decision_bar,
-            serial,
-        )
-        return self._refresh_proposals([*plans, *continuation_plans], decision_bar)
 
     def _refresh_proposals(self, plans: Sequence[TradePlan], bar: Bar) -> list[TradePlan]:
         # No clock expiry: an unfilled first return ends only when price passes
@@ -1628,8 +2593,8 @@ class SymbolEpisodePolicy:
             plan.plan_id,
         )
 
-    def claim(self, plan: TradePlan, *, time_ns: int | None = None) -> None:
-        """Mark an episode used only after the shared account accepts it."""
+    def validate_claim(self, plan: TradePlan) -> None:
+        """Validate an account claim without changing policy state."""
 
         claimed_plan_id = self._claimed_plans.get(plan.episode_id)
         if claimed_plan_id is not None:
@@ -1641,6 +2606,14 @@ class SymbolEpisodePolicy:
         proposal = self._proposals.get(plan.episode_id)
         if proposal is None or proposal.plan_id != plan.plan_id:
             raise ValueError("cannot claim an unknown or superseded proposal")
+
+    def claim(self, plan: TradePlan, *, time_ns: int | None = None) -> None:
+        """Mark an episode used only after the shared account accepts it."""
+
+        self.validate_claim(plan)
+        claimed_plan_id = self._claimed_plans.get(plan.episode_id)
+        if claimed_plan_id == plan.plan_id:
+            return
         watch = self._watches.get(plan.episode_id)
         self._queue_terminal_decision(
             outcome="SELECTED",
@@ -4029,20 +5002,385 @@ class LiquidityEpisodeCoordinator:
         # common-market ownership context to every selected symbol.
         self.decision_symbols = frozenset(selected)
         self._pending_by_close: dict[int, dict[str, Bar]] = {}
-        self._common_factor_tracker = CommonFactorTracker()
+        self._common_episodes = CommonEpisodeLedger()
+        self._common_price_campaigns = CommonPriceCampaignBook(
+            tick_sizes={
+                symbol: policy.tick_size for symbol, policy in self.policies.items()
+            },
+        )
+        # Frozen attack bars are the price/flow measurement paired with every
+        # later official inventory observation.  They are not an execution or
+        # expiry clock.
+        self._common_attack_bars: dict[str, dict[str, Bar]] = {}
+
+    @staticmethod
+    def _common_inventory_decision(
+        policy: SymbolEpisodePolicy,
+        attack_bar: Bar,
+        attack_side: str,
+        decision_time_ns: int,
+    ) -> InventoryDecision:
+        shock_side = "BUY" if attack_side == "LONG" else "SELL"
+        if policy.inventory_timeline is None:
+            return InventoryDecision(
+                symbol=attack_bar.symbol,
+                regime=InventoryRegime.UNKNOWN,
+                ownership=OwnershipBranch.UNKNOWN,
+                interpretation=InventoryInterpretation.UNKNOWN,
+                reason="NO_INVENTORY_TIMELINE",
+                shock_side=shock_side,
+                episode_start_ns=attack_bar.open_time_ns,
+                decision_ts_ns=decision_time_ns,
+                prior_observed_ts_ns=None,
+                current_observed_ts_ns=None,
+                oi_change_fraction=None,
+                all_account_change_log=None,
+                price_flow_aligned=None,
+            )
+        return policy.inventory_timeline.evaluate(
+            shock_side=shock_side,
+            episode_start_ns=attack_bar.open_time_ns,
+            decision_ts_ns=decision_time_ns,
+            price_move=attack_bar.close - attack_bar.open,
+            signed_taker_flow=attack_bar.signed_quote_flow,
+        )
+
+    def _register_common_attacks(
+        self,
+        bars: Mapping[str, Bar],
+        contexts: Mapping[str, RouterPrebarContext],
+    ) -> None:
+        """Join synchronized outside breaks into one still-live attack wave."""
+
+        by_side: dict[str, dict[str, dict[str, CommonSourceJoin]]] = {
+            "LONG": {},
+            "SHORT": {},
+        }
+        for symbol in sorted(bars):
+            context = contexts[symbol]
+            attack_bar = bars[symbol]
+            if context.flow_baseline is None:
+                continue
+            for item in context.sources:
+                lower, upper = item.boundary.band_at(context.structure_serial)
+                if (
+                    item.boundary.side == "HIGH"
+                    and attack_bar.close > upper
+                    and attack_bar.body > 0.0
+                    and attack_bar.signed_quote_flow > 0.0
+                ):
+                    side = "LONG"
+                elif (
+                    item.boundary.side == "LOW"
+                    and attack_bar.close < lower
+                    and attack_bar.body < 0.0
+                    and attack_bar.signed_quote_flow < 0.0
+                ):
+                    side = "SHORT"
+                else:
+                    continue
+                native_root = source_campaign_root_id(
+                    source_identity=item.boundary.boundary_id,
+                    source_generation=item.generation,
+                    interaction_time_ns=attack_bar.open_time_ns,
+                )
+                by_side[side].setdefault(symbol, {})[native_root] = CommonSourceJoin(
+                    symbol=symbol,
+                    source_campaign_root_id=native_root,
+                    source_boundary_id=item.boundary.boundary_id,
+                    source_lower=lower,
+                    source_upper=upper,
+                    source_observed_time_ns=item.boundary.observed_time_ns,
+                    join_time_ns=attack_bar.close_time_ns,
+                )
+
+        for side in ("LONG", "SHORT"):
+            joins_by_symbol = by_side[side]
+            if len(joins_by_symbol) < 3:
+                continue
+            participants = tuple(symbol for symbol in sorted(joins_by_symbol))
+            inventory = {
+                symbol: self._common_inventory_decision(
+                    self.policies[symbol],
+                    bars[symbol],
+                    side,
+                    bars[symbol].close_time_ns,
+                )
+                for symbol in participants
+            }
+            source_roots = {
+                symbol: tuple(sorted(joins_by_symbol[symbol]))
+                for symbol in participants
+            }
+            root_id = self._extensible_common_root(side)
+            current_joins = {
+                symbol: tuple(joins_by_symbol[symbol].values())
+                for symbol in participants
+            }
+            if (
+                root_id is not None
+                and self._common_price_campaigns.fresh_attack_completes_prior_delivery(
+                    root_id,
+                    bars=bars,
+                    source_joins=current_joins,
+                )
+            ):
+                root_id = None
+            if root_id is None:
+                attack = self._common_episodes.register_attack(
+                    attack_time_ns=next(iter(bars.values())).close_time_ns,
+                    attack_side=side,
+                    source_campaign_roots=source_roots,
+                    attack_inventory=inventory,
+                )
+                root_id = attack.root_id
+                canonical = {
+                    symbol: min(
+                        joins_by_symbol[symbol].values(),
+                        key=lambda join: (
+                            (
+                                -join.source_upper
+                                if side == "LONG"
+                                else join.source_lower
+                            ),
+                            (
+                                -join.source_lower
+                                if side == "LONG"
+                                else join.source_upper
+                            ),
+                            join.source_boundary_id,
+                            join.source_campaign_root_id,
+                        ),
+                    )
+                    for symbol in participants
+                }
+                registered = self._common_price_campaigns.register_attack(
+                    attack_side=side,
+                    bars=bars,
+                    source_joins=canonical,
+                    root_id=root_id,
+                )
+                if registered != root_id:
+                    raise RuntimeError("price owner rejected a registered common attack")
+            else:
+                attack = self._common_episodes.extend_attack(
+                    root_id,
+                    source_campaign_roots=source_roots,
+                    join_inventory=inventory,
+                )
+
+            frozen = self._common_attack_bars.setdefault(root_id, {})
+            for symbol in participants:
+                frozen.setdefault(symbol, bars[symbol])
+                for join in joins_by_symbol[symbol].values():
+                    self._common_price_campaigns.add_source_join(
+                        root_id,
+                        source_join=join,
+                        bar=bars[symbol],
+                    )
+
+    def _extensible_common_root(
+        self,
+        side: str,
+    ) -> str | None:
+        """Return the latest open, unreclaimed root for this attack side."""
+
+        candidates: list[tuple[int, str]] = []
+        for root_id in self._common_price_campaigns.roots:
+            if self._common_episodes.state(root_id) is not CommonEpisodeState.OPEN:
+                continue
+            snapshot = self._common_price_campaigns.snapshot(root_id)
+            if (
+                snapshot.attack_side == side
+                and not snapshot.fully_reclaimed
+                and not self._common_price_campaigns.continuation_delivered(
+                    root_id,
+                )
+            ):
+                candidates.append((snapshot.attack_time_ns, root_id))
+        return None if not candidates else max(candidates)[1]
+
+    def _common_price_plan(
+        self,
+        opportunity: CommonPriceOpportunity,
+    ) -> TradePlan | None:
+        """Bind shared price completion to its frozen inventory responsibility."""
+
+        if opportunity.symbol not in self.decision_symbols:
+            return None
+        origin_root = str(
+            opportunity.evidence["origin_source_campaign_root_id"],
+        )
+        authorization = self._common_episodes.authorize_candidate(
+            opportunity.root_id,
+            symbol=opportunity.symbol,
+            family=CommonEpisodeFamily.CONTINUATION,
+            side=opportunity.side,
+            candidate_time_ns=opportunity.confirmation_time_ns,
+            source_campaign_root_id=origin_root,
+        )
+        if authorization is None:
+            return None
+        source_id = str(opportunity.evidence["origin_source_boundary_id"])
+        proposal_episode_id = stable_id(
+            opportunity.root_id,
+            opportunity.symbol,
+            opportunity.opportunity_id,
+            prefix="common-proposal-",
+        )
+        destination_id = stable_id(
+            opportunity.root_id,
+            opportunity.symbol,
+            "FROZEN_ATTACK_EXTREME",
+            prefix="common-objective-",
+        )
+        evidence: dict[str, object] = {
+            **dict(opportunity.evidence),
+            **dict(authorization.evidence),
+            "native_episode_id": proposal_episode_id,
+            "native_plan_id": opportunity.opportunity_id,
+            "native_family": CommonEpisodeFamily.CONTINUATION.value,
+            "native_scenario": "COMMON_ATTACK_PAUSE_PIVOT_TRANSFER",
+            "causal_root_id": opportunity.root_id,
+            "parent_campaign_id": opportunity.root_id,
+            "source_ownership_role": SourceOwnershipRole.COMMON_MARKET_OWNER_ONLY.value,
+            "route_owner": "COMMON_CASCADE",
+            "route_responsibility": authorization.responsibility,
+            "common_cascade_id": opportunity.root_id,
+            "entry_lifecycle": ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+            "entry_event": "COMMON_PAUSE_PIVOT_TRANSFER_CLOSE",
+            "objective_lifecycle": "FAMILY_IMMUTABLE",
+            "objective_commit_time_ns": opportunity.pause_time_ns,
+            "interaction_time_ns": opportunity.attack_time_ns,
+            "first_return_time_ns": opportunity.confirmation_time_ns,
+            "physical_completion_time_ns": opportunity.confirmation_time_ns,
+            "source_kind": "COMMON_STRUCTURAL_OUTSIDE_ATTACK",
+            "destination_kind": "FROZEN_ATTACK_EXTREME",
+        }
+        return TradePlan(
+            episode_id=proposal_episode_id,
+            plan_id=stable_id(
+                opportunity.root_id,
+                opportunity.opportunity_id,
+                authorization.authorization_id,
+                prefix="common-control-plan-",
+            ),
+            symbol=opportunity.symbol,
+            family=CommonEpisodeFamily.CONTINUATION.value,
+            side=opportunity.side,
+            decision_time_ns=opportunity.confirmation_time_ns,
+            entry=opportunity.entry,
+            stop=opportunity.stop,
+            target=opportunity.target,
+            expires_time_ns=MAX_CAUSAL_ORDER_TIME_NS,
+            source_boundary_id=source_id,
+            destination_boundary_id=destination_id,
+            entry_zone=EntryZone(
+                kind="COMMON_PAUSE_PIVOT_TRANSFER_CLOSE",
+                lower=opportunity.entry_zone_lower,
+                upper=opportunity.entry_zone_upper,
+                observed_time_ns=opportunity.confirmation_time_ns,
+                source_bar_open_time_ns=(
+                    opportunity.confirmation_time_ns - NS_PER_MINUTE
+                ),
+            ),
+            evidence=evidence,
+        )
+
+    def _observe_common_price(
+        self,
+        bars: Mapping[str, Bar],
+    ) -> list[TradePlan]:
+        """Advance every live shared price root and expose completed plans."""
+
+        plans: list[TradePlan] = []
+        decision_time_ns = next(iter(bars.values())).close_time_ns
+        for root_id in self._common_price_campaigns.roots:
+            if self._common_episodes.state(root_id) is not CommonEpisodeState.OPEN:
+                continue
+            snapshot = self._common_price_campaigns.snapshot(root_id)
+            if snapshot.attack_time_ns >= decision_time_ns:
+                continue
+            for opportunity in self._common_price_campaigns.observe(root_id, bars):
+                plan = self._common_price_plan(opportunity)
+                if plan is not None:
+                    plans.append(plan)
+        return plans
+
+    def _update_common_inventory(self, decision_time_ns: int) -> None:
+        """Attach each newly observable official row to its frozen attack."""
+
+        for root_id in self._common_episodes.roots:
+            if self._common_episodes.state(root_id) is not CommonEpisodeState.OPEN:
+                continue
+            attack = self._common_episodes.attack(root_id)
+            if decision_time_ns <= attack.attack_time_ns:
+                continue
+            frozen = self._common_attack_bars[root_id]
+            decisions = {
+                symbol: self._common_inventory_decision(
+                    self.policies[symbol],
+                    frozen[symbol],
+                    attack.attack_side,
+                    decision_time_ns,
+                )
+                for symbol in attack.participants
+            }
+            self._common_episodes.update_inventory(root_id, decisions)
 
     def claim(self, plan: TradePlan, *, time_ns: int | None = None) -> None:
         policy = self.policies.get(plan.symbol)
         if policy is None:
             raise ValueError(f"unknown plan symbol: {plan.symbol}")
-        cascade_key = policy._cascade_key(plan)
+        root_id = causal_root_id(plan)
+        shared_root = plan.evidence.get(
+            "common_root_id",
+            plan.evidence.get("mapped_common_root_id"),
+        )
+        attack = None
+        authorization_id: str | None = None
+        policy.validate_claim(plan)
+        if policy._claimed_plans.get(plan.episode_id) == plan.plan_id:
+            return
+        if isinstance(shared_root, str) and shared_root:
+            attack = self._common_episodes.attack(shared_root)
+            raw_authorization = plan.evidence.get("common_authorization_id")
+            if isinstance(raw_authorization, str) and raw_authorization:
+                authorization_id = raw_authorization
+                if self._common_episodes.state(shared_root) is not CommonEpisodeState.OPEN:
+                    raise CommonEpisodeError(
+                        "authorized common proposal belongs to a terminal root",
+                    )
+                else:
+                    self._common_episodes.validate_claim(authorization_id)
+
+        # Both owners are validated before either mutates.  The coordinator is
+        # single-threaded, so the following transitions cannot race between
+        # validation and commit.
         policy.claim(plan, time_ns=time_ns)
-        if cascade_key is not None:
-            for peer in self.policies.values():
-                peer.suppress_claimed_cascade(
-                    cascade_key,
-                    plan.episode_id,
-                    time_ns=time_ns,
+        claim_time = plan.decision_time_ns if time_ns is None else time_ns
+        related_roots = {root_id}
+        if attack is not None:
+            related_roots.add(attack.root_id)
+            related_roots.update(
+                source_root
+                for _, source_root in attack.participant_source_roots
+            )
+            if self._common_episodes.state(attack.root_id) is CommonEpisodeState.OPEN:
+                if authorization_id is not None:
+                    self._common_episodes.claim(authorization_id)
+                else:
+                    self._common_episodes.invalidate(
+                        attack.root_id,
+                        reason="LOCAL_NATIVE_OWNER_CLAIMED_SHARED_ATTACK",
+                    )
+            self._common_attack_bars.pop(attack.root_id, None)
+        for peer in self.policies.values():
+            for related_root in related_roots:
+                peer.suppress_claimed_root(
+                    related_root,
+                    plan.plan_id,
+                    time_ns=claim_time,
                 )
 
     def reject_proposal(
@@ -4089,19 +5427,34 @@ class LiquidityEpisodeCoordinator:
 
     def export_state(self) -> dict[str, object]:
         return {
-            "version": 1,
+            "version": 3,
             "policies": {
                 symbol: self.policies[symbol].export_state()
                 for symbol in sorted(self.policies)
             },
+            **self._common_state_payload(),
         }
 
     def export_runtime_state(self) -> dict[str, object]:
         return {
-            "version": 2,
+            "version": 3,
             "policies": {
                 symbol: self.policies[symbol].export_runtime_state()
                 for symbol in sorted(self.policies)
+            },
+            **self._common_state_payload(),
+        }
+
+    def _common_state_payload(self) -> dict[str, object]:
+        return {
+            "common_episode_ledger": self._common_episodes.export_state(),
+            "common_price_campaigns": self._common_price_campaigns.export_state(),
+            "common_attack_bars": {
+                root_id: {
+                    symbol: bar.to_dict()
+                    for symbol, bar in sorted(frozen.items())
+                }
+                for root_id, frozen in sorted(self._common_attack_bars.items())
             },
         }
 
@@ -4156,11 +5509,56 @@ class LiquidityEpisodeCoordinator:
     def restore_state(self, payload: Mapping[str, object]) -> None:
         if not isinstance(payload, Mapping):
             raise ValueError("coordinator state must be a mapping")
-        if payload.get("version") not in {1, 2}:
+        version = payload.get("version")
+        if version != 3:
             raise ValueError(f"unsupported coordinator state version: {payload.get('version')!r}")
         raw = payload.get("policies")
         if not isinstance(raw, Mapping) or set(raw) != set(self.policies):
             raise ValueError("coordinator state must contain exactly the four configured policies")
+        restored_common_episodes: CommonEpisodeLedger | None = None
+        restored_common_price: CommonPriceCampaignBook | None = None
+        restored_attack_bars: dict[str, dict[str, Bar]] | None = None
+        if version == 3:
+            raw_episodes = payload.get("common_episode_ledger")
+            raw_price = payload.get("common_price_campaigns")
+            raw_attack_bars = payload.get("common_attack_bars")
+            if (
+                not isinstance(raw_episodes, Mapping)
+                or not isinstance(raw_price, Mapping)
+                or not isinstance(raw_attack_bars, Mapping)
+            ):
+                raise ValueError("coordinator common state is incomplete")
+            restored_common_episodes = CommonEpisodeLedger.restore_state(raw_episodes)
+            restored_common_price = CommonPriceCampaignBook.restore_state(raw_price)
+            if set(restored_common_episodes.roots) != set(restored_common_price.roots):
+                raise ValueError("common ledger and price roots differ")
+            restored_attack_bars = {}
+            for root_id, raw_frozen in raw_attack_bars.items():
+                if not isinstance(root_id, str) or not isinstance(raw_frozen, Mapping):
+                    raise ValueError("common frozen attack bars are malformed")
+                frozen = {
+                    str(symbol): Bar.from_dict(raw_bar)
+                    for symbol, raw_bar in raw_frozen.items()
+                    if isinstance(raw_bar, Mapping)
+                }
+                if len(frozen) != len(raw_frozen):
+                    raise ValueError("common frozen attack bar payload is malformed")
+                attack = restored_common_episodes.attack(root_id)
+                if set(frozen) != set(attack.participants) or any(
+                    bar.symbol != symbol for symbol, bar in frozen.items()
+                ):
+                    raise ValueError("common frozen attack participants differ")
+                if restored_common_episodes.state(root_id) is not CommonEpisodeState.OPEN:
+                    raise ValueError("terminal common root retained frozen attack bars")
+                restored_attack_bars[root_id] = frozen
+            open_roots = {
+                root_id
+                for root_id in restored_common_episodes.roots
+                if restored_common_episodes.state(root_id) is CommonEpisodeState.OPEN
+            }
+            if set(restored_attack_bars) != open_roots:
+                raise ValueError("open common roots lack frozen attack bars")
+
         # Validate the whole payload before mutating any live policy.
         for symbol in sorted(self.policies):
             state = raw[symbol]
@@ -4178,42 +5576,18 @@ class LiquidityEpisodeCoordinator:
             state = raw[symbol]
             assert isinstance(state, Mapping)
             self.policies[symbol].restore_state(state)
-
-    def _peer_breadth(self, completed: Mapping[str, Bar]) -> dict[str, float]:
-        signs: dict[str, float] = {}
-        for symbol, five in completed.items():
-            history = self.policies[symbol].market.five_minute
-            if len(history) >= 2 and history[-2].close > 0.0:
-                signs[symbol] = 1.0 if log(five.close / history[-2].close) > 0.0 else -1.0
-        return {
-            symbol: (
-                sum(value for peer, value in signs.items() if peer != symbol)
-                / max(sum(peer != symbol for peer in signs), 1)
-            )
-            for symbol in completed
-        }
+        if restored_common_episodes is not None:
+            assert restored_common_price is not None
+            assert restored_attack_bars is not None
+            self._common_episodes = restored_common_episodes
+            self._common_price_campaigns = restored_common_price
+            self._common_attack_bars = restored_attack_bars
 
     def _one_minute_map(self) -> dict[str, Sequence[Bar]]:
         return {
             symbol: tuple(policy.market.one_minute)
             for symbol, policy in self.policies.items()
         }
-
-    @staticmethod
-    def _mark_common_cascades(candidates: Sequence[TradePlan]) -> None:
-        groups: dict[tuple[int, str], list[TradePlan]] = {}
-        for plan in candidates:
-            if plan.evidence.get("cross_market_ownership_mode") != "COMMON_CASCADE":
-                continue
-            interaction = int(plan.evidence.get("interaction_time_ns", plan.decision_time_ns))
-            groups.setdefault((interaction // (5 * NS_PER_MINUTE), plan.side), []).append(plan)
-        for (bucket, side), group in groups.items():
-            if len({item.symbol for item in group}) < 2:
-                continue
-            cascade_id = stable_id(bucket, side, "COMMON_MARKET_CASCADE", prefix="CASCADE:")
-            for plan in group:
-                if isinstance(plan.evidence, dict):
-                    plan.evidence["cascade_id"] = cascade_id
 
     @classmethod
     def _arbitrate(cls, candidates: Sequence[TradePlan]) -> list[TradePlan]:
@@ -4223,12 +5597,7 @@ class LiquidityEpisodeCoordinator:
         self,
         candidates: Sequence[TradePlan],
     ) -> list[TradePlan]:
-        """Arbitrate new and still-live cross-symbol proposals together.
-
-        Common-market state is not a global direction gate.  It vetoes an
-        opposing local-continuation formation/first return inside the owning
-        policy; source-owned auctions keep their own direction evidence.
-        """
+        """Arbitrate new and still-live causal-root proposals together."""
 
         pool = {
             plan.plan_id: plan
@@ -4246,43 +5615,17 @@ class LiquidityEpisodeCoordinator:
 
     @classmethod
     def arbitrate(cls, candidates: Sequence[TradePlan]) -> list[TradePlan]:
-        """Return one eligible account owner, or no owner.
+        """Return the first physical causal-root owner for the one account."""
 
-        A production proposal must be owned by its local source after removing
-        the synchronous common-market component.  Missing ownership evidence
-        remains compatible only with focused synthetic coordinators.
-        """
-
-        eligible = [
-            plan
-            for plan in candidates
-            if "source_ownership_role" not in plan.evidence
-            or plan.evidence.get("source_ownership_role")
-            == SourceOwnershipRole.LOCAL_SOURCE_OWNER.value
-        ]
-        if not eligible:
-            return []
-        cls._mark_common_cascades(eligible)
-        return [min(eligible, key=SymbolEpisodePolicy._arbitration_key)]
+        owner = ControlEpisodeRouter.account_owner(candidates)
+        return [] if owner is None else [owner]
 
     def push_five_minute_group(self, bars: Mapping[str, Bar]) -> list[TradePlan]:
-        if set(bars) != set(self.policies):
-            raise ValueError("a synchronized five-minute group must contain all four markets")
-        if len({item.close_time_ns for item in bars.values()}) != 1:
-            raise ValueError("five-minute group clocks differ")
-        completed = {
-            symbol: self.policies[symbol].ingest_five_minute(bars[symbol])
-            for symbol in sorted(bars)
-        }
-        breadth = self._peer_breadth(completed)
-        candidates: list[TradePlan] = []
-        for symbol in sorted(self.decision_symbols):
-            candidates.extend(
-                self.policies[symbol].evaluate_five_minute(
-                    completed[symbol], breadth[symbol], self._one_minute_map(),
-                )
-            )
-        return self._arbitrate_current(candidates)
+        raise RuntimeError(
+            "the unified policy requires synchronized completed one-minute "
+            "bars through push_bar(); five-minute-only input cannot preserve "
+            "physical interaction and first-return causality"
+        )
 
     def push_bar(self, bar: Bar) -> list[TradePlan]:
         bucket = self._pending_by_close.setdefault(bar.close_time_ns, {})
@@ -4295,42 +5638,42 @@ class LiquidityEpisodeCoordinator:
         if set(bucket) != set(self.policies):
             return []
         synchronized = self._pending_by_close.pop(bar.close_time_ns)
+        prebar = {
+            symbol: self.policies[symbol].prepare_router_minute(
+                synchronized[symbol],
+            )
+            for symbol in sorted(synchronized)
+        }
+        self._register_common_attacks(synchronized, prebar)
         completed: dict[str, Bar] = {}
         for symbol in sorted(synchronized):
             five = self.policies[symbol].ingest_one_minute(synchronized[symbol])
             if five is not None:
                 completed[symbol] = five
-        factor_state = self._common_factor_tracker.observe(
-            synchronized,
-            {
-                symbol: self.policies[symbol].factor_flow.last_observation
-                for symbol in sorted(self.policies)
-            },
-        )
-        for policy in self.policies.values():
-            policy.set_common_factor_state(factor_state)
         if completed and set(completed) != set(self.policies):
             raise RuntimeError("four-market 5-minute clocks diverged")
+        self._update_common_inventory(bar.close_time_ns)
+        common_plans = self._observe_common_price(synchronized)
         one_minute = self._one_minute_map()
         candidates: list[TradePlan] = []
-        if completed:
-            breadth = self._peer_breadth(completed)
-            for symbol in sorted(self.decision_symbols):
-                candidates.extend(
-                    self.policies[symbol].evaluate_five_minute(
-                        completed[symbol],
-                        breadth[symbol],
-                        one_minute,
-                        interaction_bar=synchronized[symbol],
-                    )
+        for symbol in sorted(self.policies):
+            candidates.extend(
+                self.policies[symbol].evaluate_router_minute(
+                    synchronized[symbol],
+                    prebar[symbol],
+                    decision_bar=completed.get(symbol),
+                    bars_by_symbol=one_minute,
+                    emit_plan=symbol in self.decision_symbols,
+                    common_episodes=self._common_episodes,
                 )
-        else:
-            for symbol in sorted(self.decision_symbols):
-                candidates.extend(
-                    self.policies[symbol].evaluate_minute(
-                        synchronized[symbol], bars_by_symbol=one_minute,
-                    )
+            )
+        for plan in common_plans:
+            candidates.extend(
+                self.policies[plan.symbol]._refresh_router_proposals(
+                    (plan,),
+                    synchronized[plan.symbol],
                 )
+            )
         return self._arbitrate_current(candidates)
 
 

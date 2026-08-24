@@ -851,6 +851,7 @@ def structural_stop(
     source_invalidation: float | None = None,
     location_invalidation: float | None = None,
     acceptance_origin: float | None = None,
+    adverse_noise: float | None = None,
 ) -> float:
     """Keep entry precision separate from complete-episode invalidation."""
 
@@ -871,7 +872,17 @@ def structural_stop(
         )
     if not all(math.isfinite(value) for value in candidates):
         raise ValueError("stop inputs must be finite")
-    return min(candidates) if side == "LONG" else max(candidates)
+    stop = min(candidates) if side == "LONG" else max(candidates)
+    if adverse_noise is not None:
+        if not math.isfinite(adverse_noise) or adverse_noise < 0.0:
+            raise ValueError("adverse_noise must be finite and non-negative")
+        # Every structural reference above already carries one adverse tick.
+        # Expand only the remaining ordinary-wick allowance so the resulting
+        # stop is reference +/- max(two ticks, causal median prior wick), as in
+        # the liquidity-auction v1 invalidation geometry.
+        expansion = max(0.0, adverse_noise - tick_size)
+        stop = stop - expansion if side == "LONG" else stop + expansion
+    return stop
 
 
 @dataclass(frozen=True, slots=True)
