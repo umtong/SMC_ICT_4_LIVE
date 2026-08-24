@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run candidate-easychart_re1 on Binance USD-M Demo Trading.
+"""Run the canonical latent liquidity-episode policy on Binance Demo Trading.
 
 This is a paper/demo runner, not a live-funds launcher. It uses the canonical
 RE1 decision bundle and the same independent reduce-only protective-order
@@ -186,7 +186,7 @@ def main() -> None:
     higher_types = tuple(item[3] for item in bars)
 
     check_record = {
-        "candidate": "candidate-easychart_re1",
+        "candidate": "candidate-latent-liquidity-episode-policy-v1",
         "environment": "BINANCE_DEMO_USDT_FUTURES",
         "scenario_bundle": "EasyChartRE1BotBundle",
         "paper_strategy": "EasyChartRE1BotPaperStrategy",

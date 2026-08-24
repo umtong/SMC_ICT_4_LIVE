@@ -24,14 +24,19 @@ The same bundle and strategy class are used for research, long continuous evalua
 
 ## Canonical decision sequence
 
-The bot follows one channel-liquidity episode from the fourth-point sweep through
-reclaim, the next completed five-minute hold and the first valid return.  A
-causally formed OB/FVG owns its future first return.  When no visual footprint
-formed, absorption cannot enter directly: a completed five-minute control
-transfer must reclaim the boundary and interaction balance without a new
-adverse extreme, then the first later boundary return must close on the intended
-side.  The original sweep extreme owns invalidation and the first pre-existing
-opposing objective owns the target.
+One active liquidity book contains causal DC swings, equal-extreme clusters,
+the previous completed four-hour auction and the previous completed UTC day.
+Completed 60m/15m structure, active unswept draw, channel location and common
+four-market initiative provide context; settlement at the attacked boundary
+then gives exactly one episode owner.
+
+The owner follows one of two mutually exclusive paths: sweep/reclaim and fresh
+displacement, or body break and next completed 5m outside hold.  Both paths wait
+for the first return to an actual FVG, opposite body or the source boundary.
+That return must respond on its completed bar or the immediately following
+completed minute.  A non-response ends the opportunity.  The event extreme
+owns invalidation and the nearest still-unspent opposing liquidity owns the
+target; target selection precedes the gross 1R check.
 
 Historical warmup and live Binance bars both preserve exact quote volume, trade
 count and taker-buy volume, so replay and paper/shadow use the same flow state.
@@ -51,6 +56,5 @@ python research/candidate-easychart_re1/run_mtf_backtest_re1_bot.py \
 
 Do not split and add periods. Treat the four symbols, arbitration, account NAV and one-position constraint as one continuous result.
 
-## Paper/shadow observations
-
-Record planned, accepted and filled entry/stop/target prices; fee and slippage differences; rejected and partial orders; signal-close to order-accept latency; sibling stop/target cancellation; restart recovery; open-position/protective-order reconciliation; and the NAV used by every 3% risk calculation. Do not alter strategy rules from a paper outcome before reviewing the entire causal episode.
+Replay and paper warm and run the same local episode state and four-market
+factor state before orders are enabled.

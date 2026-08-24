@@ -12,6 +12,8 @@ class EasyChartRE1FlowStrategy(EasyChartRE1Strategy):
 
     @staticmethod
     def _candle(bar: Any) -> FlowCandle:
+        if isinstance(bar, FlowCandle):
+            return bar
         return FlowCandle(
             ts_close_ns=int(bar.ts_event),
             open=float(bar.open),
