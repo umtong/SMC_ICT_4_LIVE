@@ -32,6 +32,16 @@ from dataclasses import dataclass, field, replace
 from math import log
 from statistics import median
 
+from .attack_ledger import (
+    AttackLedger,
+    AttackOutcome,
+    CampaignPhase,
+    EventKind,
+    OwnerSide,
+    SourceKey,
+    SourceSide,
+    SourceSpec,
+)
 from .auction_journey import (
     CausalJourneyRegistry,
     EventTimeAuctionJourney,
@@ -59,7 +69,7 @@ from .structural_liquidity import (
 
 MAX_CAUSAL_ORDER_TIME_NS = (1 << 63) - 1
 POLICY_DECISION_SCHEMA_VERSION = 1
-POLICY_FINGERPRINT = "liquidity-episode-source-transfer-v2-horizontal-objective"
+POLICY_FINGERPRINT = "liquidity-episode-source-transfer-v3-local-delivery-reattack"
 
 
 @dataclass(slots=True)
@@ -121,6 +131,7 @@ class SymbolEpisodePolicy:
         self.market = SymbolMarketState(symbol, self.tick_size)
         self.journey = EventTimeAuctionJourney(symbol, self.tick_size)
         self.journey_registry = CausalJourneyRegistry(self.tick_size)
+        self.attack_ledger = AttackLedger(symbol)
         self.inventory_timeline = inventory_timeline
         self._trend_channel_books = {
             timeframe: FeasibleTrendChannelBook(
@@ -141,9 +152,13 @@ class SymbolEpisodePolicy:
         self._terminal_decisions: dict[str, dict[str, object]] = {}
         self._pending_started_episode_ids: set[str] = set()
         self._pending_terminal_episode_ids: set[str] = set()
-        # Transient causal state: replay reconstructs these first-touch facts.
-        # Durable state remains limited to accepted plan identities/signals.
-        self._first_touch_time_by_structure: dict[str, int] = {}
+        # Transient causal state: completed-bar replay rebuilds physical source
+        # attacks and their response/reattack genealogy before the durable
+        # account-claim overlay is restored.
+        self._campaign_sources: dict[
+            SourceKey, tuple[LiquidityBoundary, str]
+        ] = {}
+        self._source_keys_by_boundary_id: dict[str, SourceKey] = {}
         self._last_plan_time_ns = -1
         self._diagnostic_counts: dict[str, int] = {}
         self._rejections: list[dict[str, float | str | int]] = []
@@ -160,7 +175,7 @@ class SymbolEpisodePolicy:
             "terminalized_episodes": dict(self._terminalized_episodes),
             "started_episode_count": len(self._started_episodes),
             "terminal_decision_count": len(self._terminal_decisions),
-            "first_touched_structures": len(self._first_touch_time_by_structure),
+            "source_campaigns": len(self._campaign_sources),
         }
 
     @property
@@ -632,29 +647,40 @@ class SymbolEpisodePolicy:
         bar: Bar,
         common_breadth: float,
         bars_by_symbol: Mapping[str, Sequence[Bar]] | None = None,
+        *,
+        interaction_bar: Bar | None = None,
     ) -> list[TradePlan]:
         if bar.interval_minutes != 5:
             raise ValueError("policy decisions require a completed 5-minute bar")
+        decision_bar = interaction_bar or bar
+        if interaction_bar is not None and (
+            interaction_bar.symbol != bar.symbol
+            or interaction_bar.interval_minutes != 1
+            or interaction_bar.close_time_ns != bar.close_time_ns
+        ):
+            raise ValueError("fifth minute must close on the completed five-minute bar")
         serial = self.market.serial_5m
         atr = max(self.market.atr(self.market.five_minute), self.tick_size)
         if len(self.market.five_minute) >= self.config.min_history_5m:
-            self._create_boundary_watches(bar, serial, atr, common_breadth)
+            self._create_boundary_watches(
+                decision_bar, serial, atr, common_breadth,
+            )
         # A touched decision-bar level can establish the current interaction but
         # cannot remain available as its own future destination.
         self.market.boundary_book.mark_consumed(bar, serial)
         plans = self._advance_watches(
-            bar, serial, atr, common_breadth, bars_by_symbol,
+            decision_bar, serial, atr, common_breadth, bars_by_symbol,
         )
-        return self._refresh_proposals(plans, bar)
+        return self._refresh_proposals(plans, decision_bar)
 
     def _refresh_proposals(self, plans: Sequence[TradePlan], bar: Bar) -> list[TradePlan]:
         # No clock expiry: an unfilled first return ends only when price passes
         # it, the complete episode invalidates, or the destination is consumed.
-        live_structural_ids = self._live_projected_structure_ids(
+        existing_structural_ids = self._existing_projected_structure_ids(
             bar.close_time_ns, self.market.serial_5m,
         )
         self._invalidate_superseded_claimed_structures(
-            bar, live_structural_ids,
+            bar, existing_structural_ids,
         )
         self._invalidate_claimed_objective_routes(bar)
         for episode_id, proposal in list(self._proposals.items()):
@@ -665,14 +691,14 @@ class SymbolEpisodePolicy:
                 self._is_versioned_structural_kind(
                     str(proposal.evidence.get("source_kind", ""))
                 )
-                and proposal.source_boundary_id not in live_structural_ids
+                and proposal.source_boundary_id not in existing_structural_ids
             ):
                 reason = "STRUCTURAL_SOURCE_VERSION_SUPERSEDED"
             elif (
                 self._is_versioned_structural_kind(
                     str(proposal.evidence.get("destination_kind", ""))
                 )
-                and proposal.destination_boundary_id not in live_structural_ids
+                and proposal.destination_boundary_id not in existing_structural_ids
             ):
                 reason = "STRUCTURAL_DESTINATION_VERSION_SUPERSEDED"
             elif self._has_new_closer_objective(
@@ -728,17 +754,23 @@ class SymbolEpisodePolicy:
         upper = kind.upper()
         return "LINE" in upper or "CHANNEL" in upper
 
-    def _live_projected_structure_ids(
+    def _existing_projected_structure_ids(
         self, decision_time_ns: int, serial: int,
     ) -> set[str]:
+        """Return observable versions, including an already-touched edge.
+
+        ``projected_nodes`` removes genuinely superseded versions itself.  A
+        consumed edge is still returned and can own a later fresh reattack, so
+        it must not be confused with structural supersession.
+        """
+
         return {
             node.node_id
             for node in self._projected_structural_nodes(decision_time_ns, serial)
-            if node.is_fresh(decision_time_ns)
         }
 
     def _invalidate_superseded_claimed_structures(
-        self, bar: Bar, live_structural_ids: set[str],
+        self, bar: Bar, existing_structural_ids: set[str],
     ) -> None:
         for episode_id, metadata in self._claimed_plan_metadata.items():
             plan_id = str(metadata["plan_id"])
@@ -750,12 +782,12 @@ class SymbolEpisodePolicy:
             destination_id = str(metadata.get("destination_boundary_id", ""))
             if (
                 self._is_versioned_structural_kind(source_kind)
-                and source_id not in live_structural_ids
+                and source_id not in existing_structural_ids
             ):
                 reason = "STRUCTURAL_SOURCE_VERSION_SUPERSEDED"
             elif (
                 self._is_versioned_structural_kind(destination_kind)
-                and destination_id not in live_structural_ids
+                and destination_id not in existing_structural_ids
             ):
                 reason = "STRUCTURAL_DESTINATION_VERSION_SUPERSEDED"
             else:
@@ -1383,11 +1415,138 @@ class SymbolEpisodePolicy:
             initial_residual_control=residual,
         )
 
+    def _register_attack_source(
+        self,
+        source: LiquidityBoundary,
+        semantic_kind: str,
+        key: SourceKey,
+    ) -> None:
+        existing = self._source_keys_by_boundary_id.get(source.boundary_id)
+        if existing is not None and existing != key:
+            raise RuntimeError("one structural source cannot change generation")
+        if key in self._campaign_sources:
+            return
+        self.attack_ledger.register_source(
+            SourceSpec(
+                key=key,
+                side=SourceSide(source.side),
+                tick_size=self.tick_size,
+                observed_time_ns=source.observed_time_ns,
+                # Boundary and projected-node IDs already encode their causal
+                # parent/version identity.  Supersession is therefore observed
+                # explicitly when that exact projected ID disappears.
+                parent_id=source.boundary_id,
+                parent_generation=key.generation,
+            ),
+        )
+        self._source_keys_by_boundary_id[source.boundary_id] = key
+        self._campaign_sources[key] = (source, semantic_kind)
+
+    def _record_source_attack(
+        self,
+        source: LiquidityBoundary,
+        semantic_kind: str,
+        key: SourceKey,
+        bar: Bar,
+    ) -> int | None:
+        self._register_attack_source(source, semantic_kind, key)
+        events = self.attack_ledger.record_touch(
+            key,
+            time_ns=bar.close_time_ns,
+            extreme=bar.high if source.side == "HIGH" else bar.low,
+            physical_attack_id=stable_id(
+                self.symbol,
+                source.boundary_id,
+                key.generation,
+                bar.open_time_ns,
+                bar.interval_minutes,
+                source.side,
+                prefix="ATTACK:",
+            ),
+        )
+        if not any(
+            event.kind in {EventKind.CAMPAIGN_STARTED, EventKind.REATTACK_APPENDED}
+            for event in events
+        ):
+            return None
+        campaign = self.attack_ledger.campaign(key)
+        if campaign is None or not campaign.attacks:
+            raise RuntimeError("new source attack has no campaign state")
+        return campaign.attacks[-1].ordinal
+
+    def _retire_source_campaign(
+        self,
+        key: SourceKey,
+        source: LiquidityBoundary,
+        bar: Bar,
+    ) -> None:
+        self.attack_ledger.source_invalidated(key, time_ns=bar.close_time_ns)
+        reason = "SOURCE_GENERATION_SUPERSEDED"
+        for episode_id, watch in list(self._watches.items()):
+            if watch.source.boundary_id != source.boundary_id:
+                continue
+            plan = self._proposals.get(episode_id)
+            self._record_terminal(
+                reason,
+                watch,
+                bar,
+                plan=plan,
+                source_boundary_id=source.boundary_id,
+                source_generation=key.generation,
+            )
+            self._watches.pop(episode_id, None)
+            self._proposals.pop(episode_id, None)
+        for episode_id, metadata in self._claimed_plan_metadata.items():
+            if metadata.get("source_boundary_id") != source.boundary_id:
+                continue
+            plan_id = str(metadata["plan_id"])
+            if plan_id in self._invalidated_claimed_plans:
+                continue
+            self._invalidated_claimed_plans[plan_id] = {
+                "episode_id": episode_id,
+                "reason": reason,
+                "time_ns": bar.close_time_ns,
+                "superseding_episode_id": f"SOURCE:{source.boundary_id}",
+            }
+            self._diagnostic_counts[reason] = (
+                self._diagnostic_counts.get(reason, 0) + 1
+            )
+        self._campaign_sources.pop(key, None)
+        if self._source_keys_by_boundary_id.get(source.boundary_id) == key:
+            self._source_keys_by_boundary_id.pop(source.boundary_id, None)
+
+    def _campaign_source_candidates(
+        self,
+        *,
+        bar: Bar,
+        existing_source_ids: set[str],
+    ) -> list[tuple[LiquidityBoundary, str, SourceKey]]:
+        output: list[tuple[LiquidityBoundary, str, SourceKey]] = []
+        for key, (source, semantic_kind) in list(self._campaign_sources.items()):
+            campaign = self.attack_ledger.campaign(key)
+            if campaign is None or campaign.phase is CampaignPhase.TERMINAL:
+                self._campaign_sources.pop(key, None)
+                if self._source_keys_by_boundary_id.get(source.boundary_id) == key:
+                    self._source_keys_by_boundary_id.pop(source.boundary_id, None)
+                continue
+            if source.boundary_id not in existing_source_ids:
+                self._retire_source_campaign(key, source, bar)
+                continue
+            output.append((source, semantic_kind, key))
+        return output
+
     def _create_boundary_watches(
         self, bar: Bar, serial: int, atr: float, breadth: float,
     ) -> None:
         del atr, breadth
-        sources: list[tuple[LiquidityBoundary, str]] = []
+        projected = self._projected_structural_nodes(bar.close_time_ns, serial)
+        existing_projected_ids = {node.node_id for node in projected}
+        existing_source_ids = (
+            set(self.market.boundary_book.boundaries) | existing_projected_ids
+        )
+        sources: dict[
+            SourceKey, tuple[LiquidityBoundary, str, SourceKey]
+        ] = {}
         for source in self.market.boundary_book.active(bar.close_time_ns):
             if any(
                 token in source.kind
@@ -1398,17 +1557,30 @@ class SymbolEpisodePolicy:
                 continue
             role = boundary_role(source)
             if role.direction_source:
-                sources.append((source, role.semantic_kind))
-        for node in self._projected_structural_nodes(bar.close_time_ns, serial):
+                key = self._source_keys_by_boundary_id.get(
+                    source.boundary_id,
+                    SourceKey(source.boundary_id, 1),
+                )
+                sources[key] = (source, role.semantic_kind, key)
+        for node in projected:
             if not node.is_fresh(bar.close_time_ns):
                 continue
             source = self._boundary_from_structural_node(node, serial)
-            sources.append((source, "FEASIBLE_TREND_CHANNEL_STRUCTURE"))
+            key = self._source_keys_by_boundary_id.get(
+                node.node_id,
+                SourceKey(node.node_id, node.version),
+            )
+            sources[key] = (source, "FEASIBLE_TREND_CHANNEL_STRUCTURE", key)
+        for source, semantic_kind, key in self._campaign_source_candidates(
+            bar=bar,
+            existing_source_ids=existing_source_ids,
+        ):
+            sources[key] = (source, semantic_kind, key)
 
-        touched: list[tuple[LiquidityBoundary, str, float, float]] = []
-        for source, semantic_kind in sources:
-            if source.boundary_id in self._first_touch_time_by_structure:
-                continue
+        touched: list[
+            tuple[LiquidityBoundary, str, SourceKey, float, float]
+        ] = []
+        for source, semantic_kind, key in sources.values():
             # The entire interaction candle must be later than the structure's
             # causal observation.  ``<= open`` accepts both exact-edge feeds
             # (prior close == next open) and Binance-style close == next open-1
@@ -1426,42 +1598,56 @@ class SymbolEpisodePolicy:
             lower, upper = source.band_at(serial)
             if not (bar.low <= upper and bar.high >= lower):
                 continue
-            touched.append((source, semantic_kind, lower, upper))
+            touched.append((source, semantic_kind, key, lower, upper))
 
         # Simultaneously overlapping public facts describe one interaction.
         # Canonical ownership is structural/timeframe/observation based and
         # therefore invariant to BoundaryBook insertion order.
         def ownership_key(
-            item: tuple[LiquidityBoundary, str, float, float],
+            item: tuple[LiquidityBoundary, str, SourceKey, float, float],
         ) -> tuple[float | int | str, ...]:
             return (
                 -item[0].timeframe_minutes,
                 -int(self._is_versioned_structural_kind(item[0].kind)),
                 -item[0].strength,
                 -item[0].observed_time_ns,
-                item[3] - item[2],
+                item[4] - item[3],
                 item[0].boundary_id,
             )
 
         # Build tick-connected interval components before selecting ownership;
         # otherwise a suppressed bridge B could leave A and C as two owners.
-        components: list[list[tuple[LiquidityBoundary, str, float, float]]] = []
-        component_upper: list[float] = []
-        for item in sorted(touched, key=lambda value: (value[2], value[3], value[0].boundary_id)):
-            if not components or item[2] > component_upper[-1] + self.tick_size:
-                components.append([item])
-                component_upper.append(item[3])
-            else:
-                components[-1].append(item)
-                component_upper[-1] = max(component_upper[-1], item[3])
+        # HIGH and LOW pools are competing directional facts, never aliases of
+        # one another even when their price bands overlap.
+        components: list[
+            list[tuple[LiquidityBoundary, str, SourceKey, float, float]]
+        ] = []
+        for source_side in ("HIGH", "LOW"):
+            side_components: list[
+                list[tuple[LiquidityBoundary, str, SourceKey, float, float]]
+            ] = []
+            side_upper: list[float] = []
+            for item in sorted(
+                (value for value in touched if value[0].side == source_side),
+                key=lambda value: (value[3], value[4], value[0].boundary_id),
+            ):
+                if (
+                    not side_components
+                    or item[3] > side_upper[-1] + self.tick_size
+                ):
+                    side_components.append([item])
+                    side_upper.append(item[4])
+                else:
+                    side_components[-1].append(item)
+                    side_upper[-1] = max(side_upper[-1], item[4])
+            components.extend(side_components)
 
         for component in components:
             owner = min(component, key=ownership_key)
-            source, semantic_kind, _lower, _upper = owner
-            for suppressed, _semantic, _lo, _hi in component:
+            source, semantic_kind, key, _lower, _upper = owner
+            for suppressed, _semantic, _key, _lo, _hi in component:
                 if suppressed.boundary_id == source.boundary_id:
                     continue
-                self._mark_structure_first_touched(suppressed, bar)
                 self._record(
                     "OVERLAPPING_SOURCE_CANONICALIZED",
                     None,
@@ -1469,31 +1655,41 @@ class SymbolEpisodePolicy:
                     source_boundary_id=suppressed.boundary_id,
                     owning_source_boundary_id=source.boundary_id,
                 )
-            if any(
-                watch.source.boundary_id == source.boundary_id
-                and watch.state != "INVALID"
-                for watch in self._watches.values()
-            ):
-                continue
-            self._start_interaction(source, bar, serial, semantic_kind)
-
-    def _mark_structure_first_touched(
-        self, source: LiquidityBoundary, bar: Bar,
-    ) -> bool:
-        """Give the first completed touch sole ownership of this structure."""
-
-        if source.boundary_id in self._first_touch_time_by_structure:
-            return False
-        self._first_touch_time_by_structure[source.boundary_id] = bar.close_time_ns
-        stored = self.market.boundary_book.boundaries.get(source.boundary_id)
-        if stored is not None and (
-            stored.consumed_time_ns is None
-            or stored.consumed_time_ns > bar.close_time_ns
-        ):
-            self.market.boundary_book.boundaries[source.boundary_id] = replace(
-                stored, consumed_time_ns=bar.close_time_ns,
+            attack_ordinal = self._record_source_attack(
+                source, semantic_kind, key, bar,
             )
-        return True
+            if attack_ordinal is None:
+                continue
+            prior = next(
+                (
+                    watch
+                    for watch in self._watches.values()
+                    if watch.source.boundary_id == source.boundary_id
+                    and watch.state != "INVALID"
+                ),
+                None,
+            )
+            if prior is not None:
+                prior_plan = self._proposals.get(prior.episode_id)
+                if prior.state != "PROPOSED" or prior_plan is None:
+                    raise RuntimeError("fresh reattack collided with an unfinished response")
+                self._record_terminal(
+                    "FRESH_REATTACK_SUPERSEDED_PENDING_SOURCE_ATTACK",
+                    prior,
+                    bar,
+                    plan=prior_plan,
+                    new_attack_ordinal=attack_ordinal,
+                )
+                self._watches.pop(prior.episode_id, None)
+                self._proposals.pop(prior.episode_id, None)
+            self._start_interaction(
+                source,
+                bar,
+                serial,
+                semantic_kind,
+                attack_key=key,
+                attack_ordinal=attack_ordinal,
+            )
 
     def _interaction_liquidity_evidence(
         self,
@@ -1506,18 +1702,35 @@ class SymbolEpisodePolicy:
         # open while the explicit observed<=open filter excludes anything
         # learned inside the candle.
         causal_time = bar.open_time_ns + 1
-        boundaries = [
-            item
+        boundaries_by_id = {
+            item.boundary_id: item
             for item in self.market.boundary_book.boundaries.values()
             if item.observed_time_ns <= bar.open_time_ns
-        ]
-        boundaries.extend(
-            self._boundary_from_structural_node(node, serial)
-            for node in self._projected_structural_nodes(causal_time, serial)
-            if node.observed_time_ns <= bar.open_time_ns and node.is_fresh(causal_time)
+        }
+        boundaries_by_id.update(
+            {
+                node.node_id: self._boundary_from_structural_node(node, serial)
+                for node in self._projected_structural_nodes(causal_time, serial)
+                if node.observed_time_ns <= bar.open_time_ns
+                and node.is_fresh(causal_time)
+            },
         )
+        # A completed response keeps its source campaign alive for a genuinely
+        # fresh reattack.  The source therefore remains directional context even
+        # after BoundaryBook records the original liquidity touch as consumed.
+        for key, (source, _semantic_kind) in self._campaign_sources.items():
+            campaign = self.attack_ledger.campaign(key)
+            if (
+                campaign is not None
+                and campaign.phase is not CampaignPhase.TERMINAL
+                and source.observed_time_ns <= bar.open_time_ns
+            ):
+                boundaries_by_id[source.boundary_id] = replace(
+                    source,
+                    consumed_time_ns=None,
+                )
         context = build_active_liquidity_context(
-            boundaries=boundaries,
+            boundaries=boundaries_by_id.values(),
             price=bar.open,
             decision_time_ns=causal_time,
             serial=serial,
@@ -1554,17 +1767,34 @@ class SymbolEpisodePolicy:
         bar: Bar,
         serial: int,
         semantic_kind: str,
+        *,
+        attack_key: SourceKey | None = None,
+        attack_ordinal: int | None = None,
     ) -> None:
+        if attack_key is None or attack_ordinal is None:
+            attack_key = self._source_keys_by_boundary_id.get(
+                source.boundary_id,
+                SourceKey(source.boundary_id, 1),
+            )
+            attack_ordinal = self._record_source_attack(
+                source, semantic_kind, attack_key, bar,
+            )
+            if attack_ordinal is None:
+                return
         episode_id = stable_id(
-            self.symbol, source.boundary_id, bar.open_time_ns, "AUCTION", prefix="EP:"
+            self.symbol,
+            source.boundary_id,
+            attack_key.generation,
+            attack_ordinal,
+            bar.open_time_ns,
+            "AUCTION",
+            prefix="EP:",
         )
         if (
             episode_id in self._watches
             or episode_id in self._used_episodes
             or episode_id in self._terminalized_episodes
         ):
-            return
-        if not self._mark_structure_first_touched(source, bar):
             return
         lower, upper = source.band_at(serial)
         if bar.close > upper:
@@ -1593,6 +1823,9 @@ class SymbolEpisodePolicy:
             evidence={
                 "interaction_close": bar.close,
                 "source_semantic_kind": semantic_kind,
+                "campaign_source_id": attack_key.source_id,
+                "source_generation": attack_key.generation,
+                "attack_ordinal": attack_ordinal,
                 "interaction_source_lower": lower,
                 "interaction_source_upper": upper,
                 **interaction_evidence,
@@ -1607,8 +1840,24 @@ class SymbolEpisodePolicy:
         self, source: LiquidityBoundary, side: str, bar: Bar, serial: int,
         extreme: float, atr: float, breadth: float,
     ) -> None:
+        semantic_kind = boundary_role(source).semantic_kind
+        attack_key = self._source_keys_by_boundary_id.get(
+            source.boundary_id,
+            SourceKey(source.boundary_id, 1),
+        )
+        attack_ordinal = self._record_source_attack(
+            source, semantic_kind, attack_key, bar,
+        )
+        if attack_ordinal is None:
+            return
         episode_id = stable_id(
-            self.symbol, source.boundary_id, bar.open_time_ns, "FAILED", prefix="EP:"
+            self.symbol,
+            source.boundary_id,
+            attack_key.generation,
+            attack_ordinal,
+            bar.open_time_ns,
+            "FAILED",
+            prefix="EP:",
         )
         if (
             episode_id in self._watches
@@ -1616,14 +1865,15 @@ class SymbolEpisodePolicy:
             or episode_id in self._terminalized_episodes
         ):
             return
-        if not self._mark_structure_first_touched(source, bar):
-            return
         watch = EpisodeWatch(
             episode_id, "FAILED_AUCTION_REVERSAL", source, side, "RECLAIMED",
             serial, bar.open_time_ns, extreme, serial, bar.close_time_ns,
         )
         lower, upper = source.band_at(serial)
         watch.evidence.update(
+            campaign_source_id=attack_key.source_id,
+            source_generation=attack_key.generation,
+            attack_ordinal=attack_ordinal,
             interaction_source_lower=lower,
             interaction_source_upper=upper,
         )
@@ -1646,6 +1896,87 @@ class SymbolEpisodePolicy:
             lower,
             upper,
             watch.interaction_time_ns,
+        )
+
+    @staticmethod
+    def _watch_attack_key(watch: EpisodeWatch) -> SourceKey | None:
+        source_id = watch.evidence.get("campaign_source_id")
+        generation = watch.evidence.get("source_generation")
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+        ):
+            return None
+        return SourceKey(source_id, generation)
+
+    def _complete_attack_response(
+        self,
+        watch: EpisodeWatch,
+        journey: JourneyEvidence,
+        bar: Bar,
+    ) -> None:
+        key = self._watch_attack_key(watch)
+        attack_ordinal = watch.evidence.get("attack_ordinal")
+        if key is None or not isinstance(attack_ordinal, int):
+            return
+        campaign = self.attack_ledger.campaign(key)
+        if campaign is None or not campaign.attacks:
+            raise RuntimeError("episode lost its source campaign")
+        current = campaign.attacks[-1]
+        if current.ordinal != attack_ordinal:
+            raise RuntimeError("episode response no longer owns the current source attack")
+        if current.outcome is AttackOutcome.RESPONSE_COMPLETED:
+            return
+        episode = self._episode_tape(watch, bar.close_time_ns)
+        if not episode:
+            raise RuntimeError("completed source response has no causal tape")
+        response = [
+            item for item in episode
+            if item.close_time_ns > current.start_time_ns
+        ]
+        if not response:
+            raise RuntimeError("completed source response has no post-attack bar")
+        response_extreme = (
+            min(item.low for item in response)
+            if watch.source.side == "HIGH"
+            else max(item.high for item in response)
+        )
+        frozen_control = next(
+            (
+                float(value)
+                for value in (
+                    journey.response_required_extreme,
+                    journey.response_close,
+                    bar.close,
+                )
+                if isinstance(value, (float, int))
+            ),
+            bar.close,
+        )
+        self.attack_ledger.observe_response(
+            key,
+            time_ns=bar.close_time_ns,
+            response_extreme=response_extreme,
+            completed=True,
+            frozen_control=frozen_control,
+        )
+
+    def _claim_attack_owner(self, watch: EpisodeWatch, bar: Bar) -> None:
+        key = self._watch_attack_key(watch)
+        attack_ordinal = watch.evidence.get("attack_ordinal")
+        if key is None or not isinstance(attack_ordinal, int):
+            return
+        campaign = self.attack_ledger.campaign(key)
+        if campaign is None or not campaign.attacks:
+            raise RuntimeError("completed episode lost its source campaign")
+        if campaign.attacks[-1].ordinal != attack_ordinal:
+            raise RuntimeError("completed episode does not own the latest source attack")
+        self.attack_ledger.claim(
+            key,
+            time_ns=bar.close_time_ns,
+            owner=OwnerSide(watch.side),
         )
 
     @staticmethod
@@ -1725,8 +2056,6 @@ class SymbolEpisodePolicy:
         decision_bar: Bar,
         bars_by_symbol: Mapping[str, Sequence[Bar]] | None,
     ) -> dict[str, float | str | int]:
-        if bars_by_symbol is None or self.symbol not in bars_by_symbol:
-            return {"ownership_known": 0, "ownership_reason": "PEER_TAPE_UNAVAILABLE"}
         direction = 1.0 if watch.side == "LONG" else -1.0
 
         def move(values: Sequence[Bar]) -> float | None:
@@ -1738,34 +2067,52 @@ class SymbolEpisodePolicy:
                 return None
             return log(segment[-1].close / segment[0].open)
 
-        own_raw = move(bars_by_symbol[self.symbol])
+        own_bars = (
+            bars_by_symbol[self.symbol]
+            if bars_by_symbol is not None and self.symbol in bars_by_symbol
+            else tuple(self.market.one_minute)
+        )
+        own_raw = move(own_bars)
+        if own_raw is None:
+            return {
+                "ownership_known": 0,
+                "ownership_reason": "LOCAL_EVENT_MOVE_UNAVAILABLE",
+            }
         peers = [
             value for symbol, bars in bars_by_symbol.items()
             if symbol != self.symbol and (value := move(bars)) is not None
-        ]
-        if own_raw is None or not peers:
-            return {"ownership_known": 0, "ownership_reason": "SYNCHRONOUS_PEER_MOVE_UNAVAILABLE"}
-        common_raw = float(median(peers))
+        ] if bars_by_symbol is not None else []
         local = direction * own_raw
-        common = direction * common_raw
-        residual = local - common
         output: dict[str, float | str | int] = {
             "ownership_known": 1,
-            "ownership_reason": "CANDIDATE_4T_LOCAL_MINUS_COMMON",
             "event_local_progress": local,
-            "event_common_progress": common,
-            "event_residual_ownership": residual,
-            "event_ownership_role": (
-                "LOCAL_LEADER"
-                if local > 0.0 and residual > 0.0
-                else "COMMON_FOLLOWER"
-                if local > 0.0 and common > 0.0
-                else "DIVIDED"
-            ),
+            "ownership_reason": "ABSOLUTE_LOCAL_DELIVERY",
+            "peer_context_known": int(bool(peers)),
         }
+        if peers:
+            common = direction * float(median(peers))
+            residual = local - common
+            output.update(
+                ownership_reason="ABSOLUTE_LOCAL_DELIVERY_WITH_PEER_CONTEXT",
+                event_common_progress=common,
+                event_residual_ownership=residual,
+                event_ownership_role=(
+                    "LOCAL_LEADER"
+                    if local > 0.0 and residual > 0.0
+                    else "COMMON_FOLLOWER"
+                    if local > 0.0 and common > 0.0
+                    else "DIVIDED"
+                ),
+            )
+        else:
+            output["event_ownership_role"] = "LOCAL_ONLY"
         # Common-market and residual moves classify the delivery path; they do
         # not decide whether this symbol actually delivered in the intended
         # direction.  Admission is owned by ``event_local_progress`` below.
+        if bars_by_symbol is None:
+            bars_by_symbol = {self.symbol: own_bars}
+        elif self.symbol not in bars_by_symbol:
+            bars_by_symbol = {**bars_by_symbol, self.symbol: own_bars}
         event_segments = {
             symbol: [
                 item for item in values
@@ -2025,7 +2372,7 @@ class SymbolEpisodePolicy:
     ) -> list[TradePlan]:
         del atr, common_breadth
         output: list[TradePlan] = []
-        live_structural_ids = self._live_projected_structure_ids(
+        existing_structural_ids = self._existing_projected_structure_ids(
             bar.close_time_ns, serial,
         )
         for episode_id, watch in list(self._watches.items()):
@@ -2039,7 +2386,7 @@ class SymbolEpisodePolicy:
                 continue
             if (
                 self._is_versioned_structural_kind(watch.source.kind)
-                and watch.source.boundary_id not in live_structural_ids
+                and watch.source.boundary_id not in existing_structural_ids
             ):
                 self._record_terminal(
                     "STRUCTURAL_SOURCE_VERSION_SUPERSEDED", watch, bar,
@@ -2069,6 +2416,7 @@ class SymbolEpisodePolicy:
                     "ACCEPTANCE_STOP_TOUCHED_ON_FIRST_RESPONSE",
                 }
                 if terminal_acceptance:
+                    self._complete_attack_response(watch, journey, bar)
                     self._record_terminal(journey.terminal_state, watch, bar)
                     self._watches.pop(episode_id, None)
                     continue
@@ -2086,6 +2434,7 @@ class SymbolEpisodePolicy:
                     completed_states="|".join(journey.completed_states),
                 )
                 continue
+            self._complete_attack_response(watch, journey, bar)
             interaction = self._interaction(watch)
             existing_owner = self.journey_registry.existing_owner(interaction)
             if existing_owner is not None and existing_owner.owner_id != episode_id:
@@ -2098,6 +2447,9 @@ class SymbolEpisodePolicy:
                 self._watches.pop(episode_id, None)
                 continue
             self.journey_registry.claim(interaction, journey, episode_id)
+            watch.family = journey.family
+            watch.side = self._side_for_journey(watch.source.side, watch.family)
+            self._claim_attack_owner(watch, bar)
             if journey.family == "DEFENDED_AUCTION_CONTINUATION":
                 self._record_terminal(
                     "DEFENDED_SEQUENCE_DIAGNOSTIC_ONLY",
@@ -2106,8 +2458,6 @@ class SymbolEpisodePolicy:
                 )
                 self._watches.pop(episode_id, None)
                 continue
-            watch.family = journey.family
-            watch.side = self._side_for_journey(watch.source.side, watch.family)
             episode = self._episode_tape(watch, bar.close_time_ns)
             if not episode:
                 self._record_terminal("NO_CAUSAL_TAPE", watch, bar)
@@ -2426,11 +2776,14 @@ class SymbolEpisodePolicy:
                     consumed_time_ns=boundary.consumed_time_ns,
                 )
             )
+        live_campaign_ids = {
+            source.boundary_id
+            for key, (source, _semantic_kind) in self._campaign_sources.items()
+            for campaign in (self.attack_ledger.campaign(key),)
+            if campaign is not None and campaign.phase is not CampaignPhase.TERMINAL
+        }
         for projected in self._projected_structural_nodes(decision_time_ns, serial):
-            if (
-                projected.node_id == watch.source.boundary_id
-                or projected.node_id in self._first_touch_time_by_structure
-            ):
+            if projected.node_id == watch.source.boundary_id:
                 continue
             lower, upper = projected.band_at(serial)
             output.append(
@@ -2450,7 +2803,13 @@ class SymbolEpisodePolicy:
                     slope_per_bar=projected.slope_per_bar,
                     version=projected.version,
                     invalidation=projected.invalidation,
-                    consumed_time_ns=projected.consumed_time_ns,
+                    # A completed-response campaign remains a live route fact
+                    # until its structural version is actually superseded.
+                    consumed_time_ns=(
+                        None
+                        if projected.node_id in live_campaign_ids
+                        else projected.consumed_time_ns
+                    ),
                     superseded_time_ns=projected.superseded_time_ns,
                 )
             )
@@ -2941,7 +3300,10 @@ class LiquidityEpisodeCoordinator:
             for symbol in sorted(completed):
                 candidates.extend(
                     self.policies[symbol].evaluate_five_minute(
-                        completed[symbol], breadth[symbol], one_minute,
+                        completed[symbol],
+                        breadth[symbol],
+                        one_minute,
+                        interaction_bar=synchronized[symbol],
                     )
                 )
         else:
