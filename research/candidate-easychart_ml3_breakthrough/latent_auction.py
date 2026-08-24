@@ -3,22 +3,21 @@
 Direction is not collapsed into a vote or a 60m/15m weighted average.  The
 policy keeps distinct answers to distinct questions:
 
-* where is the meaningful unswept liquidity draw;
+* which named source and destination own the current auction episode;
 * is structure persistently trending, ranging, or transitioning;
 * is price at an external channel/liquidity edge or in ordinary internal noise;
 * has common market initiative transferred control;
 * is the event a continuation break or a sweep/trap reversal.
 
-Each event family uses the state relevant to its causal mechanism.  A reversal
-is allowed to oppose the old trend precisely at external liquidity, whereas a
-continuation break needs either persistent structure, an aligned liquidity draw,
-or aligned common initiative.  OB/FVG/retest remain execution footprints only.
+The latent measurements describe the environment but do not vote a trade into
+existence.  Direction belongs to one named public boundary and its failed or
+accepted settlement, with one objective committed when that event begins.
+OB/FVG/retest remain execution footprints only.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-import math
 from typing import Any
 
 import contracts_v5 as _contracts
@@ -40,21 +39,21 @@ from intrinsic_auction import (
 
 
 LATENT_DIRECTION_RULE = (
-    "RESEARCH_HYPOTHESIS:DIRECTION_IS_A_JOINT_STATE_OF_LIQUIDITY_DRAW_TREND_"
-    "PERSISTENCE_AUCTION_LOCATION_AND_CONTROL_TRANSFER_NOT_ONE_LINEAR_SCORE"
+    "RESEARCH_HYPOTHESIS:LATENT_TREND_LOCATION_AND_COMMON_FACTOR_"
+    "DESCRIBE_CONTEXT_WHILE_THE_NAMED_BOUNDARY_EVENT_OWNS_DIRECTION"
 )
 EVENT_SPECIFIC_ROUTING_RULE = (
     "RESEARCH_HYPOTHESIS:CONTINUATION_BREAKS_AND_EXTERNAL_LIQUIDITY_RECLAIMS_"
-    "USE_DIFFERENT_NONLINEAR_CONTEXT_LOGIC_WITHIN_ONE_ACCOUNT_POLICY"
+    "ARE_DISTINCT_SETTLEMENTS_WITHIN_ONE_NAMED_BOUNDARY_POLICY"
 )
-LIQUIDITY_DRAW_RULE = (
-    "EXTERNAL_METHOD:NEARBY_ACTIVE_DECISION_SCALE_UNSWEPT_LIQUIDITY_STRENGTH_"
-    "AND_DISTANCE_DEFINE_THE_CURRENT_DRAW_WITHOUT_SYMBOL_OR_CLOCK_IDENTITY"
+NAMED_EVENT_DIRECTION_RULE = (
+    "SOURCE_EXPLICIT:DIRECTION_BELONGS_TO_ONE_NAMED_PUBLIC_BOUNDARY_ATTACK_"
+    "AND_ITS_FAILED_OR_ACCEPTED_SETTLEMENT_NOT_AN_AGGREGATE_POOL_VOTE"
 )
 for _rule in (
     LATENT_DIRECTION_RULE,
     EVENT_SPECIFIC_ROUTING_RULE,
-    LIQUIDITY_DRAW_RULE,
+    NAMED_EVENT_DIRECTION_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -72,8 +71,6 @@ class AuctionRegime(str, Enum):
 class LatentAuctionState:
     time_ns: int
     regime: AuctionRegime
-    draw_side: Side | None
-    draw_balance: float
     trend_60: float
     trend_15: float
     factor_side: Side | None
@@ -83,11 +80,6 @@ class LatentAuctionState:
     def trend_alignment(self, side: Side, timeframe: int) -> float:
         score = self.trend_60 if timeframe == 60 else self.trend_15
         return score if side is Side.LONG else -score
-
-    def draw_alignment(self, side: Side) -> float:
-        if self.draw_side is None:
-            return 0.0
-        return 1.0 if self.draw_side is side else -1.0
 
     def factor_alignment(self, side: Side) -> float:
         if self.factor_side is None:
@@ -114,42 +106,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
     def _linc(self, key: str) -> None:
         self._latent_counts[key] = self._latent_counts.get(key, 0) + 1
 
-    def _pool_recent(self, pool: LiquidityPool) -> bool:
-        checker = getattr(self.liquidity, "is_recent", None)
-        return bool(checker(pool)) if checker is not None else bool(pool.active)
-
-    def _liquidity_draw(
-        self, time_ns: int, price: float
-    ) -> tuple[Side | None, float]:
-        scale = max(self.dc[15].prior_range, self.tick_size)
-        high_scores: list[float] = []
-        low_scores: list[float] = []
-        for pool in self.liquidity.pools:
-            if (
-                not pool.active
-                or pool.observed_time_ns >= time_ns
-                or not self._pool_recent(pool)
-                or (pool.timeframe_minutes < 5 and pool.member_count < 2)
-            ):
-                continue
-            if pool.side == "HIGH" and pool.lower > price:
-                distance = max(pool.lower - price, self.tick_size)
-                high_scores.append(float(pool.strength) / (1.0 + distance / scale))
-            elif pool.side == "LOW" and pool.upper < price:
-                distance = max(price - pool.upper, self.tick_size)
-                low_scores.append(float(pool.strength) / (1.0 + distance / scale))
-        high = sum(sorted(high_scores, reverse=True)[:3])
-        low = sum(sorted(low_scores, reverse=True)[:3])
-        total = high + low
-        if total <= 1e-12:
-            return None, 0.0
-        balance = (high - low) / total
-        if balance >= 0.12:
-            return Side.LONG, float(balance)
-        if balance <= -0.12:
-            return Side.SHORT, float(balance)
-        return None, float(balance)
-
     @staticmethod
     def _channel_location(context: HierarchicalAuctionContext) -> tuple[float, float]:
         candidates = [
@@ -173,9 +129,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
     def _latent_state(
         self, context: HierarchicalAuctionContext
     ) -> LatentAuctionState:
-        draw_side, draw_balance = self._liquidity_draw(
-            context.time_ns, context.price
-        )
         t60 = float(context.structure_60)
         t15 = float(context.structure_15)
         channel_long, channel_short = self._channel_location(context)
@@ -204,8 +157,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
         state = LatentAuctionState(
             time_ns=context.time_ns,
             regime=regime,
-            draw_side=draw_side,
-            draw_balance=draw_balance,
             trend_60=t60,
             trend_15=t15,
             factor_side=context.common_factor_side,
@@ -237,49 +188,27 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
         )
         trend_60 = state.trend_alignment(side, 60)
         trend_15 = state.trend_alignment(side, 15)
-        draw = state.draw_alignment(side)
         factor = state.factor_alignment(side)
         location = state.location_alignment(side)
 
+        # Direction is established by the named boundary's settlement.  The
+        # latent structure and factor remain descriptive
+        # context; none may veto or manufacture a complete public-liquidity
+        # episode.  A committed destination is enforced by the base episode
+        # constructor before the state is allowed to live.
         if kind is EpisodeKind.LIQUIDITY_RECLAIM:
-            external_edge = (
-                source_edge_score >= 1.0
-                or pool.timeframe_minutes >= 15
-                or channel_confluence >= 0.18
-            )
-            with_old_trend = trend_60 >= 0.20 or trend_15 >= 0.30
-            trap_reversal = external_edge and (
-                trend_60 < 0.10
-                or state.regime in {AuctionRegime.RANGE, AuctionRegime.TRANSITION}
-                or location >= 0.20
-            )
-            jointly_opposed = draw < 0.0 and factor < 0.0 and trend_60 < -0.45
-            compatible = (with_old_trend or trap_reversal) and not (
-                jointly_opposed and channel_confluence < 0.35
-            )
+            compatible = PoolRole.EXTERNAL_STOP_POOL in role_set
             reason = (
-                "RECLAIM_WITH_TREND"
-                if compatible and with_old_trend
-                else "EXTERNAL_LIQUIDITY_TRAP_REVERSAL"
+                "NAMED_EXTERNAL_BOUNDARY_FAILED_AUCTION"
                 if compatible
-                else "RECLAIM_LACKS_EXTERNAL_EVENT_OR_CONTROL_SUPPORT"
+                else "RECLAIM_HAS_NO_PUBLIC_EXTERNAL_BOUNDARY_OWNER"
             )
         else:
-            persistent_trend = trend_60 >= 0.25 and trend_15 >= 0.20
-            liquidity_draw = draw > 0.0 and trend_60 > -0.45
-            common_impulse = factor > 0.0 and trend_15 > -0.35
-            destination_edge = location < -0.55 and channel_confluence >= 0.12
-            compatible = (
-                persistent_trend or liquidity_draw or common_impulse
-            ) and not destination_edge
+            compatible = PoolRole.VALUE_BOUNDARY in role_set
             reason = (
-                "BREAK_WITH_PERSISTENT_STRUCTURE"
-                if compatible and persistent_trend
-                else "BREAK_TOWARD_ACTIVE_LIQUIDITY_DRAW"
-                if compatible and liquidity_draw
-                else "BREAK_WITH_COMMON_CONTROL_TRANSFER"
+                "NAMED_VALUE_BOUNDARY_ACCEPTANCE_CANDIDATE"
                 if compatible
-                else "BREAK_HAS_NO_DIRECTIONAL_CAUSAL_OWNER_OR_IS_AT_DESTINATION"
+                else "BREAK_HAS_NO_PUBLIC_VALUE_BOUNDARY_OWNER"
             )
 
         self._linc(f"event_{kind.value.lower()}_{'accepted' if compatible else 'suppressed'}")
@@ -292,9 +221,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             compatible=compatible,
             reason=reason,
             regime=state.regime.value,
-            draw_side=None if state.draw_side is None else state.draw_side.name,
-            draw_balance=state.draw_balance,
-            draw_alignment=draw,
             trend_60_alignment=trend_60,
             trend_15_alignment=trend_15,
             factor_alignment=factor,
@@ -304,7 +230,7 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             rule_provenance=(
                 LATENT_DIRECTION_RULE,
                 EVENT_SPECIFIC_ROUTING_RULE,
-                LIQUIDITY_DRAW_RULE,
+                NAMED_EVENT_DIRECTION_RULE,
                 CONTEXT_EVENT_RULE,
             ),
         )
@@ -346,7 +272,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
         state = self._latent_episode.get(episode.episode_id)
         if state is None:
             state = self._latent_state(self._context(bar.ts_close_ns, bar.close))
-        draw_alignment = state.draw_alignment(plan.side)
         trend_60 = state.trend_alignment(plan.side, 60)
         trend_15 = state.trend_alignment(plan.side, 15)
         factor = state.factor_alignment(plan.side)
@@ -354,10 +279,8 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
         provenance = tuple(plan.rule_provenance) + (
             LATENT_DIRECTION_RULE,
             EVENT_SPECIFIC_ROUTING_RULE,
-            LIQUIDITY_DRAW_RULE,
+            NAMED_EVENT_DIRECTION_RULE,
             f"RESEARCH_STATE:LATENT_REGIME={state.regime.value}",
-            f"RESEARCH_STATE:LIQUIDITY_DRAW_ALIGNMENT={draw_alignment:.6f}",
-            f"RESEARCH_STATE:LIQUIDITY_DRAW_BALANCE={state.draw_balance:.6f}",
             f"RESEARCH_STATE:TREND_60_ALIGNMENT={trend_60:.6f}",
             f"RESEARCH_STATE:TREND_15_ALIGNMENT={trend_15:.6f}",
             f"RESEARCH_STATE:FACTOR_ALIGNMENT={factor:.6f}",
@@ -383,8 +306,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             side=_side_name(output.side),
             family=output.family,
             regime=state.regime.value,
-            draw_alignment=draw_alignment,
-            draw_balance=state.draw_balance,
             trend_60_alignment=trend_60,
             trend_15_alignment=trend_15,
             factor_alignment=factor,
@@ -392,7 +313,7 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             rule_provenance=(
                 LATENT_DIRECTION_RULE,
                 EVENT_SPECIFIC_ROUTING_RULE,
-                LIQUIDITY_DRAW_RULE,
+                NAMED_EVENT_DIRECTION_RULE,
             ),
         )
         self._linc("latent_plan_emitted")
@@ -409,8 +330,6 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             else {
                 "time_ns": state.time_ns,
                 "regime": state.regime.value,
-                "draw_side": None if state.draw_side is None else state.draw_side.name,
-                "draw_balance": state.draw_balance,
                 "trend_60": state.trend_60,
                 "trend_15": state.trend_15,
                 "factor_side": None if state.factor_side is None else state.factor_side.name,
@@ -420,7 +339,7 @@ class LatentAuctionBundle(IntegratedAuctionBundle):
             "rules": (
                 LATENT_DIRECTION_RULE,
                 EVENT_SPECIFIC_ROUTING_RULE,
-                LIQUIDITY_DRAW_RULE,
+                NAMED_EVENT_DIRECTION_RULE,
             ),
         }
         return output

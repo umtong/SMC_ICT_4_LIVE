@@ -7,10 +7,10 @@ auction policy and adds the missing hierarchy:
 
 * 60m and 15m confirmed intrinsic swings define structural direction;
 * robust wick-based high/low lines form a causal channel when they are parallel;
-* horizontal liquidity is promoted when it coincides with a projected channel
-  edge or trend line;
+* source-faithful trend lines and fresh channel edges may own the same boundary
+  event as horizontal liquidity, rather than acting as a score-only filter;
 * a sweep/reclaim may reverse an established move only at an external edge;
-* an accepted break must be compatible with the higher-scale draw on liquidity;
+* the named boundary's failed or accepted settlement owns direction and target;
 * OB/FVG are still used only as the first mitigation footprint;
 * invalidation includes prior-only microstructure noise so ordinary one-minute
   fluctuation and fees cannot masquerade as several R.
@@ -27,8 +27,9 @@ from statistics import median
 from typing import Any, Iterable
 
 import contracts_v5 as _contracts
-from contracts_v5 import V5TradePlan
+from contracts_v5 import ObjectKind, StructureFamily, StructureZone, V5TradePlan
 from domain import Candle, Side
+from easychart_zones import ZoneSide
 from intrinsic_auction import (
     ACTIVE_AUCTION_MAP_RULE,
     AUCTION_ACCEPTANCE_RULE,
@@ -49,6 +50,12 @@ from intrinsic_auction import (
     PoolRole,
     _side_name,
 )
+from structure_admission_v5 import (
+    CHANNEL_FOURTH_POINT_RULE,
+    MEANINGFUL_HORIZONTAL_RULE,
+    OBSERVABLE_STRUCTURE_RULE,
+    SourceFaithfulStructureBook,
+)
 
 
 HIERARCHICAL_DIRECTION_RULE = (
@@ -61,11 +68,11 @@ CAUSAL_CHANNEL_RULE = (
 )
 CHANNEL_LIQUIDITY_RULE = (
     "SOURCE_EXPLICIT:CHANNEL_AND_TRENDLINE_EDGES_CONCENTRATE_LIQUIDITY_AND_"
-    "PROMOTE_COINCIDENT_HORIZONTAL_POOLS_TO_DECISION_BOUNDARIES"
+    "MAY_OWN_OR_CONFLUENCE_WITH_HORIZONTAL_PUBLIC_DECISION_BOUNDARIES"
 )
 CONTEXT_EVENT_RULE = (
-    "RESEARCH_HYPOTHESIS:ACCEPTED_BREAKS_FOLLOW_THE_HIGHER_SCALE_DRAW_ON_LIQUIDITY_"
-    "WHILE_COUNTERTREND_RECLAIMS_REQUIRE_AN_EXTERNAL_AUCTION_EDGE"
+    "SOURCE_EXPLICIT:ONE_NAMED_PUBLIC_BOUNDARY_AND_ITS_FAILED_OR_ACCEPTED_"
+    "SETTLEMENT_OWN_DIRECTION_WHILE_STRUCTURE_AND_FLOW_DESCRIBE_CONTEXT"
 )
 CAUSAL_NOISE_INVALIDATION_RULE = (
     "EXTERNAL_METHOD:STOP_INVALIDATION_EXTENDS_BEYOND_THE_EVENT_EXTREME_BY_A_"
@@ -75,6 +82,10 @@ INTEGRATED_POLICY_RULE = (
     "SOURCE_EXPLICIT:PRICE_AND_VOLUME_DEFINE_DIRECTION_LIQUIDITY_STRUCTURE_EVENT_"
     "THEN_OB_FVG_OR_RETEST_PRECISE_ENTRY_AND_OPPOSING_STRUCTURE_EXIT_AS_ONE_POLICY"
 )
+PROJECTED_STRUCTURE_EVENT_RULE = (
+    "SOURCE_EXPLICIT:AN_OBSERVABLE_TRENDLINE_OR_FRESH_EXPECTED_CHANNEL_EDGE_"
+    "MAY_OWN_THE_SAME_FAILED_OR_ACCEPTED_AUCTION_EPISODE_AS_HORIZONTAL_LIQUIDITY"
+)
 for _rule in (
     HIERARCHICAL_DIRECTION_RULE,
     CAUSAL_CHANNEL_RULE,
@@ -82,6 +93,7 @@ for _rule in (
     CONTEXT_EVENT_RULE,
     CAUSAL_NOISE_INVALIDATION_RULE,
     INTEGRATED_POLICY_RULE,
+    PROJECTED_STRUCTURE_EVENT_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -175,6 +187,7 @@ def _fit_line(
         pool
         for pool in pools
         if pool.side == side
+        and pool.source_family == "HORIZONTAL_LIQUIDITY"
         and pool.timeframe_minutes == timeframe_minutes
         and pool.observed_time_ns < now_ns
     ]
@@ -208,6 +221,7 @@ def _sequence_direction(pools: Iterable[LiquidityPool], timeframe: int, now_ns: 
             pool
             for pool in pools
             if pool.timeframe_minutes == timeframe
+            and pool.source_family == "HORIZONTAL_LIQUIDITY"
             and pool.side == "HIGH"
             and pool.observed_time_ns < now_ns
         ),
@@ -218,6 +232,7 @@ def _sequence_direction(pools: Iterable[LiquidityPool], timeframe: int, now_ns: 
             pool
             for pool in pools
             if pool.timeframe_minutes == timeframe
+            and pool.source_family == "HORIZONTAL_LIQUIDITY"
             and pool.side == "LOW"
             and pool.observed_time_ns < now_ns
         ),
@@ -254,9 +269,204 @@ class IntegratedAuctionBundle(IntrinsicAuctionBundle):
         self._episode_context: dict[str, EpisodeContextSnapshot] = {}
         self._context_counts: dict[str, int] = {}
         self._last_context: HierarchicalAuctionContext | None = None
+        self._projected_structure = {
+            60: SourceFaithfulStructureBook(self.symbol, 60, self.tick_size),
+            15: SourceFaithfulStructureBook(self.symbol, 15, self.tick_size),
+        }
 
     def _cinc(self, key: str) -> None:
         self._context_counts[key] = self._context_counts.get(key, 0) + 1
+
+    @staticmethod
+    def _structure_touches(bar: Candle, zone: StructureZone) -> bool:
+        return bar.low <= zone.upper and bar.high >= zone.lower
+
+    @staticmethod
+    def _structure_family_priority(zone: StructureZone) -> int:
+        return {
+            StructureFamily.CHANNEL: 2,
+            StructureFamily.TREND_LINE: 1,
+            StructureFamily.HORIZONTAL: 0,
+        }[zone.family]
+
+    def _projected_interaction_groups(
+        self,
+        bar: Candle,
+    ) -> list[tuple[StructureZone, tuple[StructureZone, ...]]]:
+        """Return one-sided confluence groups at fresh diagonal interactions."""
+        by_source: dict[str, StructureZone] = {}
+        for book in self._projected_structure.values():
+            for zone in book.boundaries_at(bar.ts_close_ns):
+                if (
+                    zone.family not in {StructureFamily.TREND_LINE, StructureFamily.CHANNEL}
+                    or zone.observed_time_ns >= bar.ts_close_ns
+                    or not self._structure_touches(bar, zone)
+                ):
+                    continue
+                current = by_source.get(zone.source_structure_id)
+                if current is None or zone.timeframe_minutes > current.timeframe_minutes:
+                    by_source[zone.source_structure_id] = zone
+        zones = sorted(
+            by_source.values(),
+            key=lambda item: (item.side.value, item.lower, item.upper, item.source_structure_id),
+        )
+        if not zones:
+            return []
+        sides = {zone.side for zone in zones}
+        if len(sides) > 1:
+            self._cinc("projected_structure_two_sided_interaction_unresolved")
+            self._audit(
+                "projected_structure_two_sided_interaction_unresolved",
+                bar.ts_close_ns,
+                source_structure_ids=tuple(sorted(by_source)),
+                rule_provenance=PROJECTED_STRUCTURE_EVENT_RULE,
+            )
+            return []
+
+        clusters: list[list[StructureZone]] = []
+        for zone in zones:
+            if not clusters or zone.lower > max(item.upper for item in clusters[-1]) + self.tick_size:
+                clusters.append([zone])
+            else:
+                clusters[-1].append(zone)
+        output: list[tuple[StructureZone, tuple[StructureZone, ...]]] = []
+        for members in clusters:
+            primary = max(
+                members,
+                key=lambda item: (
+                    item.timeframe_minutes,
+                    item.source_pivot_span,
+                    self._structure_family_priority(item),
+                    item.strength_ratio,
+                    item.source_structure_id,
+                ),
+            )
+            output.append((primary, tuple(members)))
+        return output
+
+    def _observe_projected_structure_interactions(self, bar: Candle) -> None:
+        """Translate admitted diagonal structure into the existing episode FSM.
+
+        No trendline or channel strategy is added.  A fresh projected boundary
+        can only create the same reclaim or accepted-break episode already used
+        by horizontal liquidity, and the causal-event arbiter still chooses one
+        owner when representations overlap.
+        """
+        roles = (
+            PoolRole.REACTION_OBSTACLE,
+            PoolRole.EXTERNAL_STOP_POOL,
+            PoolRole.VALUE_BOUNDARY,
+        )
+        for primary, members in self._projected_interaction_groups(bar):
+            lower = min(item.lower for item in members)
+            upper = max(item.upper for item in members)
+            pool = self.liquidity.register_projected_structure(
+                source_ids=tuple(item.source_structure_id for item in members),
+                side="LOW" if primary.side is ZoneSide.SUPPORT else "HIGH",
+                lower=lower,
+                upper=upper,
+                formed_time_ns=max(item.formed_time_ns for item in members),
+                observed_time_ns=max(item.observed_time_ns for item in members),
+                interaction_time_ns=bar.ts_close_ns,
+                timeframe_minutes=max(item.timeframe_minutes for item in members),
+                strength=max(item.strength_ratio for item in members),
+                object_kind=(
+                    primary.kind
+                    if isinstance(primary.kind, ObjectKind)
+                    else ObjectKind.SWING_LOW
+                    if primary.side is ZoneSide.SUPPORT
+                    else ObjectKind.SWING_HIGH
+                ),
+            )
+            started = False
+            if pool.side == "LOW" and bar.low < pool.lower:
+                sweep_ok, sweep_strength = self._sweep_transition_evidence(pool, bar)
+                if bar.close >= pool.lower and sweep_ok:
+                    self._start_reclaim(
+                        pool,
+                        Side.LONG,
+                        bar,
+                        extreme=bar.low,
+                        delayed=False,
+                        roles=roles,
+                        transition_strength=sweep_strength,
+                    )
+                    started = pool.engaged_event_id is not None
+                else:
+                    break_ok, break_strength, excursion = self._break_transition_evidence(
+                        pool,
+                        Side.SHORT,
+                        bar,
+                    )
+                    if break_ok:
+                        self._start_break(
+                            pool,
+                            Side.SHORT,
+                            bar,
+                            extreme=bar.low,
+                            roles=roles,
+                            transition_strength=break_strength,
+                            break_excursion=excursion,
+                        )
+                        started = pool.engaged_event_id is not None
+            elif pool.side == "HIGH" and bar.high > pool.upper:
+                sweep_ok, sweep_strength = self._sweep_transition_evidence(pool, bar)
+                if bar.close <= pool.upper and sweep_ok:
+                    self._start_reclaim(
+                        pool,
+                        Side.SHORT,
+                        bar,
+                        extreme=bar.high,
+                        delayed=False,
+                        roles=roles,
+                        transition_strength=sweep_strength,
+                    )
+                    started = pool.engaged_event_id is not None
+                else:
+                    break_ok, break_strength, excursion = self._break_transition_evidence(
+                        pool,
+                        Side.LONG,
+                        bar,
+                    )
+                    if break_ok:
+                        self._start_break(
+                            pool,
+                            Side.LONG,
+                            bar,
+                            extreme=bar.high,
+                            roles=roles,
+                            transition_strength=break_strength,
+                            break_excursion=excursion,
+                        )
+                        started = pool.engaged_event_id is not None
+
+            if not started and pool.active:
+                pool.consumed_time_ns = bar.ts_close_ns
+                self._cinc("projected_structure_first_interaction_unresolved")
+            self._audit(
+                "projected_structure_interaction_classified",
+                bar.ts_close_ns,
+                pool_id=pool.pool_id,
+                started=started,
+                source_structure_ids=pool.source_structure_ids,
+                source_kind=pool.kind.value,
+                source_lower=pool.lower,
+                source_upper=pool.upper,
+                rule_provenance=(
+                    PROJECTED_STRUCTURE_EVENT_RULE,
+                    MEANINGFUL_HORIZONTAL_RULE,
+                    CHANNEL_FOURTH_POINT_RULE,
+                    OBSERVABLE_STRUCTURE_RULE,
+                ),
+            )
+
+    def _observe_new_interactions(self, bar: Candle) -> None:
+        self._observe_projected_structure_interactions(bar)
+        super()._observe_new_interactions(bar)
+        # First interaction remains available for the decision above, then the
+        # source-faithful books retire every touched projected boundary.
+        for book in self._projected_structure.values():
+            book.observe_price(bar)
 
     def _line_and_structure_score(self, timeframe: int, now_ns: int) -> tuple[float, RobustWickLine | None, RobustWickLine | None]:
         high_line = _fit_line(
@@ -616,6 +826,7 @@ class IntegratedAuctionBundle(IntrinsicAuctionBundle):
             CONTEXT_EVENT_RULE,
             CAUSAL_NOISE_INVALIDATION_RULE,
             INTEGRATED_POLICY_RULE,
+            PROJECTED_STRUCTURE_EVENT_RULE,
             f"RESEARCH_STATE:STRUCTURE_60={context_now.structure_60:.6f}",
             f"RESEARCH_STATE:STRUCTURE_15={context_now.structure_15:.6f}",
             f"RESEARCH_STATE:CHANNEL_CONFLUENCE={snapshot.channel_confluence:.6f}",
@@ -664,11 +875,25 @@ class IntegratedAuctionBundle(IntrinsicAuctionBundle):
                 CONTEXT_EVENT_RULE,
                 CAUSAL_NOISE_INVALIDATION_RULE,
                 INTEGRATED_POLICY_RULE,
+                PROJECTED_STRUCTURE_EVENT_RULE,
             ),
         )
         return integrated
 
     def on_bar(self, timeframe_minutes: int, bar: Candle) -> list[V5TradePlan]:
+        book = self._projected_structure.get(timeframe_minutes)
+        if book is not None:
+            pivots, lines, channels = book.on_bar(bar)
+            if pivots or lines or channels:
+                self._audit(
+                    "projected_structure_updated",
+                    bar.ts_close_ns,
+                    source_timeframe_minutes=timeframe_minutes,
+                    pivots=len(pivots),
+                    trend_lines=len(lines),
+                    channels=len(channels),
+                    rule_provenance=PROJECTED_STRUCTURE_EVENT_RULE,
+                )
         plans = super().on_bar(timeframe_minutes, bar)
         # Refresh after every completed structural bar so the latest confirmed
         # state is visible before the next decision bucket.
@@ -720,7 +945,12 @@ class IntegratedAuctionBundle(IntrinsicAuctionBundle):
                 CONTEXT_EVENT_RULE,
                 CAUSAL_NOISE_INVALIDATION_RULE,
                 INTEGRATED_POLICY_RULE,
+                PROJECTED_STRUCTURE_EVENT_RULE,
             ),
+        }
+        output["projected_structure"] = {
+            str(timeframe): dict(book.diagnostics)
+            for timeframe, book in self._projected_structure.items()
         }
         return output
 

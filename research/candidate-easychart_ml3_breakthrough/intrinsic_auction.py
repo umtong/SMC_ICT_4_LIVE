@@ -60,6 +60,16 @@ PREEXISTING_TARGET_RULE = (
     "SOURCE_EXPLICIT:TARGET_IS_NEAREST_PREEXISTING_UNSPENT_OPPOSING_"
     "LIQUIDITY_OR_FROZEN_AUCTION_BOUNDARY"
 )
+COMMITTED_OBJECTIVE_RULE = (
+    "SOURCE_AMBIGUITY_TRANSLATION:FIRST_CAUSAL_OPPOSING_OBJECTIVE_IS_"
+    "COMMITTED_WHEN_EACH_DIRECTIONAL_SETTLEMENT_BEGINS_AND_MAY_NOT_BE_"
+    "REPLACED_WHILE_THAT_SETTLEMENT_LIVES"
+)
+SAME_LEVEL_ROLE_FLIP_OBJECTIVE_RULE = (
+    "IMPLEMENTATION_VALIDITY:THE_ONE_ALLOWED_SAME_LEVEL_ROLE_FLIP_ENDS_THE_"
+    "PRIOR_DIRECTIONAL_SETTLEMENT_AND_COMMITS_THE_NEW_SIDE_OBJECTIVE_BEFORE_"
+    "THE_NEW_SETTLEMENT_LIVES"
+)
 ONE_EPISODE_RULE = (
     "IMPLEMENTATION_VALIDITY:ONE_BOUNDARY_INTERACTION_IS_ONE_CAUSAL_EPISODE_"
     "REGARDLESS_OF_INTERNAL_CONFIRMATION_BARS"
@@ -83,6 +93,8 @@ for _rule in (
     ACTIVE_AUCTION_MAP_RULE,
     FIRST_REACTION_TARGET_RULE,
     COMPLETED_REFERENCE_LIQUIDITY_RULE,
+    COMMITTED_OBJECTIVE_RULE,
+    SAME_LEVEL_ROLE_FLIP_OBJECTIVE_RULE,
 ):
     if _rule not in _contracts.RESEARCH_RULES:
         _contracts.RESEARCH_RULES += (_rule,)
@@ -321,6 +333,9 @@ class LiquidityPool:
     touch_count: int = 0
     five_minute_touch_count: int = 0
     last_five_minute_touch_ns: int | None = None
+    source_family: str = "HORIZONTAL_LIQUIDITY"
+    source_structure_ids: tuple[str, ...] = ()
+    object_kind: ObjectKind | None = None
 
     @property
     def active(self) -> bool:
@@ -341,6 +356,8 @@ class LiquidityPool:
 
     @property
     def kind(self) -> ObjectKind:
+        if self.object_kind is not None:
+            return self.object_kind
         return ObjectKind.SWING_HIGH if self.side == "HIGH" else ObjectKind.SWING_LOW
 
 
@@ -398,6 +415,7 @@ class LiquidityBook:
             pool
             for pool in self.pools
             if pool.active
+            and pool.source_family == "HORIZONTAL_LIQUIDITY"
             and pool.timeframe_minutes == int(timeframe_minutes)
             and pool.side == side
         ]
@@ -415,6 +433,7 @@ class LiquidityBook:
             pool
             for pool in self.pools
             if pool.active
+            and pool.source_family == "HORIZONTAL_LIQUIDITY"
             and pool.side == swing.side
             and pool.timeframe_minutes == timeframe
             and sequence - pool.last_sequence <= cluster_horizon
@@ -507,11 +526,70 @@ class LiquidityBook:
             member_prices=[float(price)],
             thresholds=[self.tick_size * 2.0],
             overshoots=[0.0],
+            source_family="PUBLIC_REFERENCE",
+            source_structure_ids=(source_id,),
         )
         self.pools.append(pool)
         self.by_id[pool_id] = pool
         self.zone_by_id[pool_id] = self.snapshot(pool)
         self._inc("completed_public_reference_registered")
+        return pool
+
+    def register_projected_structure(
+        self,
+        *,
+        source_ids: tuple[str, ...],
+        side: str,
+        lower: float,
+        upper: float,
+        formed_time_ns: int,
+        observed_time_ns: int,
+        interaction_time_ns: int,
+        timeframe_minutes: int,
+        strength: float,
+        object_kind: ObjectKind,
+    ) -> LiquidityPool:
+        """Snapshot one already-observable diagonal at its first interaction.
+
+        The source-faithful structure book owns freshness and projection.  The
+        auction policy receives one immutable boundary snapshot so a trendline
+        or channel cannot become a parallel strategy or drift after its event.
+        """
+        source_key = "|".join(sorted(source_ids))
+        pool_id = (
+            f"PROJECTED:{self.symbol}:{timeframe_minutes}m:{source_key}:"
+            f"{interaction_time_ns}"
+        )
+        existing = self.by_id.get(pool_id)
+        if existing is not None:
+            return existing
+        center = (float(lower) + float(upper)) / 2.0
+        width = max(float(upper) - float(lower), self.tick_size * 2.0)
+        sequence = self.current_sequence(timeframe_minutes)
+        pool = LiquidityPool(
+            pool_id=pool_id,
+            side=side,
+            timeframe_minutes=int(timeframe_minutes),
+            lower=float(lower),
+            upper=float(upper),
+            center=center,
+            first_event_time_ns=int(formed_time_ns),
+            last_event_time_ns=int(formed_time_ns),
+            observed_time_ns=int(observed_time_ns),
+            first_sequence=sequence,
+            last_sequence=sequence,
+            member_ids=list(source_ids),
+            member_prices=[center],
+            thresholds=[width],
+            overshoots=[max(0.0, float(strength)) * width],
+            source_family="PROJECTED_STRUCTURE",
+            source_structure_ids=tuple(source_ids),
+            object_kind=object_kind,
+        )
+        self.pools.append(pool)
+        self.by_id[pool_id] = pool
+        self.zone_by_id[pool_id] = self.snapshot(pool)
+        self._inc("projected_structure_first_interaction_registered")
         return pool
 
     def snapshot(self, pool: LiquidityPool) -> AuctionZone:
@@ -540,6 +618,7 @@ class LiquidityBook:
             pool
             for pool in self.pools
             if pool.active
+            and pool.source_family != "PROJECTED_STRUCTURE"
             and pool.engaged_event_id is None
             and pool.observed_time_ns < time_ns
             and pool.timeframe_minutes in {5, 15, 60, 240, 1440}
@@ -562,6 +641,7 @@ class LiquidityBook:
             pool
             for pool in self.pools
             if pool.active
+            and pool.source_family != "PROJECTED_STRUCTURE"
             and pool.pool_id != exclude_pool_id
             and pool.observed_time_ns < time_ns
             and pool.objective_spent_time_ns is None
@@ -670,6 +750,10 @@ class AuctionEpisode:
     transition_strength: float = 0.0
     break_excursion: float = 0.0
     role_flip_count: int = 0
+    objective_pool_id: str | None = None
+    objective_zone: AuctionZone | None = None
+    objective_price: float | None = None
+    objective_committed_time_ns: int | None = None
 
 
 class IntrinsicAuctionBundle:
@@ -898,6 +982,89 @@ class IntrinsicAuctionBundle:
     def _episode_id(self, pool: LiquidityPool, time_ns: int, tag: str) -> str:
         return f"IAEH:{self.symbol}:{pool.pool_id}:{time_ns}:{tag}"
 
+    def _objective_for_event(
+        self,
+        side: Side,
+        source: LiquidityPool,
+        bar: Candle,
+    ) -> tuple[LiquidityPool, AuctionZone, float] | None:
+        """Choose the named destination before an episode is allowed to live.
+
+        The attack bar's full high/low is used rather than its close so a level
+        already traversed intrabar cannot be called a future objective.  This
+        is the frozen-target lifecycle already established in the RE1 lineage,
+        now made an invariant of the single auction episode.
+        """
+        untouched_edge = bar.high if side is Side.LONG else bar.low
+        target = self.liquidity.target_for(
+            side,
+            untouched_edge,
+            bar.ts_close_ns,
+            exclude_pool_id=source.pool_id,
+        )
+        if target is None:
+            return None
+        zone = self.liquidity.snapshot(target)
+        price = zone.lower if side is Side.LONG else zone.upper
+        return target, zone, float(price)
+
+    def _reject_source_without_objective(
+        self,
+        source: LiquidityPool,
+        side: Side,
+        bar: Candle,
+        family: EpisodeKind,
+    ) -> None:
+        source.consumed_time_ns = bar.ts_close_ns
+        self._inc("boundary_event_without_preexisting_objective")
+        self._audit(
+            "intrinsic_boundary_event_without_objective",
+            bar.ts_close_ns,
+            pool_id=source.pool_id,
+            side=_side_name(side),
+            family=family.value,
+            source_family=source.source_family,
+            source_structure_ids=source.source_structure_ids,
+            rule_provenance=(PREEXISTING_TARGET_RULE, COMMITTED_OBJECTIVE_RULE),
+        )
+
+    def _recommit_objective_after_role_flip(
+        self,
+        episode: AuctionEpisode,
+        bar: Candle,
+    ) -> bool:
+        source = self.liquidity.by_id.get(episode.pool_id)
+        if source is None:
+            self._invalidate(episode, bar.ts_close_ns, "role_flip_source_missing")
+            return False
+        committed = self._objective_for_event(episode.side, source, bar)
+        if committed is None:
+            self._invalidate(
+                episode,
+                bar.ts_close_ns,
+                "role_flip_has_no_preexisting_objective",
+            )
+            return False
+        target, zone, price = committed
+        episode.objective_pool_id = target.pool_id
+        episode.objective_zone = zone
+        episode.objective_price = price
+        episode.objective_committed_time_ns = bar.ts_close_ns
+        self._audit(
+            "intrinsic_role_flip_objective_committed",
+            bar.ts_close_ns,
+            episode_id=episode.episode_id,
+            pool_id=episode.pool_id,
+            side=_side_name(episode.side),
+            target_pool_id=target.pool_id,
+            target=price,
+            rule_provenance=(
+                COMMITTED_OBJECTIVE_RULE,
+                SAME_LEVEL_ROLE_FLIP_OBJECTIVE_RULE,
+            ),
+        )
+        return True
+
     def _start_reclaim(
         self,
         pool: LiquidityPool,
@@ -912,6 +1079,16 @@ class IntrinsicAuctionBundle:
         episode_id = self._episode_id(pool, bar.ts_close_ns, "RECLAIM")
         if pool.engaged_event_id is not None:
             return
+        committed = self._objective_for_event(side, pool, bar)
+        if committed is None:
+            self._reject_source_without_objective(
+                pool,
+                side,
+                bar,
+                EpisodeKind.LIQUIDITY_RECLAIM,
+            )
+            return
+        target_pool, target_zone, target_price = committed
         pool.engaged_event_id = episode_id
         episode = AuctionEpisode(
             episode_id=episode_id,
@@ -929,6 +1106,10 @@ class IntrinsicAuctionBundle:
             causal_event_id=self._causal_event_id(bar.ts_close_ns),
             source_roles=tuple(role.value for role in roles),
             transition_strength=float(transition_strength),
+            objective_pool_id=target_pool.pool_id,
+            objective_zone=target_zone,
+            objective_price=target_price,
+            objective_committed_time_ns=bar.ts_close_ns,
         )
         self.episodes[episode_id] = episode
         self._inc("reclaim_episode_started")
@@ -947,6 +1128,8 @@ class IntrinsicAuctionBundle:
             pool_members=pool.member_count,
             source_roles=episode.source_roles,
             transition_strength=episode.transition_strength,
+            target_pool_id=target_pool.pool_id,
+            target=target_price,
             rule_provenance=(AUCTION_RECLAIM_RULE, ACTIVE_AUCTION_MAP_RULE, ONE_EPISODE_RULE),
         )
 
@@ -964,6 +1147,16 @@ class IntrinsicAuctionBundle:
         episode_id = self._episode_id(pool, bar.ts_close_ns, "BREAK")
         if pool.engaged_event_id is not None:
             return
+        committed = self._objective_for_event(side, pool, bar)
+        if committed is None:
+            self._reject_source_without_objective(
+                pool,
+                side,
+                bar,
+                EpisodeKind.ACCEPTED_BREAK_RETEST,
+            )
+            return
+        target_pool, target_zone, target_price = committed
         pool.engaged_event_id = episode_id
         episode = AuctionEpisode(
             episode_id=episode_id,
@@ -983,6 +1176,10 @@ class IntrinsicAuctionBundle:
             source_roles=tuple(role.value for role in roles),
             transition_strength=float(transition_strength),
             break_excursion=float(break_excursion),
+            objective_pool_id=target_pool.pool_id,
+            objective_zone=target_zone,
+            objective_price=target_price,
+            objective_committed_time_ns=bar.ts_close_ns,
         )
         self.episodes[episode_id] = episode
         self._inc("break_episode_started")
@@ -1001,6 +1198,8 @@ class IntrinsicAuctionBundle:
             source_roles=episode.source_roles,
             transition_strength=episode.transition_strength,
             break_excursion=episode.break_excursion,
+            target_pool_id=target_pool.pool_id,
+            target=target_price,
             rule_provenance=(AUCTION_ACCEPTANCE_RULE, ACTIVE_AUCTION_MAP_RULE, ONE_EPISODE_RULE),
         )
 
@@ -1357,6 +1556,8 @@ class IntrinsicAuctionBundle:
         prior_side = episode.side
         episode.kind = EpisodeKind.ACCEPTED_BREAK_RETEST
         episode.side = Side.SHORT if prior_side is Side.LONG else Side.LONG
+        if not self._recommit_objective_after_role_flip(episode, bar):
+            return True
         episode.phase = EpisodePhase.BREAK_PENDING
         episode.phase_time_ns = bar.ts_close_ns
         episode.break_extreme = bar.low if episode.side is Side.SHORT else bar.high
@@ -1448,6 +1649,8 @@ class IntrinsicAuctionBundle:
             if returned_inside and can_be_trap and episode.role_flip_count == 0:
                 episode.kind = EpisodeKind.LIQUIDITY_RECLAIM
                 episode.side = Side.SHORT if episode.side is Side.LONG else Side.LONG
+                if not self._recommit_objective_after_role_flip(episode, bar):
+                    continue
                 episode.phase = EpisodePhase.WAIT_DISPLACEMENT
                 episode.phase_time_ns = bar.ts_close_ns
                 episode.interaction_time_ns = bar.ts_close_ns
@@ -1677,16 +1880,26 @@ class IntrinsicAuctionBundle:
             self._invalidate(episode, bar.ts_close_ns, "nonpositive_risk")
             return None
 
-        target_pool = self.liquidity.target_for(
-            episode.side,
-            entry,
-            bar.ts_close_ns,
-            exclude_pool_id=pool.pool_id,
+        target_pool = (
+            None
+            if episode.objective_pool_id is None
+            else self.liquidity.by_id.get(episode.objective_pool_id)
         )
-        if target_pool is None:
-            self._invalidate(episode, bar.ts_close_ns, "no_preexisting_target")
+        target_zone = episode.objective_zone
+        target = episode.objective_price
+        if target_pool is None or target_zone is None or target is None:
+            self._invalidate(episode, bar.ts_close_ns, "episode_lost_committed_objective")
             return None
-        target = target_pool.lower if episode.side is Side.LONG else target_pool.upper
+        if (
+            not target_pool.active
+            or target_pool.objective_spent_time_ns is not None
+        ):
+            self._invalidate(
+                episode,
+                bar.ts_close_ns,
+                "committed_objective_spent_or_superseded_before_entry",
+            )
+            return None
         reward = target - entry if episode.side is Side.LONG else entry - target
         gross_rr = reward / risk
         if reward <= 0.0 or gross_rr + 1e-12 < self.minimum_gross_rr:
@@ -1696,7 +1909,6 @@ class IntrinsicAuctionBundle:
         self._sequence += 1
         plan_id = f"IAEPLAN:{self.symbol}:{bar.ts_close_ns}:{self._sequence}"
         source_zone = self.liquidity.snapshot(pool)
-        target_zone = self.liquidity.snapshot(target_pool)
         origin_lower = episode.origin_lower if episode.origin_lower is not None else pool.lower
         origin_upper = episode.origin_upper if episode.origin_upper is not None else pool.upper
         scenario = (
@@ -1718,6 +1930,7 @@ class IntrinsicAuctionBundle:
             else AUCTION_ACCEPTANCE_RULE,
             FLOW_TRANSITION_RULE,
             PREEXISTING_TARGET_RULE,
+            COMMITTED_OBJECTIVE_RULE,
             ACTIVE_AUCTION_MAP_RULE,
             FIRST_REACTION_TARGET_RULE,
             ONE_EPISODE_RULE,
@@ -1779,6 +1992,7 @@ class IntrinsicAuctionBundle:
             target_timeframe_minutes=target_pool.timeframe_minutes,
             target_members=target_pool.member_count,
             target_touches=target_pool.five_minute_touch_count,
+            objective_committed_time_ns=episode.objective_committed_time_ns,
             source_roles=episode.source_roles,
             transition_strength=episode.transition_strength,
             family=episode.kind.value,
@@ -2006,9 +2220,11 @@ class IntrinsicAuctionBundle:
                     AUCTION_ACCEPTANCE_RULE,
                     FLOW_TRANSITION_RULE,
                     PREEXISTING_TARGET_RULE,
+                    COMMITTED_OBJECTIVE_RULE,
                     ACTIVE_AUCTION_MAP_RULE,
                     FIRST_REACTION_TARGET_RULE,
                     ONE_EPISODE_RULE,
+                    COMPLETED_REFERENCE_LIQUIDITY_RULE,
                 ),
             }
         }

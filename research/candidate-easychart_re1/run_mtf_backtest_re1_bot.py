@@ -26,9 +26,9 @@ if __name__ == "__main__":
                 {
                     "candidate": "candidate-latent-liquidity-episode-policy-v1",
                     "policy": (
-                        "ACTIVE_LIQUIDITY_DRAW_AND_HIERARCHICAL_CONTEXT_TO_"
-                        "SINGLE_FAILED_OR_ACCEPTED_AUCTION_OWNER_TO_FIRST_"
-                        "RETURN_RESPONSE_TO_FIRST_UNSPENT_OPPOSING_LIQUIDITY"
+                        "NAMED_HORIZONTAL_OR_PROJECTED_STRUCTURE_BOUNDARY_TO_"
+                        "SINGLE_FAILED_OR_ACCEPTED_AUCTION_OWNER_WITH_COMMITTED_"
+                        "OBJECTIVE_TO_FIRST_RETURN_RESPONSE"
                     ),
                 },
             )
