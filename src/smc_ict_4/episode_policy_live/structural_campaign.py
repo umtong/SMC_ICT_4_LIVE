@@ -735,6 +735,24 @@ class ParentCampaignOwner:
             and bar.close_time_ns > (state.acceptance_break_time_ns or -1)
         ):
             assert decision_bar is not None
+            expected_hold_time_ns = (
+                int(state.acceptance_break_time_ns or 0)
+                + decision_bar.interval_minutes * 60_000_000_000
+            )
+            if bar.close_time_ns != expected_hold_time_ns:
+                ended = cls._no_geometry(
+                    state,
+                    "acceptance_hold_was_not_immediate_next_decision_bar",
+                )
+                events.append(
+                    _event(
+                        ended,
+                        CampaignEventKind.NO_GEOMETRY,
+                        bar.close_time_ns,
+                        ended.terminal_reason or "",
+                    )
+                )
+                return CampaignTransition(prior, ended, tuple(events))
             held = cls._opened_and_closed_outside(
                 decision_bar,
                 state.outward_side,
@@ -1363,6 +1381,32 @@ class ParentCampaignOwner:
                 refinement.structural_stop,
             )
             valid = target < entry < stop
+        mainline_channel_acceptance = (
+            state.hypothesis is CampaignHypothesis.ACCEPTANCE
+            and state.source.timeframe_minutes == 15
+            and state.source.kind
+            in {
+                "ASCENDING_CHANNEL_LOWER",
+                "DESCENDING_CHANNEL_UPPER",
+            }
+        )
+        if mainline_channel_acceptance:
+            if state.first_return_low is None or state.first_return_high is None:
+                return None, "channel_acceptance_lost_first_return_extreme"
+            stop = (
+                min(
+                    stop,
+                    state.first_return_low - state.tick_size,
+                    bar.low - state.tick_size,
+                )
+                if side == "LONG"
+                else max(
+                    stop,
+                    state.first_return_high + state.tick_size,
+                    bar.high + state.tick_size,
+                )
+            )
+            valid = stop < entry < target if side == "LONG" else target < entry < stop
         if not valid:
             return None, "committed_structure_has_no_executable_entry_stop_target_geometry"
         rr = abs(target - entry) / abs(entry - stop)

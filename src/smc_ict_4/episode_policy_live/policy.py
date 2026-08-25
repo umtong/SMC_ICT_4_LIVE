@@ -1241,6 +1241,7 @@ class SymbolEpisodePolicy:
         common_authorization: CommonCandidateAuthorization | None,
         common_broad_failure_time_ns: int | None,
         common_symbol_reclaim_time_ns: int | None,
+        source_kind: str | None = None,
     ) -> tuple[bool, dict[str, object]]:
         """Resolve direction categorically; completed events own neutral state."""
 
@@ -1258,6 +1259,18 @@ class SymbolEpisodePolicy:
             and common_symbol_reclaim_time_ns <= candidate.decision_time_ns
         )
         if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE:
+            mainline_channel = source_kind in {
+                "ASCENDING_CHANNEL_LOWER",
+                "DESCENDING_CHANNEL_UPPER",
+            }
+            if mainline_channel and draw != side:
+                reason = "REJECTED_CHANNEL_ACCEPTANCE_WITHOUT_ALIGNED_ACTIVE_DRAW"
+                allowed = False
+                return allowed, {
+                    **authority.to_dict(),
+                    "direction_authority_reason": reason,
+                    "direction_authority_allowed": allowed,
+                }
             if structure == side:
                 reason = "PERSISTENT_STRUCTURE_ALIGNED"
             elif draw == side:
@@ -1426,6 +1439,18 @@ class SymbolEpisodePolicy:
             authorization,
             common_broad_failure_time_ns,
             common_symbol_reclaim_time_ns,
+            (
+                next(
+                    (
+                        state.source.kind
+                        for state in self._structural_campaigns.values()
+                        if state.campaign_id == candidate.episode_id
+                    ),
+                    None,
+                )
+                if isinstance(candidate, StructuralOpportunity)
+                else None
+            ),
         )
         if not direction_allowed:
             reason = str(direction_evidence["direction_authority_reason"])
