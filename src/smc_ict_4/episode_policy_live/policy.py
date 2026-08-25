@@ -38,6 +38,7 @@ from .auction_journey import (
 )
 from .cross_market_roles import (
     EventPrice,
+    SourceOwnershipDecision,
     SourceOwnershipRole,
     analyze_cross_market_roles,
     classify_source_ownership,
@@ -84,6 +85,7 @@ from .factor_continuation import (
     LocalAuctionContinuationSetup,
     five_minute_engulfing_ob,
 )
+from .flow_price_delivery import observe_flow_price_delivery
 from .inventory_ownership import (
     InventoryDecision,
     InventoryInterpretation,
@@ -112,6 +114,8 @@ from .structural_campaign import (
     ParentCampaignOwner,
     StructuralOpportunity,
 )
+from .semantic_auction_authority import decide_semantic_auction_authority
+from .semantic_role_observation import observe_cross_market_auction_roles
 from .value_distribution import (
     ValueDistributionAuctionBook,
     ValueDistributionCandidate,
@@ -120,7 +124,7 @@ from .value_distribution import (
 MAX_CAUSAL_ORDER_TIME_NS = (1 << 63) - 1
 POLICY_DECISION_SCHEMA_VERSION = 2
 POLICY_FINGERPRINT = (
-    "unified-causal-auction-control-route-v5"
+    "semantic-auction-authority-retrace-v1"
 )
 
 
@@ -1215,7 +1219,7 @@ class SymbolEpisodePolicy:
         interval_open_time_ns: int,
         decision_time_ns: int,
     ) -> tuple[float, float] | None:
-        """Measure the first completed source-attack bucket causally."""
+        """Measure the exact completed source-to-attack-extreme interval."""
 
         event = tuple(
             item
@@ -1225,15 +1229,9 @@ class SymbolEpisodePolicy:
         )
         if not event:
             return None
-        attack_close = (
-            (interval_open_time_ns // (5 * NS_PER_MINUTE)) + 1
-        ) * (5 * NS_PER_MINUTE)
-        attack = tuple(
-            item for item in event if item.close_time_ns <= attack_close
-        ) or event[:1]
         return (
-            attack[-1].close - attack[0].open,
-            sum(item.signed_quote_flow for item in attack),
+            event[-1].close - event[0].open,
+            sum(item.signed_quote_flow for item in event),
         )
 
     def _router_inventory(
@@ -1267,88 +1265,50 @@ class SymbolEpisodePolicy:
         return None if match is None else match.open_time_ns
 
     @staticmethod
-    def _directional_authorization(
-        candidate: StructuralOpportunity | ValueDistributionCandidate,
-        authority: PreEventAuthority | None,
-        common_authorization: CommonCandidateAuthorization | None,
-        common_broad_failure_time_ns: int | None,
-        common_symbol_reclaim_time_ns: int | None,
-        source_kind: str | None = None,
-    ) -> tuple[bool, dict[str, object]]:
-        """Resolve direction categorically; completed events own neutral state."""
+    def _outward_attack_extreme_close(
+        bars: Sequence[Bar],
+        *,
+        shock_side: str,
+        interval_open_time_ns: int,
+        confirmation_time_ns: int,
+    ) -> int | None:
+        """Return the first completed minute which made the attack extreme.
 
-        if not isinstance(candidate, StructuralOpportunity) or authority is None:
-            return True, {"direction_authority_reason": "COMPLETED_EVENT_OWNS"}
-        side = candidate.side
-        opposite = "SHORT" if side == "LONG" else "LONG"
-        structure = authority.structure_side
-        draw = authority.draw_side
-        inventory_transfer = common_authorization is not None
-        broad_price_transfer = (
-            common_broad_failure_time_ns is not None
-            and common_symbol_reclaim_time_ns is not None
-            and common_broad_failure_time_ns <= candidate.decision_time_ns
-            and common_symbol_reclaim_time_ns <= candidate.decision_time_ns
-        )
-        if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE:
-            mainline_channel = source_kind in {
-                "ASCENDING_CHANNEL_LOWER",
-                "DESCENDING_CHANNEL_UPPER",
-            }
-            if mainline_channel and draw != side:
-                reason = "REJECTED_CHANNEL_ACCEPTANCE_WITHOUT_ALIGNED_ACTIVE_DRAW"
-                allowed = False
-                return allowed, {
-                    **authority.to_dict(),
-                    "direction_authority_reason": reason,
-                    "direction_authority_allowed": allowed,
-                }
-            if structure == side:
-                reason = "PERSISTENT_STRUCTURE_ALIGNED"
-            elif draw == side:
-                reason = "ACTIVE_LIQUIDITY_DRAW_ALIGNED"
-            elif inventory_transfer:
-                reason = "COMMON_CONTROL_TRANSFER"
-            elif structure == opposite and draw == opposite:
-                reason = "REJECTED_BOTH_PRIOR_AUTHORITIES_OPPOSE_CONTINUATION"
-                allowed = False
-                return allowed, {
-                    **authority.to_dict(),
-                    "direction_authority_reason": reason,
-                    "direction_authority_allowed": allowed,
-                }
-            else:
-                reason = "COMPLETED_EVENT_OWNS_NEUTRAL_OR_CONFLICTED_STATE"
-        else:
-            consumed_old_draw = (
-                authority.source_was_prior_draw_destination
-                and authority.source_outward_side == opposite
-            )
-            if structure == side:
-                reason = "PERSISTENT_STRUCTURE_ALIGNED"
-            elif consumed_old_draw:
-                reason = "EXTERNAL_DRAW_CONSUMED_AND_RECLAIMED"
-            elif broad_price_transfer:
-                reason = "BROAD_COMMON_FAILURE_TRANSFER"
-            elif structure == opposite and draw == opposite:
-                reason = "REJECTED_ORDINARY_COUNTERTREND_RECLAIM"
-                allowed = False
-                return allowed, {
-                    **authority.to_dict(),
-                    "direction_authority_reason": reason,
-                    "direction_authority_allowed": allowed,
-                }
-            else:
-                reason = "COMPLETED_EVENT_OWNS_NEUTRAL_OR_CONFLICTED_STATE"
-        return True, {
-            **authority.to_dict(),
-            "direction_authority_reason": reason,
-            "direction_authority_allowed": True,
-            "common_broad_price_failure_time_ns": (
-                common_broad_failure_time_ns
+        A failed auction must not measure its outward attack through the later
+        reclaim, first return and opposite control transfer.  The first extreme
+        splits the outward expansion from the subsequent failure path without
+        using any observation beyond the hypothesis-confirmation close.
+        """
+
+        event = sorted(
+            (
+                bar
+                for bar in bars
+                if bar.interval_minutes == 1
+                and bar.open_time_ns >= interval_open_time_ns
+                and bar.close_time_ns <= confirmation_time_ns
             ),
-            "common_symbol_reclaim_time_ns": common_symbol_reclaim_time_ns,
-        }
+            key=lambda bar: bar.open_time_ns,
+        )
+        if (
+            not event
+            or event[0].open_time_ns != interval_open_time_ns
+            or event[-1].close_time_ns != confirmation_time_ns
+            or any(
+                right.open_time_ns != left.close_time_ns
+                for left, right in zip(event, event[1:])
+            )
+        ):
+            return None
+        if shock_side == "LONG":
+            extreme = max(bar.high for bar in event)
+            owner = next(bar for bar in event if bar.high == extreme)
+        elif shock_side == "SHORT":
+            extreme = min(bar.low for bar in event)
+            owner = next(bar for bar in event if bar.low == extreme)
+        else:
+            raise ValueError("shock_side must be LONG or SHORT")
+        return owner.close_time_ns
 
     def _route_completed_opportunity(
         self,
@@ -1361,12 +1321,36 @@ class SymbolEpisodePolicy:
         first_return_time_ns: int,
         common_episodes: CommonEpisodeLedger | None = None,
     ) -> TradePlan | None:
+        # Only one completed parent structural auction may request capital.
+        # Value-distribution and other mechanically completed candidates remain
+        # observable state, but cannot bypass semantic market ownership.
+        if not isinstance(candidate, StructuralOpportunity):
+            key = "SEMANTIC_AUTHORITY:NON_STRUCTURAL_OWNER"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+        confirmation_time_ns = candidate.hypothesis_confirmation_time_ns
+        if not (
+            interval_open_time_ns < confirmation_time_ns
+            < first_return_time_ns
+            < candidate.decision_time_ns
+        ):
+            key = "SEMANTIC_AUTHORITY:INVALID_EVENT_PHASE_CLOCKS"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+        event_histories = {
+            symbol: tuple(
+                bar
+                for bar in history
+                if bar.close_time_ns <= confirmation_time_ns
+            )
+            for symbol, history in bars_by_symbol.items()
+        }
         ownership = observe_interval_ownership(
-            observed_bars_by_symbol=bars_by_symbol,
+            observed_bars_by_symbol=event_histories,
             side=candidate.side,
             interval_open_time_ns=interval_open_time_ns,
-            interval_close_time_ns=candidate.decision_time_ns,
-            observed_time_ns=candidate.decision_time_ns,
+            interval_close_time_ns=confirmation_time_ns,
+            observed_time_ns=confirmation_time_ns,
             campaign_root_id=campaign_root,
         )
         control_completion_time_ns = (
@@ -1394,59 +1378,67 @@ class SymbolEpisodePolicy:
         )
         selected = control_ownership.for_symbol(self.symbol)
 
+        shock_side = (
+            candidate.side
+            if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
+            else "SHORT" if candidate.side == "LONG" else "LONG"
+        )
+        attack_extreme_time_ns = (
+            confirmation_time_ns
+            if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
+            else self._outward_attack_extreme_close(
+                bars_by_symbol[self.symbol],
+                shock_side=shock_side,
+                interval_open_time_ns=interval_open_time_ns,
+                confirmation_time_ns=confirmation_time_ns,
+            )
+        )
+        if attack_extreme_time_ns is None:
+            key = "SEMANTIC_AUTHORITY:INCOMPLETE_ATTACK_PATH"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+        attack_delivery_start_ns = (
+            interval_open_time_ns
+            if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
+            else attack_extreme_time_ns
+        )
+        if attack_delivery_start_ns >= confirmation_time_ns:
+            key = "SEMANTIC_AUTHORITY:NO_SEPARATE_ATTACK_FAILURE_WINDOW"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+
         inventory: InventoryDecision | None = None
         attack_evidence: dict[str, float | str | int | bool] = {}
-        if isinstance(candidate, StructuralOpportunity):
-            shock_side = (
-                candidate.side
-                if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE
-                else "SHORT" if candidate.side == "LONG" else "LONG"
-            )
-            measurement = self._router_attack_measurement(
+        measurement = self._router_attack_measurement(
+            interval_open_time_ns=interval_open_time_ns,
+            decision_time_ns=attack_extreme_time_ns,
+        )
+        if measurement is not None:
+            price_move, signed_flow = measurement
+            sign = 1.0 if shock_side == "LONG" else -1.0
+            attack_evidence = {
+                "source_attack_side": shock_side,
+                "source_attack_extreme_time_ns": attack_extreme_time_ns,
+                "source_attack_price_move": price_move,
+                "source_attack_signed_taker_flow": signed_flow,
+                "source_attack_price_flow_aligned": (
+                    sign * price_move > 0.0 and sign * signed_flow > 0.0
+                ),
+            }
+            inventory = self._router_inventory(
+                shock_side=shock_side,
                 interval_open_time_ns=interval_open_time_ns,
-                decision_time_ns=candidate.decision_time_ns,
+                decision_time_ns=attack_extreme_time_ns,
+                price_move=price_move,
+                signed_taker_flow=signed_flow,
             )
-            if measurement is not None:
-                price_move, signed_flow = measurement
-                sign = 1.0 if shock_side == "LONG" else -1.0
-                attack_evidence = {
-                    "source_attack_side": shock_side,
-                    "source_attack_price_move": price_move,
-                    "source_attack_signed_taker_flow": signed_flow,
-                    "source_attack_price_flow_aligned": (
-                        sign * price_move > 0.0 and sign * signed_flow > 0.0
-                    ),
-                }
-                inventory = self._router_inventory(
-                    shock_side=shock_side,
-                    interval_open_time_ns=interval_open_time_ns,
-                    decision_time_ns=candidate.decision_time_ns,
-                    price_move=price_move,
-                    signed_taker_flow=signed_flow,
-                )
         common_attack = None
         authorization: CommonCandidateAuthorization | None = None
-        common_broad_failure_time_ns: int | None = None
-        common_symbol_reclaim_time_ns: int | None = None
         if common_episodes is not None:
             try:
                 common_attack = common_episodes.attack(campaign_root)
             except CommonEpisodeError:
                 common_attack = None
-        if common_attack is not None and common_episodes is not None:
-            reclaim_pairs, broad_clock, _ = common_episodes.price_failure_state(
-                campaign_root,
-            )
-            reclaim_clocks = dict(reclaim_pairs)
-            symbol_clock = reclaim_clocks.get(self.symbol)
-            if (
-                broad_clock is not None
-                and broad_clock <= candidate.decision_time_ns
-                and symbol_clock is not None
-                and symbol_clock <= candidate.decision_time_ns
-            ):
-                common_broad_failure_time_ns = broad_clock
-                common_symbol_reclaim_time_ns = symbol_clock
         if (
             selected.role is SourceOwnershipRole.COMMON_MARKET_OWNER_ONLY
             and common_attack is not None
@@ -1465,28 +1457,62 @@ class SymbolEpisodePolicy:
                 candidate_time_ns=candidate.decision_time_ns,
                 source_campaign_root_id=campaign_root,
             )
-        direction_allowed, direction_evidence = self._directional_authorization(
-            candidate,
-            self._router_directional_authority.get(campaign_root),
-            authorization,
-            common_broad_failure_time_ns,
-            common_symbol_reclaim_time_ns,
-            (
-                next(
-                    (
-                        state.source.kind
-                        for state in self._structural_campaigns.values()
-                        if state.campaign_id == candidate.episode_id
-                    ),
-                    None,
-                )
-                if isinstance(candidate, StructuralOpportunity)
-                else None
-            ),
+        pre_event = self._router_directional_authority.get(campaign_root)
+        if pre_event is None:
+            key = "SEMANTIC_AUTHORITY:MISSING_PRE_EVENT_STATE"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+        cross_market_roles = observe_cross_market_auction_roles(
+            opportunity=candidate,
+            bars_by_symbol=event_histories,
+            interaction_time_ns=interval_open_time_ns,
+            decision_time_ns=confirmation_time_ns,
+            candidate_side=candidate.side,
         )
-        if not direction_allowed:
-            reason = str(direction_evidence["direction_authority_reason"])
-            key = f"DIRECTIONAL_AUTHORITY:{reason}"
+        if cross_market_roles is None:
+            key = "SEMANTIC_AUTHORITY:INCOMPLETE_CROSS_MARKET_STATE"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
+        attack_delivery = observe_flow_price_delivery(
+            symbol=self.symbol,
+            side=shock_side,
+            interval_start_ns=attack_delivery_start_ns,
+            interval_end_ns=confirmation_time_ns,
+            histories=event_histories,
+        )
+        control_delivery = observe_flow_price_delivery(
+            symbol=self.symbol,
+            side=candidate.side,
+            interval_start_ns=first_return_time_ns,
+            interval_end_ns=control_completion_time_ns,
+            histories=control_histories,
+        )
+        source_selected = ownership.for_symbol(self.symbol)
+        source_decision = SourceOwnershipDecision(
+            role=source_selected.role,
+            local_units=source_selected.local_delivery_units,
+            common_units=source_selected.peer_common_units,
+            residual_units=source_selected.residual_local_units,
+        )
+        control_decision = SourceOwnershipDecision(
+            role=selected.role,
+            local_units=selected.local_delivery_units,
+            common_units=selected.peer_common_units,
+            residual_units=selected.residual_local_units,
+        )
+        semantic_authority = decide_semantic_auction_authority(
+            candidate,
+            pre_event=pre_event,
+            source_ownership=source_decision,
+            control_ownership=control_decision,
+            cross_market_roles=cross_market_roles,
+            common_authorization=authorization,
+            inventory=inventory,
+            attack_delivery=attack_delivery,
+            control_delivery=control_delivery,
+        )
+        if not semantic_authority.authorized:
+            key = f"SEMANTIC_AUTHORITY:{semantic_authority.reason.value}"
             self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
             return None
         plan = ControlEpisodeRouter.route(
@@ -1504,7 +1530,22 @@ class SymbolEpisodePolicy:
             plan,
             evidence={
                 **dict(plan.evidence),
-                **direction_evidence,
+                **{
+                    f"semantic_authority_{key}": value
+                    for key, value in semantic_authority.to_dict().items()
+                },
+                **{
+                    f"semantic_cross_market_{key}": value
+                    for key, value in cross_market_roles.to_dict().items()
+                },
+                **{
+                    f"semantic_attack_delivery_{key}": value
+                    for key, value in attack_delivery.to_dict().items()
+                },
+                **{
+                    f"semantic_control_delivery_{key}": value
+                    for key, value in control_delivery.to_dict().items()
+                },
                 **attack_evidence,
             },
         )
@@ -2438,6 +2479,7 @@ class SymbolEpisodePolicy:
             family="ACCEPTED_AUCTION_CONTINUATION",
             side=setup.side,
             decision_time_ns=bar.close_time_ns,
+            hypothesis_confirmation_time_ns=setup.source.observed_time_ns,
             first_return_detached_time_ns=setup.detached_time_ns,
             first_return_time_ns=setup.first_touch_time_ns,
             control_transfer_time_ns=bar.close_time_ns,
@@ -2617,6 +2659,9 @@ class SymbolEpisodePolicy:
             family="ACCEPTED_AUCTION_CONTINUATION",
             side=setup.side,
             decision_time_ns=bar.close_time_ns,
+            hypothesis_confirmation_time_ns=(
+                setup.hold_time_ns or setup.break_time_ns
+            ),
             first_return_detached_time_ns=setup.detached_time_ns,
             first_return_time_ns=setup.retest_time_ns,
             control_transfer_time_ns=bar.close_time_ns,
@@ -5852,6 +5897,8 @@ class LiquidityEpisodeCoordinator:
     def _observe_common_price(
         self,
         bars: Mapping[str, Bar],
+        *,
+        emit_plans: bool = True,
     ) -> list[TradePlan]:
         """Advance every live shared price root and expose completed plans."""
 
@@ -5872,6 +5919,8 @@ class LiquidityEpisodeCoordinator:
                 broad_failure_participants=updated.fully_reclaimed_participants,
             )
             for opportunity in opportunities:
+                if not emit_plans:
+                    continue
                 plan = self._common_price_plan(opportunity)
                 if plan is not None:
                     plans.append(plan)
@@ -6239,25 +6288,22 @@ class LiquidityEpisodeCoordinator:
         if completed and set(completed) != set(self.policies):
             raise RuntimeError("four-market 5-minute clocks diverged")
         self._update_common_inventory(bar.close_time_ns)
-        common_plans = self._observe_common_price(synchronized)
+        # The shared campaign remains a causal observation and can authorize a
+        # structural parent, but it no longer emits an independent price-only
+        # trade.  That former path bypassed the semantic auction authority and
+        # let a common pause pattern own account direction by itself.
+        self._observe_common_price(synchronized, emit_plans=False)
         one_minute = self._one_minute_map()
         candidates: list[TradePlan] = []
-        for symbol in sorted(self.policies):
+        for symbol in sorted(self.decision_symbols):
             candidates.extend(
                 self.policies[symbol].evaluate_router_minute(
                     synchronized[symbol],
                     prebar[symbol],
                     decision_bar=completed.get(symbol),
                     bars_by_symbol=one_minute,
-                    emit_plan=symbol in self.decision_symbols,
+                    emit_plan=True,
                     common_episodes=self._common_episodes,
-                )
-            )
-        for plan in common_plans:
-            candidates.extend(
-                self.policies[plan.symbol]._refresh_router_proposals(
-                    (plan,),
-                    synchronized[plan.symbol],
                 )
             )
         return self._arbitrate_current(candidates)

@@ -304,11 +304,12 @@ class StructuralOpportunity:
     family: OpportunityFamily
     side: Side
     decision_time_ns: int
+    hypothesis_confirmation_time_ns: int
     first_return_detached_time_ns: int
     first_return_time_ns: int
     control_transfer_time_ns: int
     entry_retest_detached_time_ns: int | None
-    entry_retest_time_ns: int
+    entry_retest_time_ns: int | None
     entry: float
     stop: float
     target: float
@@ -339,6 +340,9 @@ class StructuralOpportunity:
             "family": self.family,
             "side": self.side,
             "decision_time_ns": self.decision_time_ns,
+            "hypothesis_confirmation_time_ns": (
+                self.hypothesis_confirmation_time_ns
+            ),
             "first_return_time_ns": self.first_return_time_ns,
             "control_transfer_time_ns": self.control_transfer_time_ns,
             "entry_retest_time_ns": self.entry_retest_time_ns,
@@ -1017,29 +1021,16 @@ class ParentCampaignOwner:
                         mechanism=control.mechanism,
                     )
                 )
-                if state.hypothesis in {
-                    CampaignHypothesis.REJECTION,
-                    CampaignHypothesis.TRAP,
-                }:
-                    armed = replace(
-                        state,
-                        phase=CampaignPhase.WAITING_POST_TRANSFER_RETEST,
-                        entry_retest_detached_time_ns=(
-                            bar.close_time_ns
-                            if state.refinement is not None
-                            and cls._fully_detached(
-                                bar,
-                                state.active_side,
-                                state.refinement.zone.lower,
-                                state.refinement.zone.upper,
-                            )
-                            else None
-                        ),
-                    )
-                    return CampaignTransition(prior, armed, tuple(events))
+                # The completed control-transfer displacement is the decision,
+                # not the entry.  Arm the first passive return to the already
+                # locked refinement now; waiting for that return to complete
+                # and then buying/selling its response close would chase price
+                # and would make the executable geometry depend on a future
+                # candle.  Acceptance and failed-auction branches share this
+                # lifecycle.
                 return cls._commit_control_transfer(
                     prior,
-                    replace(state, entry_retest_time_ns=bar.close_time_ns),
+                    state,
                     bar,
                     control,
                     events,
@@ -1336,27 +1327,16 @@ class ParentCampaignOwner:
             return None, "first_return_was_not_preceded_by_full_detachment"
         if state.control_transfer_time_ns is None:
             return None, "opportunity_has_no_completed_control_transfer"
-        if state.entry_retest_time_ns is None:
-            return None, "opportunity_has_no_executable_entry_retest"
+        if state.confirmation_time_ns is None:
+            return None, "opportunity_has_no_hypothesis_confirmation"
         if not (
             (state.confirmation_time_ns or -1)
             < state.first_return_detached_time_ns
             < state.first_return_time_ns
             < state.control_transfer_time_ns
-            <= state.entry_retest_time_ns
             == bar.close_time_ns
         ):
             return None, "opportunity_event_clock_is_not_causally_ordered"
-        if state.hypothesis in {
-            CampaignHypothesis.REJECTION,
-            CampaignHypothesis.TRAP,
-        } and not (
-            state.entry_retest_detached_time_ns is not None
-            and state.control_transfer_time_ns
-            <= state.entry_retest_detached_time_ns
-            < state.entry_retest_time_ns
-        ):
-            return None, "entry_retest_was_not_preceded_by_post_transfer_detachment"
         route_clear = (
             state.acceptance_route_clear
             if state.hypothesis is CampaignHypothesis.ACCEPTANCE
@@ -1366,7 +1346,18 @@ class ParentCampaignOwner:
             return None, "route_obstacle_moved_before_committed_destination"
         destination = geometry.destination
         target = geometry.committed_target
-        entry = bar.close
+        # Candidate13 V15 execution semantics: the decision candle completes
+        # control transfer, while the order rests at the first price reached on
+        # a later retrace into the frozen OB/FVG/source-overlap refinement.  No
+        # response-close substitution is allowed after the plan is committed.
+        entry = refinement.zone.upper if side == "LONG" else refinement.zone.lower
+        future_retrace = (
+            entry < bar.close - state.tick_size
+            if side == "LONG"
+            else entry > bar.close + state.tick_size
+        )
+        if not future_retrace:
+            return None, "control_transfer_did_not_leave_a_future_passive_retrace"
         # The footprint can nominate a wider structural stop, but never tighten
         # the invalidation committed by the owning source campaign.
         if side == "LONG":
@@ -1432,15 +1423,14 @@ class ParentCampaignOwner:
                 family=family,
                 side=side,
                 decision_time_ns=bar.close_time_ns,
+                hypothesis_confirmation_time_ns=state.confirmation_time_ns,
                 first_return_detached_time_ns=(
                     state.first_return_detached_time_ns
                 ),
                 first_return_time_ns=state.first_return_time_ns,
                 control_transfer_time_ns=state.control_transfer_time_ns,
-                entry_retest_detached_time_ns=(
-                    state.entry_retest_detached_time_ns
-                ),
-                entry_retest_time_ns=state.entry_retest_time_ns,
+                entry_retest_detached_time_ns=None,
+                entry_retest_time_ns=None,
                 entry=entry,
                 stop=stop,
                 target=target,
@@ -1449,6 +1439,12 @@ class ParentCampaignOwner:
                 entry_zone=refinement.zone,
                 flow_control=flow,
                 hypothesis=state.hypothesis,
+                owner_evidence={
+                    "entry_lifecycle": "RESTING_FIRST_RETURN",
+                    "entry_event": "PASSIVE_FIRST_RETRACE_TO_LOCKED_REFINEMENT",
+                    "entry_geometry_locked_time_ns": bar.close_time_ns,
+                    "entry_retest_observed": False,
+                },
             ),
             "",
         )

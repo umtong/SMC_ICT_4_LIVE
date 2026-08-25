@@ -172,6 +172,7 @@ class CrossMarketAuctionRoles:
     is_liquidity_leader: bool | None
     liquidity_observed_time_ns: int | None
     signed_event_returns: dict[str, float]
+    event_return_scale_observed_time_ns: int | None
     event_direction_rank: int | None
     event_leadership_role: EventLeadershipRole
     peer_participation: PeerParticipation
@@ -447,6 +448,7 @@ def analyze_cross_market_roles(
     event_paths: Mapping[str, Sequence[EventPrice]],
     directional_contexts: Mapping[str, DirectionalContext] | None = None,
     trailing_quote_notionals: Mapping[str, CausalScalar | None] | None = None,
+    event_return_scales: Mapping[str, CausalScalar | None] | None = None,
     auction_progress_units: Mapping[str, CausalScalar | None] | None = None,
 ) -> CrossMarketAuctionRoles:
     """Describe cross-market auction roles using observations known by decision.
@@ -470,7 +472,7 @@ def analyze_cross_market_roles(
         name: _validated_path(event_paths.get(name, ()), decision_time_ns=decision_time_ns)
         for name in names
     }
-    signed_returns: dict[str, float] = {}
+    raw_signed_returns: dict[str, float] = {}
     for name, path in paths.items():
         value = _complete_event_return(
             path,
@@ -479,7 +481,25 @@ def analyze_cross_market_roles(
             sign=sign,
         )
         if value is not None:
-            signed_returns[name] = value
+            raw_signed_returns[name] = value
+    return_scale_values, return_scale_time = _causal_scalar_snapshot(
+        names,
+        event_return_scales,
+        latest_time_ns=sweep_time_ns,
+    )
+    if event_return_scales is None:
+        signed_returns = raw_signed_returns
+    elif (
+        set(return_scale_values) == set(names)
+        and all(value > 0.0 for value in return_scale_values.values())
+    ):
+        signed_returns = {
+            name: raw_signed_returns[name] / return_scale_values[name]
+            for name in names
+            if name in raw_signed_returns
+        }
+    else:
+        signed_returns = {}
     event_complete = len(signed_returns) == len(names)
     local_path = paths[symbol]
     local_efficiency = (
@@ -548,6 +568,7 @@ def analyze_cross_market_roles(
         is_liquidity_leader=None if liquidity_leader is None else liquidity_leader == symbol,
         liquidity_observed_time_ns=liquidity_time,
         signed_event_returns=dict(sorted(signed_returns.items())),
+        event_return_scale_observed_time_ns=return_scale_time,
         event_direction_rank=event_rank,
         event_leadership_role=event_role,
         peer_participation=peer_role,

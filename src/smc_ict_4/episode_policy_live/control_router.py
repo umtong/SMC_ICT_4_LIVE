@@ -24,6 +24,7 @@ from .common_episode_ledger import (
 from .cross_market_roles import SourceOwnershipRole
 from .domain import (
     ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+    ENTRY_LIFECYCLE_RESTING_FIRST_RETURN,
     PolicyError,
     TradePlan,
     stable_id,
@@ -39,6 +40,21 @@ ROUTE_OWNER_LOCAL = "LOCAL_SOURCE_CAMPAIGN"
 ROUTE_OWNER_COMMON = "COMMON_CASCADE"
 
 RoutableOpportunity: TypeAlias = StructuralOpportunity | ValueDistributionCandidate
+
+
+def _entry_lifecycle(candidate: RoutableOpportunity) -> str:
+    """Preserve the native opportunity's physical entry contract.
+
+    A structural opportunity owns a previously observed OB/FVG/retest zone;
+    routing occurs after that geometry has been committed, so its parent order
+    remains a passive first-return order.  Value-distribution candidates are
+    emitted by their completed response/retest bar and retain the immediate
+    response contract.
+    """
+
+    if isinstance(candidate, StructuralOpportunity):
+        return ENTRY_LIFECYCLE_RESTING_FIRST_RETURN
+    return ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE
 
 def _ownership_evidence(
     snapshot: IntervalOwnershipSnapshot,
@@ -306,6 +322,7 @@ class ControlEpisodeRouter:
         )
         native_evidence = fields["evidence"]
         assert isinstance(native_evidence, Mapping)
+        entry_lifecycle = _entry_lifecycle(candidate)
         evidence: dict[str, Any] = {
             **dict(native_evidence),
             **_ownership_evidence(ownership, source_selected),
@@ -334,7 +351,7 @@ class ControlEpisodeRouter:
                 if route_owner == ROUTE_OWNER_COMMON
                 else None
             ),
-            "entry_lifecycle": ENTRY_LIFECYCLE_IMMEDIATE_RESPONSE,
+            "entry_lifecycle": entry_lifecycle,
             "objective_lifecycle": OBJECTIVE_LIFECYCLE_FAMILY_IMMUTABLE,
             "interaction_time_ns": interaction,
             "first_return_time_ns": first_return,

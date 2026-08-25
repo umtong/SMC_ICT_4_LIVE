@@ -1,12 +1,10 @@
 """NautilusTrader adapter for live public data, sandbox paper, and futures testnet.
 
-Execution-lifecycle provenance is the existing candidate-10 implementation at
-``research/candidate-10/c10_flow_parent_execution.py`` commit
-``02b8b939e88b69445ecafb8a1df90671f47b351f``: cancel the parent remainder on
-first execution, protect every raced fill chunk independently, cancel a completed
-exit's sibling, and emergency-flatten genuine protection failure.  This adapter
-ports those semantics to the shared four-market account; it does not claim them
-as a newly discovered mechanism.
+Entry atomicity reuses the capped FOK execution established in candidate-16 v5b
+and candidate-18: an immediate LIMIT or resting LIMIT_IF_TOUCHED fills the full
+3% structural-risk quantity at or better than its declared cap, or opens no
+position. Protective sibling handling and emergency flattening retain the
+candidate-10 execution lifecycle.
 """
 from __future__ import annotations
 
@@ -46,6 +44,9 @@ from .storage import StateStore
 
 
 NS_PER_MINUTE = 60_000_000_000
+ENTRY_MODE_IMMEDIATE_FOK = "IMMEDIATE_RESPONSE_BOUNDED_FOK"
+ENTRY_MODE_RESTING_FOK = "RESTING_FIRST_RETURN_BOUNDED_FOK"
+ENTRY_FOK_MODES = frozenset({ENTRY_MODE_IMMEDIATE_FOK, ENTRY_MODE_RESTING_FOK})
 
 
 def canonicalize_completed_policy_bar(bar: PolicyBar) -> PolicyBar:
@@ -1041,6 +1042,7 @@ if NT is not None:
                 reason = "TARGET_SPENT_BEFORE_FILL"
             else:
                 return
+            self.active_sizing["entry_cancel_reason"] = reason
             self.cancel_order(entry_order)
             self.store.append_event(
                 time_ns=bar.close_time_ns,
@@ -1351,7 +1353,7 @@ if NT is not None:
                 instrument,
                 side=plan.side,
                 # Size the declared structural entry-to-stop risk.  The same
-                # native entry price is also the no-chase IOC limit below.
+                # native entry price is also the no-chase FOK limit below.
                 entry=planned_entry,
                 stop=plan.stop,
                 nav=nav,
@@ -1367,10 +1369,9 @@ if NT is not None:
                     details={"details": dict(sizing.details)},
                 )
             target_price = instrument.make_price(plan.target)
-            # The completed response close is the entry decision, not a signal
-            # to chase.  An IOC may fill at that native price or better; any
-            # adverse gap remains unfilled.  This keeps actual entry-to-stop
-            # exposure at no more than the declared approximately 3% quantity.
+            # The completed response or reached first return is the entry
+            # decision, not a signal to chase.  The FOK fills the entire
+            # declared quantity at this native cap or opens no position.
             execution_limit_price = sizing.entry_price
             native_entry = sizing.entry_price.as_decimal()
             native_stop = sizing.stop_trigger_price.as_decimal()
@@ -1438,26 +1439,24 @@ if NT is not None:
             quantity = sizing.quantity
             side = OrderSide.BUY if plan.side == "LONG" else OrderSide.SELL
             if immediate_response:
-                # IOC guarantees there is no resting second-return order.  The
-                # completed response price is also the adverse fill boundary.
                 order = self.order_factory.limit(
                     instrument_id=instrument.id,
                     order_side=side,
                     quantity=quantity,
                     price=execution_limit_price,
-                    time_in_force=TimeInForce.IOC,
+                    time_in_force=TimeInForce.FOK,
                 )
-                entry_mode = "IMMEDIATE_RESPONSE_BOUNDED_IOC"
+                entry_mode = ENTRY_MODE_IMMEDIATE_FOK
             else:
-                order = self.order_factory.limit(
+                order = self.order_factory.limit_if_touched(
                     instrument_id=instrument.id,
                     order_side=side,
                     quantity=quantity,
-                    price=sizing.entry_price,
-                    # Structural policy invalidation owns the pending lifetime.
-                    time_in_force=TimeInForce.GTC,
+                    price=execution_limit_price,
+                    trigger_price=execution_limit_price,
+                    time_in_force=TimeInForce.FOK,
                 )
-                entry_mode = "FIRST_RETURN_LIMIT"
+                entry_mode = ENTRY_MODE_RESTING_FOK
             self.active_plan = plan
             self.active_sizing = {
                 "quantity": str(sizing.quantity),
@@ -1544,8 +1543,6 @@ if NT is not None:
                 },
             )
             if not immediate_response:
-                # Preserve the existing evidence contract for first-return
-                # resting parents without mislabeling response market orders.
                 self.store.append_event(
                     time_ns=plan.decision_time_ns,
                     event_type="PARENT_LIMIT_SUBMITTED",
@@ -1555,7 +1552,7 @@ if NT is not None:
                         "quantity": str(quantity),
                         "sizing": dict(self.active_sizing),
                         "client_order_id": order_id,
-                        "time_in_force": "GTC",
+                        "time_in_force": "FOK",
                     },
                 )
             return []
@@ -1677,7 +1674,7 @@ if NT is not None:
             if (
                 self.config.execution_mode == "BACKTEST"
                 and self.active_sizing.get("entry_mode")
-                != "IMMEDIATE_RESPONSE_BOUNDED_IOC"
+                == ENTRY_MODE_RESTING_FOK
             ):
                 # Native bar fills inherit the source bar timestamp, which may
                 # still be an inclusive -1ns representation.  Persist the
@@ -1930,98 +1927,115 @@ if NT is not None:
             )
             if role == "ENTRY":
                 entry_order = self.cache.order(event.client_order_id)
-                immediate_response = (
-                    self.active_sizing.get("entry_mode")
-                    == "IMMEDIATE_RESPONSE_BOUNDED_IOC"
+                entry_mode = self.active_sizing.get("entry_mode")
+                if entry_mode not in ENTRY_FOK_MODES:
+                    self.entry_filled_quantity += event.last_qty.as_decimal()
+                    self._fail_closed_execution(
+                        event.instrument_id,
+                        f"NON_FOK_ENTRY_EXECUTION:{entry_mode or 'UNKNOWN'}",
+                        int(event.ts_event),
+                        halt_when_flat=True,
+                    )
+                    return
+                bound = Decimal(str(self.active_sizing["execution_limit_price"]))
+                actual = event.last_px.as_decimal()
+                plan = self.active_plan
+                # Nautilus's configured adverse FillModel can print one
+                # simulated tick through a LIMIT price.  A real venue limit
+                # cannot do that, so keep live/testnet no-chase strict and
+                # admit exactly that native backtest transport tick only when
+                # the post-fill geometry still has gross RR >= 1.
+                backtest_tick = (
+                    self.instruments[plan.symbol].price_increment.as_decimal()
+                    if plan is not None and self.config.execution_mode == "BACKTEST"
+                    else Decimal(0)
                 )
-                if immediate_response:
-                    bound = Decimal(
-                        str(
-                            self.active_sizing.get(
-                                "execution_limit_price",
-                                # Restart compatibility for snapshots written
-                                # before planned entry and IOC bound were split.
-                                self.active_sizing.get("entry_price"),
-                            ),
-                        ),
+                adverse_bound = (
+                    bound + backtest_tick
+                    if plan is not None and plan.side == "LONG"
+                    else bound - backtest_tick
+                )
+                actual_stop = Decimal(
+                    str(self.active_sizing.get("stop_trigger_price", plan.stop if plan else 0)),
+                )
+                actual_target = Decimal(
+                    str(self.active_sizing.get("target_price", plan.target if plan else 0)),
+                )
+                actual_risk = abs(actual - actual_stop)
+                actual_reward = abs(actual_target - actual)
+                geometry_intact = (
+                    plan is not None
+                    and actual_risk > 0
+                    and actual_reward / actual_risk >= Decimal(1)
+                    and (
+                        actual_stop < actual < actual_target
+                        if plan.side == "LONG"
+                        else actual_target < actual < actual_stop
                     )
-                    actual = event.last_px.as_decimal()
-                    plan = self.active_plan
-                    # Nautilus's configured adverse FillModel can print one
-                    # simulated tick through a LIMIT price.  A real venue limit
-                    # cannot do that, so keep live/testnet no-chase strict and
-                    # admit exactly that native backtest transport tick only
-                    # when the post-fill geometry still has gross RR >= 1.
-                    backtest_tick = (
-                        self.instruments[plan.symbol].price_increment.as_decimal()
-                        if plan is not None and self.config.execution_mode == "BACKTEST"
-                        else Decimal(0)
-                    )
-                    adverse_bound = (
-                        bound + backtest_tick
-                        if plan is not None and plan.side == "LONG"
-                        else bound - backtest_tick
-                    )
-                    actual_stop = Decimal(
-                        str(self.active_sizing.get("stop_trigger_price", plan.stop if plan else 0)),
-                    )
-                    actual_target = Decimal(
-                        str(self.active_sizing.get("target_price", plan.target if plan else 0)),
-                    )
-                    actual_risk = abs(actual - actual_stop)
-                    actual_reward = abs(actual_target - actual)
-                    geometry_intact = (
-                        plan is not None
-                        and actual_risk > 0
-                        and actual_reward / actual_risk >= Decimal(1)
-                        and (
-                            actual_stop < actual < actual_target
-                            if plan.side == "LONG"
-                            else actual_target < actual < actual_stop
+                )
+                outside_bound = plan is None or (
+                    plan.side == "LONG" and actual > adverse_bound
+                ) or (
+                    plan.side == "SHORT" and actual < adverse_bound
+                ) or not geometry_intact
+                if outside_bound:
+                    if plan is not None:
+                        self._terminal_reject_plan(
+                            plan,
+                            reason="BOUNDED_FOK_PRICE_BOUND_BREACH",
+                            event_type="EXECUTION_PRICE_BOUND_BREACH",
+                            details={
+                                "actual": str(actual),
+                                "bound": str(bound),
+                                "adverse_bound": str(adverse_bound),
+                            },
+                            time_ns=int(event.ts_event),
                         )
+                    self.entry_filled_quantity += event.last_qty.as_decimal()
+                    self._fail_closed_execution(
+                        event.instrument_id,
+                        "BOUNDED_FOK_PRICE_BOUND_BREACH",
+                        int(event.ts_event),
+                        halt_when_flat=True,
                     )
-                    outside_bound = plan is None or (
-                        plan.side == "LONG" and actual > adverse_bound
-                    ) or (
-                        plan.side == "SHORT" and actual < adverse_bound
-                    ) or not geometry_intact
-                    if outside_bound:
-                        if plan is not None:
-                            self._terminal_reject_plan(
-                                plan,
-                                reason="IMMEDIATE_RESPONSE_PRICE_BOUND_BREACH",
-                                event_type="EXECUTION_PRICE_BOUND_BREACH",
-                                details={
-                                    "actual": str(actual),
-                                    "bound": str(bound),
-                                    "adverse_bound": str(adverse_bound),
-                                },
-                                time_ns=int(event.ts_event),
-                            )
-                        self.entry_filled_quantity += event.last_qty.as_decimal()
+                    return
+                self.entry_filled_quantity += event.last_qty.as_decimal()
+                planned_quantity = Decimal(str(self.active_sizing["quantity"]))
+                if self.entry_filled_quantity > planned_quantity:
+                    self._fail_closed_execution(
+                        event.instrument_id,
+                        "FOK_ENTRY_OVERFILLED",
+                        int(event.ts_event),
+                    )
+                    return
+                if self.entry_filled_quantity < planned_quantity:
+                    if entry_order is None or not entry_order.is_open:
                         self._fail_closed_execution(
                             event.instrument_id,
-                            "IMMEDIATE_RESPONSE_PRICE_BOUND_BREACH",
+                            "FOK_ENTRY_TERMINATED_PARTIALLY_FILLED",
                             int(event.ts_event),
-                            halt_when_flat=True,
                         )
-                        return
-                    if not self._claim_active_plan(
-                        time_ns=int(event.ts_event),
-                        instrument_id=event.instrument_id,
-                    ):
-                        return
-                first_fill = self.entry_filled_quantity == 0
-                self.entry_filled_quantity += event.last_qty.as_decimal()
-                if first_fill and entry_order is not None and entry_order.leaves_qty.as_double() > 0.0:
-                    self.cancel_order(entry_order)
-                # The cancel acknowledgement can race with more executions.
-                # Protect every actual chunk instead of halting or pretending
-                # the later fill did not occur.
+                    else:
+                        self._checkpoint(int(event.ts_event))
+                    return
+                if not self._claim_active_plan(
+                    time_ns=int(event.ts_event),
+                    instrument_id=event.instrument_id,
+                ):
+                    return
+                protected_quantity = self.instruments[plan.symbol].make_qty(
+                    planned_quantity,
+                )
                 if self.emergency_flatten_pending:
-                    self._submit_emergency_fill_exit(event.last_qty, fill_time_ns=int(event.ts_event))
+                    self._submit_emergency_fill_exit(
+                        protected_quantity,
+                        fill_time_ns=int(event.ts_event),
+                    )
                 else:
-                    self._submit_protection(event.last_qty, fill_time_ns=int(event.ts_event))
+                    self._submit_protection(
+                        protected_quantity,
+                        fill_time_ns=int(event.ts_event),
+                    )
             elif role in {"STOP", "TARGET", "EMERGENCY"}:
                 conservative_stop = self._conservative_stop_exits.get(order_id)
                 if conservative_stop is not None:
@@ -2045,7 +2059,7 @@ if NT is not None:
                 self.order_roles.pop(order_id, None)
 
         def on_order_accepted(self, event) -> None:
-            """Claim the causal episode only after the execution account accepts it."""
+            """Record acceptance; only a confirmed full FOK fill claims the episode."""
 
             order_id = str(event.client_order_id)
             role = self.order_roles.get(order_id)
@@ -2060,16 +2074,13 @@ if NT is not None:
             )
             if role != "ENTRY":
                 return
-            if (
-                self.active_sizing.get("entry_mode")
-                == "IMMEDIATE_RESPONSE_BOUNDED_IOC"
-            ):
-                # An accepted IOC is not an executed episode.  Claim only on
-                # its first bounded fill; an unfilled IOC is terminally missed.
+            if self.active_sizing.get("entry_mode") in ENTRY_FOK_MODES:
                 return
-            self._claim_active_plan(
-                time_ns=int(event.ts_event),
-                instrument_id=event.instrument_id,
+            self._fail_closed_execution(
+                event.instrument_id,
+                "NON_FOK_ENTRY_ACCEPTED",
+                int(event.ts_event),
+                halt_when_flat=True,
             )
 
         def _detach_failed_order(self, order_id: str) -> str | None:
@@ -2206,24 +2217,76 @@ if NT is not None:
                 payload={"client_order_id": order_id},
             )
             self.active_order_ids.discard(order_id)
-            if (
-                role == "ENTRY"
-                and self.active_plan is not None
-                and self.active_sizing.get("entry_mode")
-                == "IMMEDIATE_RESPONSE_BOUNDED_IOC"
-                and self.entry_filled_quantity == 0
-            ):
-                self._terminal_reject_plan(
-                    self.active_plan,
-                    reason="IMMEDIATE_RESPONSE_NOT_FILLED",
-                    event_type="IMMEDIATE_RESPONSE_MISSED",
-                    time_ns=int(event.ts_event),
-                )
+            if role == "ENTRY" and self.active_plan is not None:
+                self._handle_terminal_fok_entry(event, terminal_kind="CANCELED")
             self._finalize_slot_if_flat()
 
         def on_order_expired(self, event) -> None:
-            self.active_order_ids.discard(str(event.client_order_id))
+            order_id = str(event.client_order_id)
+            role = self.order_roles.get(order_id)
+            self.active_order_ids.discard(order_id)
+            if role == "ENTRY" and self.active_plan is not None:
+                self._handle_terminal_fok_entry(event, terminal_kind="EXPIRED")
             self._finalize_slot_if_flat()
+
+        def _handle_terminal_fok_entry(self, event, *, terminal_kind: str) -> None:
+            plan = self.active_plan
+            if plan is None:
+                return
+            mode = self.active_sizing.get("entry_mode")
+            if mode not in ENTRY_FOK_MODES:
+                self._fail_closed_execution(
+                    event.instrument_id,
+                    f"NON_FOK_ENTRY_{terminal_kind}:{mode or 'UNKNOWN'}",
+                    int(event.ts_event),
+                    halt_when_flat=True,
+                )
+                return
+            planned_quantity = Decimal(str(self.active_sizing["quantity"]))
+            if self.entry_filled_quantity == 0:
+                local_cancel_reason = self.active_sizing.pop(
+                    "entry_cancel_reason",
+                    None,
+                )
+                if local_cancel_reason is not None:
+                    proposal_live = self._coordinator_proposal_is_live(plan)
+                    if proposal_live is not False:
+                        self._terminal_reject_plan(
+                            plan,
+                            reason=str(local_cancel_reason),
+                            event_type="PENDING_FOK_CANCELED",
+                            time_ns=int(event.ts_event),
+                        )
+                    return
+                reason = (
+                    "IMMEDIATE_RESPONSE_NOT_FILLED"
+                    if mode == ENTRY_MODE_IMMEDIATE_FOK
+                    else "FIRST_RETURN_NOT_FILLED"
+                )
+                self._terminal_reject_plan(
+                    plan,
+                    reason=reason,
+                    event_type="BOUNDED_FOK_MISSED",
+                    time_ns=int(event.ts_event),
+                )
+                return
+            if self.entry_filled_quantity != planned_quantity:
+                self._terminal_reject_plan(
+                    plan,
+                    reason="FOK_ENTRY_TERMINATED_PARTIALLY_FILLED",
+                    event_type="FOK_EXECUTION_CONTRACT_VIOLATION",
+                    details={
+                        "planned_quantity": str(planned_quantity),
+                        "filled_quantity": str(self.entry_filled_quantity),
+                        "terminal_kind": terminal_kind,
+                    },
+                    time_ns=int(event.ts_event),
+                )
+                self._fail_closed_execution(
+                    event.instrument_id,
+                    "FOK_ENTRY_TERMINATED_PARTIALLY_FILLED",
+                    int(event.ts_event),
+                )
 
         def _finalize_slot_if_flat(self) -> None:
             if self.active_plan is None:
