@@ -1,0 +1,38 @@
+name: bootstrap-mlk-structural-short
+
+on:
+  push:
+    branches: [research_candidate_ML_k_short_eval]
+    paths:
+      - '.github/workflows/bootstrap-mlk-structural-short.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k_short_eval
+          fetch-depth: 0
+      - name: Materialize candidate and short diagnostic
+        run: |
+          set -euo pipefail
+          cat .bootstrap/mlk-short/part-* > /tmp/mlk_short_payload.b64
+          base64 -d /tmp/mlk_short_payload.b64 > /tmp/mlk_short_payload.zip
+          printf '%s  %s\n' '66b61c4cf8a67ed9cc8e4d93fd33ce0185e4ec2f8bdfe2146e147c9a0858b5ed' /tmp/mlk_short_payload.zip | sha256sum -c -
+          unzip -oq /tmp/mlk_short_payload.zip -d .
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/candidate-ml-k-structural-destination \
+            .github/workflows/research-candidate-ml-k-structural-destination-short.yml
+          git commit -m 'research(ML-k): add structural destination short diagnostic'
+          git push origin HEAD:research_candidate_ML_k_short_eval
