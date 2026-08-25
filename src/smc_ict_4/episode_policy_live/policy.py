@@ -106,6 +106,7 @@ from .structural_campaign import (
     CampaignSeed,
     CampaignSnapshot,
     EntryRefinement,
+    EpisodeFlowControl,
     FlowBaseline,
     HypothesisGeometry,
     ParentCampaignOwner,
