@@ -1,0 +1,179 @@
+name: research-candidate-ml-k-structural-destination-short
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k_short_eval]
+    paths:
+      - 'research/candidate-ml-k-structural-destination/**'
+      - '.github/workflows/research-candidate-ml-k-structural-destination-short.yml'
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-k-structural-destination-short
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-ml-k-structural-destination
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k_short_eval
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$CANDIDATE/runtime-requirements.txt" 'pytest>=8.0'
+          python -m py_compile "$CANDIDATE"/*.py
+          python -m pytest -q "$CANDIDATE"/test_*.py
+          python "$CANDIDATE/reproduce_destination.py" verify \
+            --output research_results/candidate_ml_k/structural_destination_short/verify
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include:
+          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: BTCUSDT}
+          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: ETHUSDT}
+          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: SOLUSDT}
+          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: XRPUSDT}
+          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: BTCUSDT}
+          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: ETHUSDT}
+          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: SOLUSDT}
+          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: XRPUSDT}
+          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: BTCUSDT}
+          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: ETHUSDT}
+          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: SOLUSDT}
+          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: XRPUSDT}
+          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: BTCUSDT}
+          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: ETHUSDT}
+          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: SOLUSDT}
+          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: XRPUSDT}
+          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: BTCUSDT}
+          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: ETHUSDT}
+          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: SOLUSDT}
+          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: XRPUSDT}
+          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: BTCUSDT}
+          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: ETHUSDT}
+          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: SOLUSDT}
+          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: XRPUSDT}
+          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: BTCUSDT}
+          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: ETHUSDT}
+          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: SOLUSDT}
+          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: XRPUSDT}
+          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: BTCUSDT}
+          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: ETHUSDT}
+          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: SOLUSDT}
+          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: XRPUSDT}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PYTHONUNBUFFERED: '1'
+      OUT: artifacts/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}
+      CACHE: .cache/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k_short_eval
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$CANDIDATE/runtime-requirements.txt"
+          python "$CANDIDATE/reproduce_destination.py" harvest \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --warmup-days 45 --period "${{ matrix.period }}" \
+            --symbols "${{ matrix.symbol }}" \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-short-${{ matrix.period }}-${{ matrix.symbol }}
+          path: artifacts/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      ROOT: artifacts/candidate_ml_k/structural_short/all
+      RESULT: artifacts/candidate_ml_k/structural_short/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k_short_eval
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: structural-short-*
+          path: artifacts/candidate_ml_k/structural_short/downloaded
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$CANDIDATE/runtime-requirements.txt"
+          mkdir -p "$ROOT" "$RESULT"
+          find artifacts/candidate_ml_k/structural_short/downloaded -mindepth 1 -maxdepth 1 -type d -print0 |
+          while IFS= read -r -d '' directory; do
+            name="${directory##*/}"
+            suffix="${name#structural-short-}"
+            symbol="${suffix##*-}"
+            period="${suffix%-${symbol}}"
+            mkdir -p "$ROOT/$period/$symbol"
+            cp -a "$directory"/. "$ROOT/$period/$symbol"/
+          done
+          python "$CANDIDATE/reproduce_destination.py" route \
+            --root "$ROOT" --output "$RESULT"
+          git rev-parse HEAD > "$RESULT/source_sha.txt"
+          git branch --show-current > "$RESULT/source_branch.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: structural-short-result-${{ github.sha }}
+          path: artifacts/candidate_ml_k/structural_short/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit compact short result
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/structural_destination_short/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$RESULT/summary.json" "$DEST/"
+          cp "$RESULT/source_sha.txt" "$DEST/"
+          cp "$RESULT/source_branch.txt" "$DEST/"
+          for file in selected_orders.csv closed_trades.csv replaced_pending_orders.csv; do
+            [ -f "$RESULT/$file" ] && cp "$RESULT/$file" "$DEST/$file"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$DEST"
+          git commit -m "Record ML-k structural short diagnostic ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_ML_k_short_eval
