@@ -825,7 +825,11 @@ class SymbolEpisodePolicy:
                 for item in canonical
             )
         return RouterPrebarContext(
-            sequence=len(self.market.one_minute),
+            # The retained one-minute tape is intentionally bounded.  Its
+            # length therefore stops increasing after five days and cannot
+            # serve as a causal campaign clock.  The completed UTC minute is
+            # monotonic, restart-stable and independent of retention.
+            sequence=bar.open_time_ns // NS_PER_MINUTE,
             structure_serial=serial,
             sources=authoritative,
             flow_baseline=baseline,
