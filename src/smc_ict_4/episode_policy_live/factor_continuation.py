@@ -206,6 +206,7 @@ class LocalAuctionContinuationSetup:
     formation_factor_event_time_ns: int | None = None
     formation_factor_sequence: int | None = None
     formation_factor_agreeing_symbols: tuple[str, ...] = ()
+    detached_time_ns: int | None = None
     first_touch_time_ns: int | None = None
     touch_high: float | None = None
     touch_low: float | None = None

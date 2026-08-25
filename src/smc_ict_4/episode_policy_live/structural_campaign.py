@@ -18,7 +18,7 @@ are entry refinements and cannot create a campaign by themselves.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import math
 from statistics import median
@@ -317,6 +317,7 @@ class StructuralOpportunity:
     entry_zone: EntryZone
     flow_control: EpisodeFlowControl
     hypothesis: CampaignHypothesis
+    owner_evidence: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def risk_distance(self) -> float:
@@ -348,6 +349,7 @@ class StructuralOpportunity:
             "destination_boundary_id": self.destination_boundary_id,
             "entry_zone": self.entry_zone,
             "evidence": {
+                **dict(self.owner_evidence),
                 "campaign_hypothesis": self.hypothesis.value,
                 "flow_mechanism": self.flow_control.mechanism,
                 "flow_episode_bars": self.flow_control.episode_bars,
@@ -616,7 +618,10 @@ class ParentCampaignOwner:
         lower, upper = state.source.band_at(obs.structure_serial)
 
         acceptance_locked = (
-            state.phase is CampaignPhase.WAITING_FAILED_ACCEPTANCE_DECISION
+            state.phase in {
+                CampaignPhase.WAITING_ACCEPTANCE_HOLD,
+                CampaignPhase.WAITING_FAILED_ACCEPTANCE_DECISION,
+            }
             or (
                 state.hypothesis is CampaignHypothesis.ACCEPTANCE
                 and state.committed_geometry is not None
@@ -687,7 +692,13 @@ class ParentCampaignOwner:
         if state.phase is CampaignPhase.RESOLVING and obs.is_decision_close:
             assert decision_bar is not None
             outward = state.outward_side
-            if cls._closes_outside(decision_bar, outward, lower, upper):
+            if cls._closes_outside(
+                decision_bar,
+                outward,
+                lower,
+                upper,
+                source=state.source,
+            ):
                 state = replace(
                     state,
                     phase=CampaignPhase.WAITING_ACCEPTANCE_HOLD,
@@ -1567,7 +1578,27 @@ class ParentCampaignOwner:
         raise PolicyError("detachment requires an active campaign side")
 
     @staticmethod
-    def _closes_outside(bar: Bar, side: Side, lower: float, upper: float) -> bool:
+    def _closes_outside(
+        bar: Bar,
+        side: Side,
+        lower: float,
+        upper: float,
+        *,
+        source: LiquidityBoundary | None = None,
+    ) -> bool:
+        if (
+            source is not None
+            and source.timeframe_minutes == 15
+            and "CHANNEL" in source.kind.upper()
+        ):
+            # Skilled-auction-control: the decision body must transfer through
+            # the mature channel edge.  A bar already opened outside is not a
+            # newly observed break and cannot originate this owner.
+            return (
+                bar.open <= upper and bar.close > upper
+                if side == "LONG"
+                else bar.open >= lower and bar.close < lower
+            )
         return bar.close > upper if side == "LONG" else bar.close < lower
 
     @staticmethod

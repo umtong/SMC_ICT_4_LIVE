@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 from math import log
 from statistics import median
 
+from .accepted_pullback import AcceptedPullbackCompletion, AcceptedPullbackOwners
 from .attack_ledger import (
     AttackLedger,
     AttackOutcome,
@@ -212,6 +213,7 @@ class SymbolEpisodePolicy:
         self.attack_ledger = AttackLedger(symbol)
         self.inventory_timeline = inventory_timeline
         self.factor_flow = CausalFlowAnalyzer(self.tick_size)
+        self._accepted_pullbacks = AcceptedPullbackOwners(symbol, self.tick_size)
         self._common_factor_state: CommonFactorState | None = None
         self._continuation_local_side: str | None = None
         self._continuation_direction_pivot_id: str | None = None
@@ -603,9 +605,9 @@ class SymbolEpisodePolicy:
         return output
 
     def ingest_one_minute(self, bar: Bar) -> Bar | None:
-        # The active law owns micro response in ParentCampaignOwner and the
-        # shared price campaign.  Legacy journey/factor state is deliberately
-        # not advanced on the production path.
+        # Completed-minute flow is shared by the RE1 continuation owners.  It
+        # is descriptive event evidence, never a fitted directional score.
+        self.factor_flow.observe(bar)
         five, _ = self.market.push_one_minute(bar)
         if five is not None:
             self._sync_structural_books()
@@ -719,7 +721,15 @@ class SymbolEpisodePolicy:
             bar.open_time_ns + 1,
             serial,
         ):
-            if node.role is not StructureRole.SOURCE:
+            mature_channel_main = (
+                node.timeframe_minutes == 15
+                and node.kind
+                in {
+                    "ASCENDING_CHANNEL_LOWER",
+                    "DESCENDING_CHANNEL_UPPER",
+                }
+            )
+            if node.role is not StructureRole.SOURCE and not mature_channel_main:
                 continue
             if node.observed_time_ns > bar.open_time_ns or not node.is_fresh(
                 bar.open_time_ns,
@@ -946,6 +956,45 @@ class SymbolEpisodePolicy:
             if side == "LONG"
             else source_upper + self.tick_size
         )
+        # EasyChart v18/v19 channel acceptance is invalidated by the wave
+        # which produced the break, not by a cosmetically narrow projected
+        # edge.  FeasibleTrendChannelBook has already enforced the ordered
+        # four-point 15m phase before such a source can be visible here.
+        if (
+            family == "ACCEPTANCE"
+            and source.timeframe_minutes == 15
+            and "CHANNEL" in source.kind.upper()
+        ):
+            origin_side = "LOW" if side == "LONG" else "HIGH"
+            origins = [
+                pivot
+                for pivot in self.market.pivots(15)
+                if pivot.side == origin_side
+                and pivot.observed_time_ns < visible_time
+            ]
+            if origins:
+                origin = max(
+                    origins,
+                    key=lambda item: (
+                        item.event_time_ns,
+                        item.observed_time_ns,
+                        item.pivot_id,
+                    ),
+                )
+                wave_stop = (
+                    origin.price - self.tick_size
+                    if side == "LONG"
+                    else origin.price + self.tick_size
+                )
+                invalidation = (
+                    min(invalidation, wave_stop)
+                    if side == "LONG"
+                    else max(invalidation, wave_stop)
+                )
+            else:
+                # v18 main-line acceptance has no defensible complete-wave
+                # invalidation without a prior confirmed opposite pivot.
+                return None
         return HypothesisGeometry(
             destination=destination,
             invalidation_price=invalidation,
@@ -1450,6 +1499,81 @@ class SymbolEpisodePolicy:
         newly_opened: set[str] = set()
         newly_opened_static_source_ids: set[str] = set()
 
+        # These RE1 owners are independent complete continuation mechanisms,
+        # not filters on a source-attack campaign.  They still enter the same
+        # ownership router and therefore the same single-account arbitration.
+        if decision_bar is not None:
+            local_ob_claimed = self._observe_local_continuation_five(decision_bar)
+            self._accepted_pullbacks.observe_completed_bars(
+                five=self.market.five_minute,
+                fifteen=self.market.fifteen_minute,
+                sixty=self.market.sixty_minute,
+                pivots={
+                    5: self.market.pivots(5),
+                    15: self.market.pivots(15),
+                    60: self.market.pivots(60),
+                },
+                flow=self.factor_flow,
+                destinations=self.market.objective_book.objectives.values(),
+                claimed_break_time_ns=(
+                    decision_bar.close_time_ns if local_ob_claimed else None
+                ),
+            )
+
+        local_completions = self._advance_local_continuation_setups(bar, serial)
+        for candidate in local_completions:
+            formation_open = (
+                candidate.entry_zone.observed_time_ns - 5 * NS_PER_MINUTE
+            )
+            impulse_identity = (
+                f"LOCAL_5M_IMPULSE:{self.symbol}:{candidate.side}:"
+                f"{candidate.entry_zone.observed_time_ns}"
+            )
+            root = source_campaign_root_id(
+                source_identity=impulse_identity,
+                source_generation=0,
+                interaction_time_ns=formation_open,
+            )
+            opportunities.append(
+                (
+                    candidate,
+                    formation_open,
+                    root,
+                    candidate.entry_zone.observed_time_ns,
+                    candidate.first_return_time_ns,
+                )
+            )
+
+        for completion in self._accepted_pullbacks.advance_minute(
+            bar,
+            self.factor_flow.last_observation,
+        ):
+            candidate = self._build_accepted_pullback_opportunity(
+                completion,
+                serial,
+            )
+            if candidate is None:
+                continue
+            formation_open = completion.setup.break_time_ns - 5 * NS_PER_MINUTE
+            impulse_identity = (
+                f"LOCAL_5M_IMPULSE:{self.symbol}:{candidate.side}:"
+                f"{completion.setup.break_time_ns}"
+            )
+            root = source_campaign_root_id(
+                source_identity=impulse_identity,
+                source_generation=0,
+                interaction_time_ns=formation_open,
+            )
+            opportunities.append(
+                (
+                    candidate,
+                    formation_open,
+                    root,
+                    completion.setup.break_time_ns,
+                    candidate.first_return_time_ns,
+                )
+            )
+
         if context.flow_baseline is not None:
             for item in context.sources:
                 source_key = (item.boundary.boundary_id, item.generation)
@@ -1911,7 +2035,7 @@ class SymbolEpisodePolicy:
         self._continuation_setups.pop(episode_id, None)
         self._diagnostic_counts[reason] = self._diagnostic_counts.get(reason, 0) + 1
 
-    def _observe_local_continuation_five(self, bar: Bar) -> None:
+    def _observe_local_continuation_five(self, bar: Bar) -> bool:
         """Let local BOS own a flow-validated 5m first-return location.
 
         This is the later RE1 responsibility split.  The common-market factor
@@ -1920,17 +2044,17 @@ class SymbolEpisodePolicy:
         """
 
         if len(self.market.five_minute) < 2:
-            return
+            return False
         raw = five_minute_engulfing_ob(
             self.market.five_minute[-2],
             bar,
             tick_size=self.tick_size,
         )
         if raw is None:
-            return
+            return False
         source, invalidation, ratio = raw
         if source.boundary_id in self._continuation_seen_source_ids:
-            return
+            return False
         self._continuation_seen_source_ids.add(source.boundary_id)
         side = "LONG" if source.side == "LOW" else "SHORT"
         factor = self._common_factor_state
@@ -1942,7 +2066,7 @@ class SymbolEpisodePolicy:
                 )
                 + 1
             )
-            return
+            return False
         if (
             self._continuation_local_side != side
             or self._continuation_direction_pivot_id is None
@@ -1955,13 +2079,13 @@ class SymbolEpisodePolicy:
                 )
                 + 1
             )
-            return
+            return False
         observations = self.factor_flow.between(
             self.market.five_minute[-2].close_time_ns,
             bar.close_time_ns,
         )
         if not observations:
-            return
+            return False
         direction = 1.0 if side == "LONG" else -1.0
         cumulative_flow = direction * sum(
             item.signed_taker_quote for item in observations
@@ -1983,7 +2107,7 @@ class SymbolEpisodePolicy:
                 )
                 + 1
             )
-            return
+            return False
         reference = bar.high if side == "LONG" else bar.low
         destinations = self.market.objective_book.destination_candidates_at(
             side=side,
@@ -1999,7 +2123,7 @@ class SymbolEpisodePolicy:
                 )
                 + 1
             )
-            return
+            return False
         destination = destinations[0]
         episode_id = stable_id(
             self.symbol,
@@ -2013,7 +2137,15 @@ class SymbolEpisodePolicy:
             or episode_id in self._used_episodes
             or episode_id in self._terminalized_episodes
         ):
-            return
+            return False
+        # RE1 assigns the next pullback to the newest completed nested impulse;
+        # older untested same-side footprints remain context, not extra trades.
+        for older_id, older in tuple(self._continuation_setups.items()):
+            if older.side == side and older.source.observed_time_ns < source.observed_time_ns:
+                self._finish_continuation_setup(
+                    older_id,
+                    "LOCAL_CONTINUATION_SUPERSEDED_BY_NEWER_IMPULSE",
+                )
         self._continuation_setups[episode_id] = LocalAuctionContinuationSetup(
             episode_id=episode_id,
             symbol=self.symbol,
@@ -2041,6 +2173,7 @@ class SymbolEpisodePolicy:
         self._diagnostic_counts["LOCAL_CONTINUATION_ARMED"] = (
             self._diagnostic_counts.get("LOCAL_CONTINUATION_ARMED", 0) + 1
         )
+        return True
 
     def _local_continuation_route_nodes(
         self,
@@ -2099,12 +2232,26 @@ class SymbolEpisodePolicy:
         bar: Bar,
         serial: int,
         response_mechanism: str,
-    ) -> TradePlan | None:
+    ) -> StructuralOpportunity | None:
         destination = setup.destination
         if destination is None:
             return None
         entry = bar.close
-        stop = setup.source_invalidation
+        if setup.touch_low is None or setup.touch_high is None:
+            return None
+        stop = (
+            min(
+                setup.source_invalidation,
+                setup.touch_low - self.tick_size,
+                bar.low - self.tick_size,
+            )
+            if setup.side == "LONG"
+            else max(
+                setup.source_invalidation,
+                setup.touch_high + self.tick_size,
+                bar.high + self.tick_size,
+            )
+        )
         source, nodes = self._local_continuation_route_nodes(
             setup,
             decision_time_ns=bar.close_time_ns,
@@ -2138,7 +2285,7 @@ class SymbolEpisodePolicy:
             bar.close_time_ns,
             prefix="PLAN:",
         )
-        evidence: dict[str, float | str | int] = {
+        evidence: dict[str, object] = {
             "source_kind": setup.source.kind,
             "source_side": setup.source.side,
             "source_observed_time_ns": setup.source.observed_time_ns,
@@ -2177,6 +2324,7 @@ class SymbolEpisodePolicy:
                 "PRE_TOUCH_COMMITTED_NEAREST_SIGNIFICANT_1M_5M_15M_OBJECTIVE"
             ),
             "complete_episode_invalidation": stop,
+            "first_return_detached_time_ns": int(setup.detached_time_ns or 0),
         }
         if setup.formation_factor_event_time_ns is not None:
             evidence["formation_factor_event_time_ns"] = (
@@ -2188,17 +2336,59 @@ class SymbolEpisodePolicy:
             evidence["formation_factor_agreeing_symbols"] = ",".join(
                 setup.formation_factor_agreeing_symbols,
             )
-        return TradePlan(
+        observation = self.factor_flow.last_observation
+        if (
+            observation is None
+            or observation.time_ns != bar.close_time_ns
+            or setup.first_touch_time_ns is None
+            or setup.detached_time_ns is None
+        ):
+            return None
+        direction = 1.0 if setup.side == "LONG" else -1.0
+        aligned = max(0.0, direction * observation.signed_taker_quote)
+        flow_control = EpisodeFlowControl(
+            mechanism=(
+                "AGGRESSOR_INITIATIVE_CONTROL"
+                if response_mechanism == "FIRST_RESPONSE_ALIGNED_INITIATIVE"
+                else "OPPOSING_AGGRESSION_ABSORBED"
+            ),
+            episode_bars=max(
+                1,
+                len(
+                    self.factor_flow.between(
+                        setup.source.observed_time_ns - 5 * NS_PER_MINUTE,
+                        bar.close_time_ns,
+                    )
+                ),
+            ),
+            response_bars=1,
+            total_quote=observation.quote_volume,
+            aligned_taker_quote=float(aligned),
+            adverse_taker_quote=max(
+                0.0, -direction * observation.signed_taker_quote,
+            ),
+            cumulative_signed_for_side=(
+                direction * observation.signed_taker_quote
+            ),
+            adverse_penetration=0.0,
+            recovery_from_extreme=abs(bar.close - bar.open),
+            final_control_progress=abs(bar.close - bar.open),
+        )
+        return StructuralOpportunity(
             episode_id=episode_id,
             plan_id=plan_id,
             symbol=self.symbol,
-            family="LOCAL_AUCTION_CONTINUATION",
+            family="ACCEPTED_AUCTION_CONTINUATION",
             side=setup.side,
             decision_time_ns=bar.close_time_ns,
+            first_return_detached_time_ns=setup.detached_time_ns,
+            first_return_time_ns=setup.first_touch_time_ns,
+            control_transfer_time_ns=bar.close_time_ns,
+            entry_retest_detached_time_ns=None,
+            entry_retest_time_ns=bar.close_time_ns,
             entry=entry,
             stop=stop,
             target=route.target,
-            expires_time_ns=MAX_CAUSAL_ORDER_TIME_NS,
             source_boundary_id=setup.source.boundary_id,
             destination_boundary_id=route.destination.node_id,
             entry_zone=EntryZone(
@@ -2208,7 +2398,9 @@ class SymbolEpisodePolicy:
                 setup.source.observed_time_ns,
                 setup.source.observed_time_ns,
             ),
-            evidence=evidence,
+            flow_control=flow_control,
+            hypothesis=CampaignHypothesis.ACCEPTANCE,
+            owner_evidence=evidence,
         )
 
     def _local_continuation_response_mechanism(
@@ -2232,12 +2424,186 @@ class SymbolEpisodePolicy:
             return "FIRST_RESPONSE_ADVERSE_FLOW_ABSORBED"
         return None
 
+    def _build_accepted_pullback_opportunity(
+        self,
+        completion: AcceptedPullbackCompletion,
+        serial: int,
+    ) -> StructuralOpportunity | None:
+        """Apply the shared target-first geometry to an accepted-level owner."""
+
+        setup = completion.setup
+        destination = setup.destination
+        if (
+            destination is None
+            or setup.retest_time_ns is None
+            or setup.detached_time_ns is None
+            or setup.retest_high is None
+            or setup.retest_low is None
+        ):
+            return None
+        bar = completion.decision_bar
+        pivot = setup.break_pivot.price
+        lower = pivot - self.tick_size
+        upper = pivot + self.tick_size
+        source = StructuralNode(
+            node_id=stable_id(
+                setup.break_pivot.pivot_id,
+                setup.owner,
+                prefix="ACCEPTED_LEVEL:",
+            ),
+            symbol=self.symbol,
+            side="LOW" if setup.side == "LONG" else "HIGH",
+            kind=(
+                "ACCEPTED_5M_LEVEL_LOCAL_15M_LEG"
+                if setup.owner == "LOCAL_15M"
+                else "ACCEPTED_5M_LEVEL_RESIDUAL_60M_LEG"
+            ),
+            role=StructureRole.SOURCE,
+            timeframe_minutes=5,
+            observed_time_ns=int(setup.hold_time_ns or setup.break_time_ns),
+            lower=lower,
+            upper=upper,
+            anchor_serial=serial,
+            invalidation=(
+                lower - self.tick_size
+                if setup.side == "LONG"
+                else upper + self.tick_size
+            ),
+        )
+        target_price = self._objective_execution_price(
+            setup.side,
+            destination.price,
+        )
+        nodes = [
+            StructuralNode(
+                node_id=destination.boundary_id,
+                symbol=self.symbol,
+                side=destination.side,
+                kind=destination.kind,
+                role=StructureRole.DESTINATION,
+                timeframe_minutes=destination.timeframe_minutes,
+                observed_time_ns=destination.observed_time_ns,
+                lower=target_price,
+                upper=target_price,
+                anchor_serial=serial,
+                consumed_time_ns=destination.consumed_time_ns,
+            ),
+        ]
+        nodes.extend(
+            node.as_role(StructureRole.ROUTE_OBSTACLE)
+            for node in self._projected_structural_nodes(
+                bar.close_time_ns,
+                serial,
+            )
+        )
+        stop = (
+            min(
+                setup.retest_low,
+                bar.low,
+                pivot - self.tick_size,
+            )
+            - self.tick_size
+            if setup.side == "LONG"
+            else max(
+                setup.retest_high,
+                bar.high,
+                pivot + self.tick_size,
+            )
+            + self.tick_size
+        )
+        route = destination_first_geometry(
+            side=setup.side,
+            source=source,
+            nodes=nodes,
+            entry=bar.close,
+            stop=stop,
+            decision_time_ns=bar.close_time_ns,
+            serial=serial,
+            minimum_gross_rr=1.0,
+        )
+        if not route.accepted or route.destination is None or route.target is None:
+            return None
+        observation = completion.response
+        sign = 1.0 if setup.side == "LONG" else -1.0
+        flow = EpisodeFlowControl(
+            mechanism=completion.response_mechanism,  # type: ignore[arg-type]
+            episode_bars=2,
+            response_bars=1,
+            total_quote=observation.quote_volume,
+            aligned_taker_quote=max(
+                0.0, sign * observation.signed_taker_quote,
+            ),
+            adverse_taker_quote=max(
+                0.0, -sign * observation.signed_taker_quote,
+            ),
+            cumulative_signed_for_side=(
+                sign * observation.signed_taker_quote
+            ),
+            adverse_penetration=0.0,
+            recovery_from_extreme=abs(bar.close - bar.open),
+            final_control_progress=abs(bar.close - bar.open),
+        )
+        plan_id = stable_id(
+            setup.setup_id,
+            bar.close_time_ns,
+            bar.close,
+            stop,
+            route.target,
+            prefix="ACCEPTED_PULLBACK_PLAN:",
+        )
+        return StructuralOpportunity(
+            episode_id=setup.setup_id,
+            plan_id=plan_id,
+            symbol=self.symbol,
+            family="ACCEPTED_AUCTION_CONTINUATION",
+            side=setup.side,
+            decision_time_ns=bar.close_time_ns,
+            first_return_detached_time_ns=setup.detached_time_ns,
+            first_return_time_ns=setup.retest_time_ns,
+            control_transfer_time_ns=bar.close_time_ns,
+            entry_retest_detached_time_ns=None,
+            entry_retest_time_ns=bar.close_time_ns,
+            entry=bar.close,
+            stop=stop,
+            target=route.target,
+            source_boundary_id=source.node_id,
+            destination_boundary_id=route.destination.node_id,
+            entry_zone=EntryZone(
+                kind=source.kind,
+                lower=lower,
+                upper=upper,
+                observed_time_ns=int(setup.hold_time_ns or setup.break_time_ns),
+                source_bar_open_time_ns=setup.break_time_ns - 5 * NS_PER_MINUTE,
+            ),
+            flow_control=flow,
+            hypothesis=CampaignHypothesis.ACCEPTANCE,
+            owner_evidence={
+                "pullback_owner": setup.owner,
+                "accepted_leg_timeframe_minutes": (
+                    15 if setup.owner == "LOCAL_15M" else 60
+                ),
+                "accepted_leg_pivot_id": setup.leg.pivot.pivot_id,
+                "accepted_leg_time_ns": setup.leg.accepted_time_ns,
+                "accepted_level_pivot_id": setup.break_pivot.pivot_id,
+                "accepted_level_break_time_ns": setup.break_time_ns,
+                "accepted_level_hold_time_ns": int(setup.hold_time_ns or 0),
+                "source_kind": source.kind,
+                "source_side": source.side,
+                "source_observed_time_ns": source.observed_time_ns,
+                "source_timeframe_minutes": 5,
+                "destination_kind": route.destination.kind,
+                "destination_observed_time_ns": route.destination.observed_time_ns,
+                "objective_commit_time_ns": int(setup.hold_time_ns or 0),
+                "entry_event": "ACCEPTED_LEVEL_FIRST_RESPONSE_CLOSE",
+            },
+        )
+
     def _advance_local_continuation_setups(
         self,
         bar: Bar,
         serial: int,
-    ) -> list[TradePlan]:
-        output: list[TradePlan] = []
+    ) -> list[StructuralOpportunity]:
+        output: list[StructuralOpportunity] = []
         for episode_id, setup in list(self._continuation_setups.items()):
             if self._continuation_local_side != setup.side:
                 self._finish_continuation_setup(
@@ -2275,29 +2641,11 @@ class SymbolEpisodePolicy:
                 and current_target.consumed_time_ns is not None
                 and current_target.consumed_time_ns <= bar.close_time_ns
             ):
-                if setup.first_touch_time_ns is not None:
-                    self._finish_continuation_setup(
-                        episode_id,
-                        "LOCAL_CONTINUATION_DESTINATION_SPENT_AFTER_FIRST_TOUCH",
-                    )
-                    continue
-                # No entry event exists yet.  Completion of the provisional
-                # route does not revive an older farther target; it leaves the
-                # still-untouched source without a destination until price
-                # creates a genuinely later opposing objective.
-                setup.destination = None
-                setup.objective_rearm_after_ns = current_target.consumed_time_ns
-                setup.objective_commit_time_ns = current_target.consumed_time_ns
-                self._diagnostic_counts[
-                    "LOCAL_CONTINUATION_DESTINATION_SPENT_AWAITING_FRESH_OBJECTIVE"
-                ] = (
-                    self._diagnostic_counts.get(
-                        "LOCAL_CONTINUATION_DESTINATION_SPENT_AWAITING_FRESH_OBJECTIVE",
-                        0,
-                    )
-                    + 1
+                self._finish_continuation_setup(
+                    episode_id,
+                    "LOCAL_CONTINUATION_FROZEN_DESTINATION_SPENT_BEFORE_ENTRY",
                 )
-                current_target = None
+                continue
 
             if current_target is not None:
                 target = self._objective_execution_price(
@@ -2313,69 +2661,12 @@ class SymbolEpisodePolicy:
                     decision_time_ns=bar.close_time_ns,
                     route_commit_time_ns=setup.objective_commit_time_ns,
                 )
-                if closer_objectives and setup.first_touch_time_ns is not None:
+                if closer_objectives:
                     self._finish_continuation_setup(
                         episode_id,
-                        "LOCAL_CONTINUATION_ROUTE_CHANGED_AFTER_FIRST_TOUCH",
+                        "LOCAL_CONTINUATION_ROUTE_CHANGED_BEFORE_ENTRY",
                     )
                     continue
-                if closer_objectives:
-                    closer = closer_objectives[0]
-                    if (
-                        closer.consumed_time_ns is not None
-                        and closer.consumed_time_ns <= bar.close_time_ns
-                    ):
-                        setup.destination = None
-                        setup.objective_rearm_after_ns = closer.consumed_time_ns
-                        setup.objective_commit_time_ns = closer.consumed_time_ns
-                        self._diagnostic_counts[
-                            "LOCAL_CONTINUATION_CLOSER_SPENT_AWAITING_FRESH_OBJECTIVE"
-                        ] = (
-                            self._diagnostic_counts.get(
-                                "LOCAL_CONTINUATION_CLOSER_SPENT_AWAITING_FRESH_OBJECTIVE",
-                                0,
-                            )
-                            + 1
-                        )
-                    else:
-                        setup.destination = closer
-                        setup.objective_commit_time_ns = closer.observed_time_ns
-                        setup.objective_revision_count += 1
-                        self._diagnostic_counts[
-                            "LOCAL_CONTINUATION_OBJECTIVE_RECOMMITTED_CLOSER"
-                        ] = (
-                            self._diagnostic_counts.get(
-                                "LOCAL_CONTINUATION_OBJECTIVE_RECOMMITTED_CLOSER",
-                                0,
-                            )
-                            + 1
-                        )
-
-            if setup.destination is None and setup.first_touch_time_ns is None:
-                rearm_after = int(setup.objective_rearm_after_ns or 0)
-                fresh = [
-                    objective
-                    for objective in self.market.objective_book.destination_candidates_at(
-                        side=setup.side,
-                        reference_price=reference_entry,
-                        decision_time_ns=bar.close_time_ns,
-                        source_boundary_id=setup.source.boundary_id,
-                    )
-                    if objective.observed_time_ns > rearm_after
-                ]
-                if fresh:
-                    setup.destination = fresh[0]
-                    setup.objective_commit_time_ns = fresh[0].observed_time_ns
-                    setup.objective_revision_count += 1
-                    self._diagnostic_counts[
-                        "LOCAL_CONTINUATION_OBJECTIVE_RECONSTITUTED_BEFORE_TOUCH"
-                    ] = (
-                        self._diagnostic_counts.get(
-                            "LOCAL_CONTINUATION_OBJECTIVE_RECONSTITUTED_BEFORE_TOUCH",
-                            0,
-                        )
-                        + 1
-                    )
             if setup.destination is not None:
                 executable_target = self._objective_execution_price(
                     setup.side,
@@ -2387,29 +2678,22 @@ class SymbolEpisodePolicy:
                     else bar.low <= executable_target
                 )
                 if executable_target_touched:
-                    if setup.first_touch_time_ns is not None:
-                        self._finish_continuation_setup(
-                            episode_id,
-                            "LOCAL_CONTINUATION_EXECUTABLE_DESTINATION_SPENT_AFTER_FIRST_TOUCH",
-                        )
-                        continue
-                    # The executable TP is one tick inside the pivot, so this
-                    # bar can spend the provisional route without consuming
-                    # the raw pivot identity.  Apply the same no-fallback rule
-                    # and require a genuinely later objective before touch.
-                    setup.destination = None
-                    setup.objective_rearm_after_ns = bar.close_time_ns
-                    setup.objective_commit_time_ns = bar.close_time_ns
-                    self._diagnostic_counts[
-                        "LOCAL_CONTINUATION_EXECUTABLE_DESTINATION_SPENT_AWAITING_FRESH_OBJECTIVE"
-                    ] = (
-                        self._diagnostic_counts.get(
-                            "LOCAL_CONTINUATION_EXECUTABLE_DESTINATION_SPENT_AWAITING_FRESH_OBJECTIVE",
-                            0,
-                        )
-                        + 1
+                    self._finish_continuation_setup(
+                        episode_id,
+                        "LOCAL_CONTINUATION_EXECUTABLE_DESTINATION_SPENT_BEFORE_ENTRY",
                     )
+                    continue
             if setup.first_touch_time_ns is None:
+                if setup.detached_time_ns is None:
+                    fully_detached = (
+                        bar.low > setup.source.upper
+                        if setup.side == "LONG"
+                        else bar.high < setup.source.lower
+                    )
+                    if fully_detached:
+                        setup.detached_time_ns = bar.close_time_ns
+                    # The detachment bar cannot simultaneously be its return.
+                    continue
                 if not (
                     bar.low <= setup.source.upper
                     and bar.high >= setup.source.lower
@@ -2419,6 +2703,17 @@ class SymbolEpisodePolicy:
                     self._finish_continuation_setup(
                         episode_id,
                         "LOCAL_CONTINUATION_NO_FRESH_OBJECTIVE_AT_FIRST_TOUCH",
+                    )
+                    continue
+                held = (
+                    bar.close > setup.source.upper
+                    if setup.side == "LONG"
+                    else bar.close < setup.source.lower
+                )
+                if not held:
+                    self._finish_continuation_setup(
+                        episode_id,
+                        "LOCAL_CONTINUATION_FIRST_RETURN_FAILED_TO_HOLD",
                     )
                     continue
                 factor = self._common_factor_state

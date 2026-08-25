@@ -752,3 +752,16 @@ class SymbolMarketState:
     def rolling_median(self, field: str, length: int = 60) -> float:
         values = [float(getattr(item, field)) for item in self.five_minute[-length:]]
         return median(values) if values else 0.0
+
+    def pivots(self, timeframe_minutes: int) -> tuple[Pivot, ...]:
+        """Expose only causally confirmed physical pivots to policy owners."""
+
+        tracker = {
+            1: self._pivot_1,
+            5: self._pivot_5,
+            15: self._pivot_15,
+            60: self._pivot_60,
+        }.get(timeframe_minutes)
+        if tracker is None:
+            raise ValueError("unsupported pivot timeframe")
+        return tuple(tracker.pivots)
