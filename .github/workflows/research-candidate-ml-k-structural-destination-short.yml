@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: research-candidate-ml-k-structural-destination-short
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -23,7 +23,6 @@ defaults:
 
 env:
   CANDIDATE: research/candidate-ml-k-structural-destination
-  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
 jobs:
   preflight:
@@ -50,41 +49,17 @@ jobs:
     needs: preflight
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 16
       matrix:
-        include:
-          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: BTCUSDT}
-          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: ETHUSDT}
-          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: SOLUSDT}
-          - {period: dev-2022-feb07, start: '2022-02-07', end: '2022-02-12', symbol: XRPUSDT}
-          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: BTCUSDT}
-          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: ETHUSDT}
-          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: SOLUSDT}
-          - {period: dev-2022-jun13, start: '2022-06-13', end: '2022-06-18', symbol: XRPUSDT}
-          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: BTCUSDT}
-          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: ETHUSDT}
-          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: SOLUSDT}
-          - {period: dev-2022-nov07, start: '2022-11-07', end: '2022-11-12', symbol: XRPUSDT}
-          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: BTCUSDT}
-          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: ETHUSDT}
-          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: SOLUSDT}
-          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19', symbol: XRPUSDT}
-          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: BTCUSDT}
-          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: ETHUSDT}
-          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: SOLUSDT}
-          - {period: eval-2024-feb12, start: '2024-02-12', end: '2024-02-17', symbol: XRPUSDT}
-          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: BTCUSDT}
-          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: ETHUSDT}
-          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: SOLUSDT}
-          - {period: eval-2024-aug02, start: '2024-08-02', end: '2024-08-07', symbol: XRPUSDT}
-          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: BTCUSDT}
-          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: ETHUSDT}
-          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: SOLUSDT}
-          - {period: eval-2025-mar03, start: '2025-03-03', end: '2025-03-08', symbol: XRPUSDT}
-          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: BTCUSDT}
-          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: ETHUSDT}
-          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: SOLUSDT}
-          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07', symbol: XRPUSDT}
+        window:
+          - {period: dev-2023-aug14, start: '2023-08-14', end: '2023-08-19'}
+          - {period: dev-2024-feb12, start: '2024-02-12', end: '2024-02-17'}
+          - {period: dev-2024-aug02, start: '2024-08-02', end: '2024-08-07'}
+          - {period: dev-2025-mar03, start: '2025-03-03', end: '2025-03-08'}
+          - {period: eval-2025-aug04, start: '2025-08-04', end: '2025-08-09'}
+          - {period: eval-2026-jan05, start: '2026-01-05', end: '2026-01-10'}
+          - {period: fresh-2026-mar02, start: '2026-03-02', end: '2026-03-07'}
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -92,8 +67,8 @@ jobs:
       options: --user 0:0
     env:
       PYTHONUNBUFFERED: '1'
-      OUT: artifacts/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}
-      CACHE: .cache/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}
+      OUT: artifacts/candidate_ml_k/structural_short/${{ matrix.window.period }}/${{ matrix.symbol }}
+      CACHE: .cache/candidate_ml_k/structural_short/${{ matrix.window.period }}/${{ matrix.symbol }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,14 +79,14 @@ jobs:
           uv pip install --python /opt/smc4/.venv/bin/python \
             -r "$CANDIDATE/runtime-requirements.txt"
           python "$CANDIDATE/reproduce_destination.py" harvest \
-            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
-            --warmup-days 45 --period "${{ matrix.period }}" \
+            --start "${{ matrix.window.start }}" --end "${{ matrix.window.end }}" \
+            --warmup-days 45 --period "${{ matrix.window.period }}" \
             --symbols "${{ matrix.symbol }}" \
             --cache "$CACHE" --output "$OUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: structural-short-${{ matrix.period }}-${{ matrix.symbol }}
-          path: artifacts/candidate_ml_k/structural_short/${{ matrix.period }}/${{ matrix.symbol }}/**
+          name: structural-short-${{ matrix.window.period }}-${{ matrix.symbol }}
+          path: artifacts/candidate_ml_k/structural_short/${{ matrix.window.period }}/${{ matrix.symbol }}/**
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
@@ -130,7 +105,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research_candidate_ML_k_short_eval
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: actions/download-artifact@v4
         with:
           pattern: structural-short-*
