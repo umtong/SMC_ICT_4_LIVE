@@ -52,6 +52,7 @@ class AcceptedPullbackSetup:
     retest_high: float | None = None
     retest_low: float | None = None
     destination: LiquidityBoundary | None = None
+    executable_target: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +317,11 @@ class AcceptedPullbackOwners:
                     item.boundary_id,
                 ),
             )
+            setup.executable_target = (
+                setup.destination.price - self.tick_size
+                if setup.side == "LONG"
+                else setup.destination.price + self.tick_size
+            )
             setup.hold_time_ns = bar.close_time_ns
             setup.detached_time_ns = None
             setup.state = "WAITING_RETEST"
@@ -357,13 +363,13 @@ class AcceptedPullbackOwners:
             if setup.hold_time_ns is None or bar.close_time_ns <= setup.hold_time_ns:
                 continue
             destination = setup.destination
-            if destination is None:
+            if destination is None or setup.executable_target is None:
                 self._finish(setup)
                 continue
             target_spent = (
-                bar.high >= destination.price
+                bar.high >= setup.executable_target
                 if setup.side == "LONG"
-                else bar.low <= destination.price
+                else bar.low <= setup.executable_target
             )
             if target_spent:
                 self._finish(setup)

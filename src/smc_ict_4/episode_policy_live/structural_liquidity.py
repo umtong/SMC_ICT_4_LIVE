@@ -602,6 +602,50 @@ class FeasibleTrendChannelBook:
                 )
         return output
 
+    def first_extension_midline(
+        self,
+        node_id: str,
+        *,
+        decision_time_ns: int,
+        serial: int,
+    ) -> tuple[str, float, int] | None:
+        """Return RE1's first equal-width extension midpoint for a main edge."""
+
+        for channel in self.channels:
+            main_edge = self._main_edge(channel)
+            if node_id != f"{channel.channel_id}:{main_edge}":
+                continue
+            if (
+                channel.opposite_edge_reached_time_ns is None
+                or channel.opposite_edge_reached_time_ns >= decision_time_ns
+                or channel.observed_time_ns >= decision_time_ns
+                or (
+                    channel.superseded_time_ns is not None
+                    and channel.superseded_time_ns < decision_time_ns
+                )
+            ):
+                return None
+            lower = self._edge_value(channel, "LOWER", serial)
+            upper = self._edge_value(channel, "UPPER", serial)
+            width = upper - lower
+            if width <= self.tick_size:
+                return None
+            price = (
+                lower - 0.5 * width
+                if main_edge == "LOWER"
+                else upper + 0.5 * width
+            )
+            observed = max(
+                channel.observed_time_ns,
+                channel.opposite_edge_reached_time_ns,
+            )
+            return (
+                f"{channel.channel_id}:FIRST_EXTENSION_MIDLINE:{main_edge}",
+                price,
+                observed,
+            )
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class DefenseBand:

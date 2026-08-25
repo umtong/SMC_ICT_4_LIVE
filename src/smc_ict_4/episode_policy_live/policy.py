@@ -902,6 +902,33 @@ class SymbolEpisodePolicy:
             ):
                 if item.side == wanted:
                     destinations[item.boundary_id] = item
+            if (
+                source.timeframe_minutes == 15
+                and source.kind
+                in {
+                    "ASCENDING_CHANNEL_LOWER",
+                    "DESCENDING_CHANNEL_UPPER",
+                }
+            ):
+                extension = self._trend_channel_books[15].first_extension_midline(
+                    source.boundary_id,
+                    decision_time_ns=visible_time,
+                    serial=serial,
+                )
+                if extension is not None:
+                    extension_id, extension_price, extension_observed = extension
+                    destinations[extension_id] = LiquidityBoundary(
+                        boundary_id=extension_id,
+                        symbol=self.symbol,
+                        side=wanted,
+                        kind="CHANNEL_FIRST_EXTENSION_MIDLINE",
+                        timeframe_minutes=15,
+                        observed_time_ns=extension_observed,
+                        lower=extension_price,
+                        upper=extension_price,
+                        price=extension_price,
+                        strength=3.0,
+                    )
             for item in self.market.boundary_book.boundaries.values():
                 if (
                     item.boundary_id != source.boundary_id
@@ -2499,6 +2526,8 @@ class SymbolEpisodePolicy:
             setup.side,
             destination.price,
         )
+        if setup.executable_target is not None:
+            target_price = setup.executable_target
         nodes = [
             StructuralNode(
                 node_id=destination.boundary_id,
