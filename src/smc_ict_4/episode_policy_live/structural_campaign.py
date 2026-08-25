@@ -304,8 +304,10 @@ class StructuralOpportunity:
     family: OpportunityFamily
     side: Side
     decision_time_ns: int
+    first_return_detached_time_ns: int
     first_return_time_ns: int
     control_transfer_time_ns: int
+    entry_retest_detached_time_ns: int | None
     entry_retest_time_ns: int
     entry: float
     stop: float
@@ -350,8 +352,14 @@ class StructuralOpportunity:
                 "flow_mechanism": self.flow_control.mechanism,
                 "flow_episode_bars": self.flow_control.episode_bars,
                 "flow_response_bars": self.flow_control.response_bars,
+                "first_return_detached_time_ns": (
+                    self.first_return_detached_time_ns
+                ),
                 "first_return_time_ns": self.first_return_time_ns,
                 "control_transfer_time_ns": self.control_transfer_time_ns,
+                "entry_retest_detached_time_ns": (
+                    self.entry_retest_detached_time_ns
+                ),
                 "entry_retest_time_ns": self.entry_retest_time_ns,
             },
         }
@@ -397,6 +405,7 @@ class CampaignSnapshot:
     episode_flow: FlowLedger
     response_flow: FlowLedger
     refinement: EntryRefinement | None = None
+    first_return_detached_time_ns: int | None = None
     first_return_time_ns: int | None = None
     first_return_low: float | None = None
     first_return_high: float | None = None
@@ -404,6 +413,7 @@ class CampaignSnapshot:
     post_return_high: float | None = None
     control_transfer_time_ns: int | None = None
     control_transfer_flow: EpisodeFlowControl | None = None
+    entry_retest_detached_time_ns: int | None = None
     entry_retest_time_ns: int | None = None
     acceptance_route_clear: bool = True
     reversal_route_clear: bool = True
@@ -828,6 +838,18 @@ class ParentCampaignOwner:
                 return CampaignTransition(prior, ended, tuple(events))
             if bar.close_time_ns <= (state.confirmation_time_ns or -1):
                 return CampaignTransition(prior, state, tuple(events))
+            if state.first_return_detached_time_ns is None:
+                if cls._fully_detached(
+                    bar,
+                    state.outward_side,
+                    lower,
+                    upper,
+                ):
+                    state = replace(
+                        state,
+                        first_return_detached_time_ns=bar.close_time_ns,
+                    )
+                return CampaignTransition(prior, state, tuple(events))
             if cls._touches_band(bar, lower, upper):
                 events.append(
                     _event(state, CampaignEventKind.FIRST_RETURN, bar.close_time_ns, "first_physical_return_to_accepted_source")
@@ -887,7 +909,28 @@ class ParentCampaignOwner:
             refinement = state.refinement
             if (
                 refinement is not None
+                and state.first_return_detached_time_ns is None
                 and bar.close_time_ns > max(
+                    state.confirmation_time_ns or -1,
+                    refinement.zone.observed_time_ns,
+                )
+            ):
+                if cls._fully_detached(
+                    bar,
+                    state.reversal_side,
+                    refinement.zone.lower,
+                    refinement.zone.upper,
+                ):
+                    state = replace(
+                        state,
+                        first_return_detached_time_ns=bar.close_time_ns,
+                    )
+                return CampaignTransition(prior, state, tuple(events))
+            if (
+                refinement is not None
+                and state.first_return_detached_time_ns is not None
+                and bar.close_time_ns > max(
+                    state.first_return_detached_time_ns,
                     state.confirmation_time_ns or -1,
                     refinement.zone.observed_time_ns,
                 )
@@ -952,6 +995,17 @@ class ParentCampaignOwner:
                     armed = replace(
                         state,
                         phase=CampaignPhase.WAITING_POST_TRANSFER_RETEST,
+                        entry_retest_detached_time_ns=(
+                            bar.close_time_ns
+                            if state.refinement is not None
+                            and cls._fully_detached(
+                                bar,
+                                state.active_side,
+                                state.refinement.zone.lower,
+                                state.refinement.zone.upper,
+                            )
+                            else None
+                        ),
                     )
                     return CampaignTransition(prior, armed, tuple(events))
                 return cls._commit_control_transfer(
@@ -986,6 +1040,18 @@ class ParentCampaignOwner:
                     "post-transfer retest requires frozen refinement and control"
                 )
             if bar.close_time_ns <= (state.control_transfer_time_ns or -1):
+                return CampaignTransition(prior, state, tuple(events))
+            if state.entry_retest_detached_time_ns is None:
+                if cls._fully_detached(
+                    bar,
+                    state.active_side,
+                    refinement.zone.lower,
+                    refinement.zone.upper,
+                ):
+                    state = replace(
+                        state,
+                        entry_retest_detached_time_ns=bar.close_time_ns,
+                    )
                 return CampaignTransition(prior, state, tuple(events))
             if cls._touches_zone(bar, refinement.zone):
                 events.append(
@@ -1078,6 +1144,7 @@ class ParentCampaignOwner:
             confirmation_time_ns=None,
             response_flow=FlowLedger(),
             refinement=None,
+            first_return_detached_time_ns=None,
             first_return_time_ns=None,
             first_return_low=None,
             first_return_high=None,
@@ -1085,6 +1152,7 @@ class ParentCampaignOwner:
             post_return_high=None,
             control_transfer_time_ns=None,
             control_transfer_flow=None,
+            entry_retest_detached_time_ns=None,
             entry_retest_time_ns=None,
             committed_geometry=None,
         )
@@ -1107,6 +1175,7 @@ class ParentCampaignOwner:
             phase=CampaignPhase.WAITING_FAILED_ACCEPTANCE_DECISION,
             committed_geometry=None,
             refinement=None,
+            first_return_detached_time_ns=None,
             first_return_time_ns=time_ns,
         )
 
@@ -1122,6 +1191,7 @@ class ParentCampaignOwner:
             phase=CampaignPhase.WAITING_REVERSAL_RETEST,
             confirmation_time_ns=time_ns,
             response_flow=FlowLedger(),
+            first_return_detached_time_ns=None,
             first_return_time_ns=None,
             first_return_low=None,
             first_return_high=None,
@@ -1129,6 +1199,7 @@ class ParentCampaignOwner:
             post_return_high=None,
             control_transfer_time_ns=None,
             control_transfer_flow=None,
+            entry_retest_detached_time_ns=None,
             entry_retest_time_ns=None,
             committed_geometry=state.reversal,
         )
@@ -1232,16 +1303,31 @@ class ParentCampaignOwner:
             return None, "settled_hypothesis_has_no_committed_geometry"
         if state.first_return_time_ns is None:
             return None, "control_transfer_has_no_physical_first_return"
+        if state.first_return_detached_time_ns is None:
+            return None, "first_return_was_not_preceded_by_full_detachment"
         if state.control_transfer_time_ns is None:
             return None, "opportunity_has_no_completed_control_transfer"
         if state.entry_retest_time_ns is None:
             return None, "opportunity_has_no_executable_entry_retest"
         if not (
-            state.first_return_time_ns < state.control_transfer_time_ns
+            (state.confirmation_time_ns or -1)
+            < state.first_return_detached_time_ns
+            < state.first_return_time_ns
+            < state.control_transfer_time_ns
             <= state.entry_retest_time_ns
             == bar.close_time_ns
         ):
             return None, "opportunity_event_clock_is_not_causally_ordered"
+        if state.hypothesis in {
+            CampaignHypothesis.REJECTION,
+            CampaignHypothesis.TRAP,
+        } and not (
+            state.entry_retest_detached_time_ns is not None
+            and state.control_transfer_time_ns
+            <= state.entry_retest_detached_time_ns
+            < state.entry_retest_time_ns
+        ):
+            return None, "entry_retest_was_not_preceded_by_post_transfer_detachment"
         route_clear = (
             state.acceptance_route_clear
             if state.hypothesis is CampaignHypothesis.ACCEPTANCE
@@ -1291,8 +1377,14 @@ class ParentCampaignOwner:
                 family=family,
                 side=side,
                 decision_time_ns=bar.close_time_ns,
+                first_return_detached_time_ns=(
+                    state.first_return_detached_time_ns
+                ),
                 first_return_time_ns=state.first_return_time_ns,
                 control_transfer_time_ns=state.control_transfer_time_ns,
+                entry_retest_detached_time_ns=(
+                    state.entry_retest_detached_time_ns
+                ),
                 entry_retest_time_ns=state.entry_retest_time_ns,
                 entry=entry,
                 stop=stop,
@@ -1458,6 +1550,21 @@ class ParentCampaignOwner:
     @staticmethod
     def _touches_zone(bar: Bar, zone: EntryZone) -> bool:
         return bar.low <= zone.upper and bar.high >= zone.lower
+
+    @staticmethod
+    def _fully_detached(
+        bar: Bar,
+        side: Side | None,
+        lower: float,
+        upper: float,
+    ) -> bool:
+        """Require a completed bar wholly beyond a zone before its return."""
+
+        if side == "LONG":
+            return bar.low > upper
+        if side == "SHORT":
+            return bar.high < lower
+        raise PolicyError("detachment requires an active campaign side")
 
     @staticmethod
     def _closes_outside(bar: Bar, side: Side, lower: float, upper: float) -> bool:

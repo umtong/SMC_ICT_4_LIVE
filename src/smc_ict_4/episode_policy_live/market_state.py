@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from statistics import median
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from .domain import Bar, LiquidityBoundary, Pivot, stable_id
 
@@ -184,6 +184,112 @@ class BoundaryBook:
             history.append(replace(pivot, serial=current_serial))
             history[:] = history[-12:]
             created.extend(self._build_dynamic(key, current_serial, atr))
+        return created
+
+    def add_repeated_defenses(
+        self,
+        *,
+        new_pivots: Iterable[Pivot],
+        all_pivots: Sequence[Pivot],
+        bars: Sequence[Bar],
+        current_serial: int,
+    ) -> list[LiquidityBoundary]:
+        """Publish causally confirmed alternating-swing defense bands.
+
+        This ports the source semantics from EasyChart v19: only the adjacent
+        prior same-side physical swing may pair with a new pivot; an opposite
+        swing must sit between them; their wick-to-body rejection areas must
+        overlap; and that shared area must remain defended through the new
+        pivot's confirmation.  Individual pivots remain available separately
+        as public liquidity objectives and obstacles.
+        """
+
+        bar_by_event = {item.close_time_ns: item for item in bars}
+        created: list[LiquidityBoundary] = []
+        ordered = sorted(
+            all_pivots,
+            key=lambda item: (item.event_time_ns, item.observed_time_ns, item.pivot_id),
+        )
+        for pivot in new_pivots:
+            if pivot.timeframe_minutes != 15:
+                continue
+            same_side = [
+                item
+                for item in ordered
+                if item.side == pivot.side
+                and item.event_time_ns < pivot.event_time_ns
+                and item.observed_time_ns <= pivot.observed_time_ns
+            ]
+            if not same_side:
+                continue
+            prior = max(
+                same_side,
+                key=lambda item: (item.event_time_ns, item.observed_time_ns, item.pivot_id),
+            )
+            opposite = "HIGH" if pivot.side == "LOW" else "LOW"
+            if not any(
+                item.side == opposite
+                and prior.event_time_ns < item.event_time_ns < pivot.event_time_ns
+                and item.observed_time_ns <= pivot.observed_time_ns
+                for item in ordered
+            ):
+                continue
+            prior_bar = bar_by_event.get(prior.event_time_ns)
+            pivot_bar = bar_by_event.get(pivot.event_time_ns)
+            if prior_bar is None or pivot_bar is None:
+                continue
+
+            def rejection_area(item: Bar, side: str) -> tuple[float, float]:
+                body_low = min(item.open, item.close)
+                body_high = max(item.open, item.close)
+                return (
+                    (item.low, body_low)
+                    if side == "LOW"
+                    else (body_high, item.high)
+                )
+
+            prior_lower, prior_upper = rejection_area(prior_bar, pivot.side)
+            pivot_lower, pivot_upper = rejection_area(pivot_bar, pivot.side)
+            lower = max(prior_lower, pivot_lower)
+            upper = min(prior_upper, pivot_upper)
+            if lower >= upper:
+                continue
+            through_confirmation = [
+                item
+                for item in bars
+                if prior.event_time_ns < item.close_time_ns <= pivot.observed_time_ns
+            ]
+            held = (
+                all(item.close >= lower for item in through_confirmation)
+                if pivot.side == "LOW"
+                else all(item.close <= upper for item in through_confirmation)
+            )
+            if not through_confirmation or not held:
+                continue
+            boundary_id = stable_id(
+                prior.pivot_id,
+                pivot.pivot_id,
+                "REPEATED_DEFENSE_15M",
+                prefix="DEFENSE:",
+            )
+            if boundary_id in self.boundaries:
+                continue
+            semantic = "SUPPORT" if pivot.side == "LOW" else "RESISTANCE"
+            boundary = LiquidityBoundary(
+                boundary_id=boundary_id,
+                symbol=self.symbol,
+                side=pivot.side,
+                kind=f"REPEATED_DEFENSE_{semantic}_15M",
+                timeframe_minutes=15,
+                observed_time_ns=pivot.observed_time_ns,
+                lower=lower,
+                upper=upper,
+                price=0.5 * (lower + upper),
+                strength=2.0 + min(prior.strength, pivot.strength),
+                anchor_serial=current_serial,
+            )
+            self.boundaries[boundary_id] = boundary
+            created.append(boundary)
         return created
 
     def add_prior_day(
@@ -573,6 +679,14 @@ class SymbolMarketState:
             pivots_15 = self._pivot_15.push(fifteen)
             self.objective_book.add_pivots(pivots_15)
             created.extend(self.boundary_book.add_pivots(pivots_15, self.serial_5m, atr_15))
+            created.extend(
+                self.boundary_book.add_repeated_defenses(
+                    new_pivots=pivots_15,
+                    all_pivots=self._pivot_15.pivots,
+                    bars=self.fifteen_minute,
+                    current_serial=self.serial_5m,
+                )
+            )
             sixty = self._agg_60.push(fifteen)
             if sixty is not None:
                 self.sixty_minute.append(sixty)

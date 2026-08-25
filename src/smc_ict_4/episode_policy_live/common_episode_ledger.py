@@ -118,6 +118,8 @@ class CommonCandidateAuthorization:
     latest_inventory_observed_time_ns: int
     first_position_reset_observed_time_ns: int | None
     first_counter_sponsorship_observed_time_ns: int | None
+    broad_price_failure_time_ns: int | None
+    symbol_reclaim_time_ns: int | None
 
     @property
     def evidence(self) -> Mapping[str, object]:
@@ -156,6 +158,10 @@ class CommonCandidateAuthorization:
             "first_counter_sponsorship_observed_time_ns": (
                 self.first_counter_sponsorship_observed_time_ns
             ),
+            "common_broad_price_failure_time_ns": (
+                self.broad_price_failure_time_ns
+            ),
+            "common_symbol_reclaim_time_ns": self.symbol_reclaim_time_ns,
         }
 
 
@@ -168,6 +174,9 @@ class _CommonEpisodeRecord:
     latest_official_observed_time_ns: dict[str, int | None]
     first_position_reset_observed_time_ns: dict[str, int | None]
     first_counter_sponsorship_observed_time_ns: dict[str, int | None]
+    price_reclaim_time_ns: dict[str, int | None]
+    broad_price_failure_time_ns: int | None = None
+    broad_price_failure_participants: tuple[str, ...] = ()
     state: CommonEpisodeState = CommonEpisodeState.OPEN
     active_authorization_ids: set[str] = field(default_factory=set)
     claimed_authorization_id: str | None = None
@@ -265,6 +274,8 @@ def _authorization_to_payload(value: CommonCandidateAuthorization) -> dict[str, 
         "latest_inventory_observed_time_ns": value.latest_inventory_observed_time_ns,
         "first_position_reset_observed_time_ns": value.first_position_reset_observed_time_ns,
         "first_counter_sponsorship_observed_time_ns": value.first_counter_sponsorship_observed_time_ns,
+        "broad_price_failure_time_ns": value.broad_price_failure_time_ns,
+        "symbol_reclaim_time_ns": value.symbol_reclaim_time_ns,
     }
 
 
@@ -292,13 +303,23 @@ def _authorization_from_payload(raw: Mapping[str, Any]) -> CommonCandidateAuthor
         latest_inventory_observed_time_ns=int(raw["latest_inventory_observed_time_ns"]),
         first_position_reset_observed_time_ns=(None if raw["first_position_reset_observed_time_ns"] is None else int(raw["first_position_reset_observed_time_ns"])),
         first_counter_sponsorship_observed_time_ns=(None if raw["first_counter_sponsorship_observed_time_ns"] is None else int(raw["first_counter_sponsorship_observed_time_ns"])),
+        broad_price_failure_time_ns=(
+            None
+            if raw.get("broad_price_failure_time_ns") is None
+            else int(raw["broad_price_failure_time_ns"])
+        ),
+        symbol_reclaim_time_ns=(
+            None
+            if raw.get("symbol_reclaim_time_ns") is None
+            else int(raw["symbol_reclaim_time_ns"])
+        ),
     )
 
 
 class CommonEpisodeLedger:
     """Coordinator-level common root and inventory-responsibility ledger."""
 
-    STATE_VERSION = 1
+    STATE_VERSION = 2
 
     def __init__(self) -> None:
         self._records: dict[str, _CommonEpisodeRecord] = {}
@@ -349,6 +370,14 @@ class CommonEpisodeLedger:
                 "latest_official_observed_time_ns": [[symbol, record.latest_official_observed_time_ns[symbol]] for symbol in attack.participants],
                 "first_position_reset_observed_time_ns": [[symbol, record.first_position_reset_observed_time_ns[symbol]] for symbol in attack.participants],
                 "first_counter_sponsorship_observed_time_ns": [[symbol, record.first_counter_sponsorship_observed_time_ns[symbol]] for symbol in attack.participants],
+                "price_reclaim_time_ns": [
+                    [symbol, record.price_reclaim_time_ns[symbol]]
+                    for symbol in attack.participants
+                ],
+                "broad_price_failure_time_ns": record.broad_price_failure_time_ns,
+                "broad_price_failure_participants": list(
+                    record.broad_price_failure_participants
+                ),
                 "state": record.state.value,
                 "active_authorization_ids": sorted(record.active_authorization_ids),
                 "claimed_authorization_id": record.claimed_authorization_id,
@@ -369,7 +398,8 @@ class CommonEpisodeLedger:
     def restore_state(cls, payload: Mapping[str, Any]) -> "CommonEpisodeLedger":
         """Validate an entire checkpoint before publishing a restored object."""
 
-        if int(payload.get("version", -1)) != cls.STATE_VERSION:
+        version = int(payload.get("version", -1))
+        if version != cls.STATE_VERSION:
             raise CommonEpisodeError("unsupported common episode state version")
         try:
             collection_names = (
@@ -456,6 +486,48 @@ class CommonEpisodeLedger:
                 latest_observed = _times("latest_official_observed_time_ns")
                 first_reset = _times("first_position_reset_observed_time_ns")
                 first_counter = _times("first_counter_sponsorship_observed_time_ns")
+                reclaim_times = _times("price_reclaim_time_ns")
+                broad_failure_time = (
+                    None
+                    if raw_record["broad_price_failure_time_ns"] is None
+                    else int(raw_record["broad_price_failure_time_ns"])
+                )
+                broad_failure_participants = tuple(
+                    str(item)
+                    for item in raw_record["broad_price_failure_participants"]
+                )
+                known_reclaims = {
+                    symbol: value
+                    for symbol, value in reclaim_times.items()
+                    if value is not None
+                }
+                if any(
+                    value <= attack.attack_time_ns
+                    for value in known_reclaims.values()
+                ):
+                    raise CommonEpisodeError("price reclaim precedes common attack")
+                if broad_failure_time is None:
+                    if broad_failure_participants or len(known_reclaims) >= 3:
+                        raise CommonEpisodeError(
+                            "broad price failure state is incomplete"
+                        )
+                else:
+                    canonical_broad = tuple(
+                        symbol
+                        for symbol in SYMBOLS
+                        if symbol in known_reclaims
+                        and int(known_reclaims[symbol]) <= broad_failure_time
+                    )
+                    if (
+                        broad_failure_time <= attack.attack_time_ns
+                        or len(canonical_broad) < 3
+                        or broad_failure_participants != canonical_broad
+                        or broad_failure_time
+                        != sorted(known_reclaims.values())[2]
+                    ):
+                        raise CommonEpisodeError(
+                            "invalid broad price failure state"
+                        )
                 registration_by_symbol = dict(attack_inventory)
                 for symbol in participants:
                     registration = registration_by_symbol[symbol]
@@ -495,6 +567,9 @@ class CommonEpisodeLedger:
                     latest_official_observed_time_ns=latest_observed,
                     first_position_reset_observed_time_ns=first_reset,
                     first_counter_sponsorship_observed_time_ns=first_counter,
+                    price_reclaim_time_ns=reclaim_times,
+                    broad_price_failure_time_ns=broad_failure_time,
+                    broad_price_failure_participants=broad_failure_participants,
                     state=state,
                     active_authorization_ids=active,
                     claimed_authorization_id=claimed,
@@ -527,6 +602,26 @@ class CommonEpisodeLedger:
                     or authorization.source_campaign_root_id not in attack.source_roots_for(authorization.symbol)
                 ):
                     raise CommonEpisodeError("authorization genealogy mismatch")
+                if authorization.family is CommonEpisodeFamily.REVERSAL:
+                    if (
+                        authorization.broad_price_failure_time_ns is None
+                        or authorization.broad_price_failure_time_ns
+                        != record.broad_price_failure_time_ns
+                        or authorization.broad_price_failure_time_ns
+                        > authorization.candidate_time_ns
+                        or authorization.symbol_reclaim_time_ns is None
+                        or authorization.symbol_reclaim_time_ns
+                        != record.price_reclaim_time_ns[authorization.symbol]
+                        or authorization.symbol_reclaim_time_ns
+                        > authorization.candidate_time_ns
+                    ):
+                        raise CommonEpisodeError(
+                            "reversal authorization lacks causal price failure"
+                        )
+                elif authorization.broad_price_failure_time_ns is not None:
+                    raise CommonEpisodeError(
+                        "continuation authorization contains broad failure"
+                    )
                 authorizations[authorization.authorization_id] = authorization
             for record in records.values():
                 if any(item not in authorizations or authorizations[item].root_id != record.attack.root_id for item in record.active_authorization_ids):
@@ -677,6 +772,7 @@ class CommonEpisodeLedger:
             first_counter_sponsorship_observed_time_ns={
                 symbol: None for symbol in participants
             },
+            price_reclaim_time_ns={symbol: None for symbol in participants},
         )
         for _, source_root in roots:
             self._native_to_shared[source_root] = root_id
@@ -782,6 +878,7 @@ class CommonEpisodeLedger:
             )
             record.first_position_reset_observed_time_ns[symbol] = None
             record.first_counter_sponsorship_observed_time_ns[symbol] = None
+            record.price_reclaim_time_ns[symbol] = None
 
         record.attack = CommonAttack(
             root_id=old_attack.root_id,
@@ -818,6 +915,24 @@ class CommonEpisodeLedger:
 
     def state(self, root_or_native: str) -> CommonEpisodeState:
         return self._record(root_or_native).state
+
+    def price_failure_state(
+        self,
+        root_or_native: str,
+    ) -> tuple[tuple[tuple[str, int], ...], int | None, tuple[str, ...]]:
+        """Return immutable price-failure clocks for cross-book validation."""
+
+        record = self._record(root_or_native)
+        clocks = tuple(
+            (symbol, int(record.price_reclaim_time_ns[symbol]))
+            for symbol in record.attack.participants
+            if record.price_reclaim_time_ns[symbol] is not None
+        )
+        return (
+            clocks,
+            record.broad_price_failure_time_ns,
+            record.broad_price_failure_participants,
+        )
 
     def frozen_inventory_for(
         self,
@@ -858,6 +973,88 @@ class CommonEpisodeLedger:
         for symbol, decision in decisions.items():
             self._advance_inventory(record, symbol, decision)
 
+    def observe_price_failure(
+        self,
+        root_or_native: str,
+        *,
+        reclaim_time_ns: Mapping[str, int],
+        broad_failure_time_ns: int | None,
+        broad_failure_participants: Sequence[str] = (),
+    ) -> None:
+        """Bind the price owner's broad reclaim to common responsibility.
+
+        Individual participant clocks are monotone first observations.  The
+        broad failure becomes immutable when at least three participants have
+        fully closed back through their own origin bands.  This is market
+        state, not an account action or a candidate score.
+        """
+
+        record = self._record(root_or_native)
+        if record.state is not CommonEpisodeState.OPEN:
+            raise CommonEpisodeError("cannot update a terminal common episode")
+        participants = set(record.attack.participants)
+        if not set(reclaim_time_ns) <= participants:
+            raise CommonEpisodeError("price reclaim contains a non-participant")
+        prospective = dict(record.price_reclaim_time_ns)
+        for symbol, observed in reclaim_time_ns.items():
+            value = int(observed)
+            if value <= record.attack.attack_time_ns:
+                raise CommonEpisodeError("price reclaim must follow the attack")
+            existing = prospective[symbol]
+            if existing is not None and existing != value:
+                raise CommonEpisodeError("participant price reclaim clock changed")
+            prospective[symbol] = value
+
+        known = {
+            symbol: value
+            for symbol, value in prospective.items()
+            if value is not None
+        }
+        raw_supplied = tuple(str(symbol) for symbol in broad_failure_participants)
+        supplied_participants = tuple(
+            symbol
+            for symbol in SYMBOLS
+            if symbol in set(raw_supplied)
+        )
+        if raw_supplied != supplied_participants:
+            raise CommonEpisodeError(
+                "broad price failure participants are not canonical",
+            )
+        if broad_failure_time_ns is None:
+            if (
+                supplied_participants
+                or len(known) >= 3
+                or record.broad_price_failure_time_ns is not None
+            ):
+                raise CommonEpisodeError("three reclaims require a broad failure clock")
+            record.price_reclaim_time_ns = prospective
+            return
+        broad_time = int(broad_failure_time_ns)
+        expected_time = sorted(known.values())[2] if len(known) >= 3 else None
+        expected_participants = tuple(
+            symbol
+            for symbol in SYMBOLS
+            if symbol in known and int(known[symbol]) <= broad_time
+        )
+        if (
+            expected_time is None
+            or broad_time != expected_time
+            or supplied_participants != expected_participants
+            or len(supplied_participants) < 3
+        ):
+            raise CommonEpisodeError("broad price failure contradicts reclaim clocks")
+        if record.broad_price_failure_time_ns is not None:
+            if (
+                record.broad_price_failure_time_ns != broad_time
+                or record.broad_price_failure_participants != supplied_participants
+            ):
+                raise CommonEpisodeError("broad price failure changed after observation")
+            record.price_reclaim_time_ns = prospective
+            return
+        record.price_reclaim_time_ns = prospective
+        record.broad_price_failure_time_ns = broad_time
+        record.broad_price_failure_participants = supplied_participants
+
     def authorize_candidate(
         self,
         root_or_native: str,
@@ -895,6 +1092,23 @@ class CommonEpisodeLedger:
             raise CommonEpisodeError("candidate side contradicts its common branch")
         if candidate_time_ns <= attack.attack_time_ns:
             raise CommonEpisodeError("a completed common candidate must follow its attack")
+
+        if branch is CommonEpisodeFamily.CONTINUATION:
+            if (
+                record.broad_price_failure_time_ns is not None
+                and candidate_time_ns >= record.broad_price_failure_time_ns
+            ):
+                return None
+        else:
+            broad_failure = record.broad_price_failure_time_ns
+            symbol_reclaim = record.price_reclaim_time_ns[symbol]
+            if (
+                broad_failure is None
+                or candidate_time_ns < broad_failure
+                or symbol_reclaim is None
+                or symbol_reclaim > candidate_time_ns
+            ):
+                return None
 
         if source_campaign_root_id is None:
             symbol_roots = attack.source_roots_for(symbol)
@@ -968,6 +1182,8 @@ class CommonEpisodeLedger:
             first_counter_sponsorship_observed_time_ns=(
                 counter_sponsorship_observed
             ),
+            broad_price_failure_time_ns=record.broad_price_failure_time_ns,
+            symbol_reclaim_time_ns=record.price_reclaim_time_ns[symbol],
         )
         existing = self._authorizations.get(authorization_id)
         if existing is not None and existing != authorization:
@@ -986,6 +1202,22 @@ class CommonEpisodeLedger:
         record = self._records[authorization.root_id]
         if record.state is not CommonEpisodeState.OPEN:
             raise CommonEpisodeError("common episode is already terminal")
+        if authorization.family is CommonEpisodeFamily.CONTINUATION:
+            if record.broad_price_failure_time_ns is not None:
+                raise CommonEpisodeError(
+                    "broad price failure invalidated continuation responsibility"
+                )
+        elif (
+            authorization.broad_price_failure_time_ns is None
+            or authorization.broad_price_failure_time_ns
+            != record.broad_price_failure_time_ns
+            or authorization.symbol_reclaim_time_ns is None
+            or authorization.symbol_reclaim_time_ns
+            != record.price_reclaim_time_ns[authorization.symbol]
+        ):
+            raise CommonEpisodeError(
+                "reversal responsibility lost its causal price failure"
+            )
 
     def claim(self, authorization_id: str) -> tuple[str, ...]:
         """Claim one candidate and consume every authorization under its root."""

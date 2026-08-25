@@ -354,7 +354,10 @@ def boundary_role(boundary: LiquidityBoundary) -> LiquidityRole:
 
     kind = boundary.kind.upper()
     period = "PRIOR_DAY" in kind or "PREVIOUS_DAY" in kind or "PREVIOUS_WEEK" in kind
-    if period:
+    if "REPEATED_DEFENSE" in kind:
+        semantic = "CONFIRMED_REPEATED_DEFENSE_BAND"
+        source = True
+    elif period:
         semantic = "COMPLETED_PERIOD_EXTREME"
         source = True
     elif boundary.timeframe_minutes >= 240:
@@ -400,6 +403,23 @@ class ActiveLiquidityContext:
     nearest_short_obstacle: ActiveLiquidityLevel | None
     direction_source_balance: float | None
     two_sided_source_pull: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class PreEventAuthority:
+    """Categorical structure and liquidity facts frozen before interaction."""
+
+    observed_time_ns: int
+    structure_side: str | None
+    structure_event_time_ns: int | None
+    draw_side: str | None
+    draw_balance: float | None
+    source_semantic_kind: str
+    source_outward_side: str
+    source_was_prior_draw_destination: bool
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -467,8 +487,14 @@ def build_active_liquidity_context(
     low_sources = [item for item in below if item.direction_source and item.pull is not None]
     high_pull = sum(float(item.pull) for item in high_sources) if high_sources else None
     low_pull = sum(float(item.pull) for item in low_sources) if low_sources else None
-    if high_pull is None or low_pull is None:
+    if high_pull is None and low_pull is None:
         balance = None
+        two_sided = None
+    elif low_pull is None:
+        balance = 1.0
+        two_sided = None
+    elif high_pull is None:
+        balance = -1.0
         two_sided = None
     else:
         balance = math.tanh(high_pull - low_pull)
@@ -493,6 +519,7 @@ __all__ = [
     "HORIZON_MINUTES",
     "HorizonDirection",
     "LiquidityRole",
+    "PreEventAuthority",
     "boundary_role",
     "build_active_liquidity_context",
     "build_directional_context",

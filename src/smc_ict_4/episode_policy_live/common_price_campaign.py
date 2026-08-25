@@ -131,6 +131,7 @@ class CommonPriceSnapshot:
     fully_reclaimed: bool
     fully_reclaimed_time_ns: int | None
     fully_reclaimed_participants: tuple[str, ...]
+    reclaim_time_ns: tuple[tuple[str, int], ...]
 
 
 @dataclass(slots=True)
@@ -156,6 +157,7 @@ class _CommonPriceRoot:
     fully_reclaimed: bool = False
     fully_reclaimed_time_ns: int | None = None
     fully_reclaimed_participants: tuple[str, ...] = ()
+    reclaim_time_ns: dict[str, int] = field(default_factory=dict)
 
 
 def _normalize_side(value: str) -> str:
@@ -306,7 +308,7 @@ def _opportunity_from_payload(raw: Mapping[str, Any]) -> CommonPriceOpportunity:
 class CommonPriceCampaignBook:
     """Own synchronized common-attack price state and continuation geometry."""
 
-    STATE_VERSION = 1
+    STATE_VERSION = 2
 
     def __init__(self, *, tick_sizes: Mapping[str, float] | None = None) -> None:
         supplied = tick_sizes or {
@@ -363,6 +365,11 @@ class CommonPriceCampaignBook:
                 "fully_reclaimed": root.fully_reclaimed,
                 "fully_reclaimed_time_ns": root.fully_reclaimed_time_ns,
                 "fully_reclaimed_participants": list(root.fully_reclaimed_participants),
+                "reclaim_time_ns": [
+                    [symbol, root.reclaim_time_ns[symbol]]
+                    for symbol in root.participants
+                    if symbol in root.reclaim_time_ns
+                ],
             })
         return {
             "version": self.STATE_VERSION,
@@ -376,7 +383,8 @@ class CommonPriceCampaignBook:
     def restore_state(cls, payload: Mapping[str, Any]) -> "CommonPriceCampaignBook":
         """Validate a full checkpoint before publishing a restored book."""
 
-        if int(payload.get("version", -1)) != cls.STATE_VERSION:
+        version = int(payload.get("version", -1))
+        if version != cls.STATE_VERSION:
             raise CommonPriceCampaignError("unsupported common price state version")
         try:
             raw_ticks = payload["tick_sizes"]
@@ -506,6 +514,40 @@ class CommonPriceCampaignBook:
                         raise CommonPriceCampaignError("invalid broad reclaim state")
                 elif reclaimed_time is not None or reclaimed_participants:
                     raise CommonPriceCampaignError("unreclaimed root has reclaim fields")
+                raw_reclaim_times = raw.get("reclaim_time_ns", [])
+                reclaim_times = {
+                    str(pair[0]): int(pair[1]) for pair in raw_reclaim_times
+                }
+                if (
+                    len(reclaim_times) != len(raw_reclaim_times)
+                    or not set(reclaim_times) <= set(participants)
+                    or any(
+                        value <= attack_time_ns or value > last_time_ns
+                        for value in reclaim_times.values()
+                    )
+                ):
+                    raise CommonPriceCampaignError("invalid participant reclaim clocks")
+                if reclaimed:
+                    assert reclaimed_time is not None
+                    canonical_reclaimed = tuple(
+                        symbol
+                        for symbol in SYMBOLS
+                        if symbol in reclaim_times
+                        and reclaim_times[symbol] <= reclaimed_time
+                    )
+                    if (
+                        reclaimed_time <= attack_time_ns
+                        or len(reclaim_times) < 3
+                        or reclaimed_time != sorted(reclaim_times.values())[2]
+                        or reclaimed_participants != canonical_reclaimed
+                    ):
+                        raise CommonPriceCampaignError(
+                            "broad reclaim disagrees with participant reclaim clocks"
+                        )
+                if not reclaimed and len(reclaim_times) >= 3:
+                    raise CommonPriceCampaignError(
+                        "three participant reclaims require a broad reclaim"
+                    )
                 roots[root_id] = _CommonPriceRoot(
                     root_id=root_id,
                     attack_side=attack_side,
@@ -528,6 +570,7 @@ class CommonPriceCampaignBook:
                     fully_reclaimed=reclaimed,
                     fully_reclaimed_time_ns=reclaimed_time,
                     fully_reclaimed_participants=reclaimed_participants,
+                    reclaim_time_ns=reclaim_times,
                 )
 
             source_to_root = {str(pair[0]): str(pair[1]) for pair in raw_source_map}
@@ -689,6 +732,7 @@ class CommonPriceCampaignBook:
             )
             root.attack_extreme_times[symbol] = bar.close_time_ns
             root.pause_bars[symbol] = []
+            root.reclaim_time_ns.pop(symbol, None)
             if root.phase is CommonPricePhase.PAUSE:
                 # A late participant belongs to the same unreclaimed wave but
                 # cannot receive a retroactive pause-to-old-extreme trade.  Its
@@ -724,10 +768,18 @@ class CommonPriceCampaignBook:
             for symbol in participants
             if self._closes_fully_inside_origin(root, symbol, bars[symbol])
         )
-        if not root.fully_reclaimed and len(reclaimed) >= 3:
+        for symbol in reclaimed:
+            root.reclaim_time_ns.setdefault(symbol, decision_time_ns)
+        if not root.fully_reclaimed and len(root.reclaim_time_ns) >= 3:
             root.fully_reclaimed = True
-            root.fully_reclaimed_time_ns = decision_time_ns
-            root.fully_reclaimed_participants = reclaimed
+            ordered = sorted(root.reclaim_time_ns.items(), key=lambda item: (item[1], SYMBOLS.index(item[0])))
+            root.fully_reclaimed_time_ns = ordered[2][1]
+            root.fully_reclaimed_participants = tuple(
+                symbol
+                for symbol in SYMBOLS
+                if symbol in root.reclaim_time_ns
+                and root.reclaim_time_ns[symbol] <= root.fully_reclaimed_time_ns
+            )
 
         if root.phase is CommonPricePhase.ATTACKING:
             opposite_side = _opposite(root.attack_side)
@@ -823,6 +875,11 @@ class CommonPriceCampaignBook:
             fully_reclaimed=root.fully_reclaimed,
             fully_reclaimed_time_ns=root.fully_reclaimed_time_ns,
             fully_reclaimed_participants=root.fully_reclaimed_participants,
+            reclaim_time_ns=tuple(
+                (symbol, root.reclaim_time_ns[symbol])
+                for symbol in root.participants
+                if symbol in root.reclaim_time_ns
+            ),
         )
 
     def shared_root_for_source(self, source_campaign_root_id: str) -> str:

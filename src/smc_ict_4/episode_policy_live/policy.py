@@ -62,6 +62,7 @@ from .control_router import (
     causal_root_id,
 )
 from .directional_context import (
+    PreEventAuthority,
     boundary_role,
     build_active_liquidity_context,
     build_directional_context,
@@ -117,7 +118,7 @@ from .value_distribution import (
 MAX_CAUSAL_ORDER_TIME_NS = (1 << 63) - 1
 POLICY_DECISION_SCHEMA_VERSION = 2
 POLICY_FINGERPRINT = (
-    "unified-causal-auction-control-route-v4"
+    "unified-causal-auction-control-route-v5"
 )
 
 
@@ -178,6 +179,7 @@ class PolicyConfig:
 class RouterSource:
     boundary: LiquidityBoundary
     generation: int
+    authority: PreEventAuthority | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +250,7 @@ class SymbolEpisodePolicy:
         # consulted by the synchronized minute path.
         self._structural_campaigns: dict[str, CampaignSnapshot] = {}
         self._structural_campaign_roots: dict[str, str] = {}
+        self._router_directional_authority: dict[str, PreEventAuthority] = {}
         self._router_opened_sources: set[tuple[str, int]] = set()
         self._value_distribution = ValueDistributionAuctionBook(symbol)
         self._last_plan_time_ns = -1
@@ -616,7 +619,78 @@ class SymbolEpisodePolicy:
             "use the synchronized four-market one-minute coordinator",
         )
 
-    def prepare_router_minute(self, bar: Bar) -> RouterPrebarContext:
+    def _router_pre_event_authority(
+        self,
+        *,
+        source: LiquidityBoundary,
+        bar: Bar,
+        serial: int,
+        bars_by_symbol: Mapping[str, Sequence[Bar]],
+    ) -> PreEventAuthority:
+        """Freeze structure and live liquidity draw before source contact."""
+
+        prior = tuple(
+            item
+            for item in bars_by_symbol.get(self.symbol, ())
+            if item.close_time_ns <= bar.open_time_ns
+        )
+        price = prior[-1].close if prior else bar.open
+        atr_price = self.market.atr(list(prior[-20:])) if prior else None
+        if atr_price is not None and atr_price <= 0.0:
+            atr_price = None
+        active_boundaries = tuple(
+            item
+            for item in self.market.boundary_book.active(bar.open_time_ns)
+            if not any(
+                token in item.kind
+                for token in (
+                    "UPTREND_LINE",
+                    "DOWNTREND_LINE",
+                    "DIAGONAL_LIQUIDITY",
+                )
+            )
+        )
+        liquidity = build_active_liquidity_context(
+            boundaries=active_boundaries,
+            price=price,
+            decision_time_ns=bar.open_time_ns,
+            serial=serial,
+            atr_price=atr_price,
+        )
+        balance = liquidity.direction_source_balance
+        draw_side = (
+            "LONG"
+            if balance is not None and balance > 0.0
+            else "SHORT"
+            if balance is not None and balance < 0.0
+            else None
+        )
+        structure_time = self._continuation_direction_event_time_ns
+        structure_side = (
+            self._continuation_local_side
+            if structure_time is not None and structure_time < bar.open_time_ns
+            else None
+        )
+        outward = "LONG" if source.side == "HIGH" else "SHORT"
+        return PreEventAuthority(
+            observed_time_ns=bar.open_time_ns,
+            structure_side=structure_side,
+            structure_event_time_ns=(
+                structure_time if structure_side is not None else None
+            ),
+            draw_side=draw_side,
+            draw_balance=balance,
+            source_semantic_kind=boundary_role(source).semantic_kind,
+            source_outward_side=outward,
+            source_was_prior_draw_destination=draw_side == outward,
+        )
+
+    def prepare_router_minute(
+        self,
+        bar: Bar,
+        *,
+        bars_by_symbol: Mapping[str, Sequence[Bar]],
+    ) -> RouterPrebarContext:
         """Freeze source facts before ``bar`` can update any registry."""
 
         if bar.symbol != self.symbol or bar.interval_minutes != 1:
@@ -708,10 +782,41 @@ class SymbolEpisodePolicy:
             if len(prior) == 60 and len(usable_prior) == 60
             else None
         )
+        authoritative: tuple[RouterSource, ...] = ()
+        if canonical:
+            shared_authority = self._router_pre_event_authority(
+                source=canonical[0].boundary,
+                bar=bar,
+                serial=serial,
+                bars_by_symbol=bars_by_symbol,
+            )
+            authoritative = tuple(
+                replace(
+                    item,
+                    authority=replace(
+                        shared_authority,
+                        source_semantic_kind=boundary_role(
+                            item.boundary,
+                        ).semantic_kind,
+                        source_outward_side=(
+                            "LONG" if item.boundary.side == "HIGH" else "SHORT"
+                        ),
+                        source_was_prior_draw_destination=(
+                            shared_authority.draw_side
+                            == (
+                                "LONG"
+                                if item.boundary.side == "HIGH"
+                                else "SHORT"
+                            )
+                        ),
+                    ),
+                )
+                for item in canonical
+            )
         return RouterPrebarContext(
             sequence=len(self.market.one_minute),
             structure_serial=serial,
-            sources=tuple(canonical),
+            sources=authoritative,
             flow_baseline=baseline,
         )
 
@@ -1080,6 +1185,77 @@ class SymbolEpisodePolicy:
         )
         return None if match is None else match.open_time_ns
 
+    @staticmethod
+    def _directional_authorization(
+        candidate: StructuralOpportunity | ValueDistributionCandidate,
+        authority: PreEventAuthority | None,
+        common_authorization: CommonCandidateAuthorization | None,
+        common_broad_failure_time_ns: int | None,
+        common_symbol_reclaim_time_ns: int | None,
+    ) -> tuple[bool, dict[str, object]]:
+        """Resolve direction categorically; completed events own neutral state."""
+
+        if not isinstance(candidate, StructuralOpportunity) or authority is None:
+            return True, {"direction_authority_reason": "COMPLETED_EVENT_OWNS"}
+        side = candidate.side
+        opposite = "SHORT" if side == "LONG" else "LONG"
+        structure = authority.structure_side
+        draw = authority.draw_side
+        inventory_transfer = common_authorization is not None
+        broad_price_transfer = (
+            common_broad_failure_time_ns is not None
+            and common_symbol_reclaim_time_ns is not None
+            and common_broad_failure_time_ns <= candidate.decision_time_ns
+            and common_symbol_reclaim_time_ns <= candidate.decision_time_ns
+        )
+        if candidate.hypothesis is CampaignHypothesis.ACCEPTANCE:
+            if structure == side:
+                reason = "PERSISTENT_STRUCTURE_ALIGNED"
+            elif draw == side:
+                reason = "ACTIVE_LIQUIDITY_DRAW_ALIGNED"
+            elif inventory_transfer:
+                reason = "COMMON_CONTROL_TRANSFER"
+            elif structure == opposite and draw == opposite:
+                reason = "REJECTED_BOTH_PRIOR_AUTHORITIES_OPPOSE_CONTINUATION"
+                allowed = False
+                return allowed, {
+                    **authority.to_dict(),
+                    "direction_authority_reason": reason,
+                    "direction_authority_allowed": allowed,
+                }
+            else:
+                reason = "COMPLETED_EVENT_OWNS_NEUTRAL_OR_CONFLICTED_STATE"
+        else:
+            consumed_old_draw = (
+                authority.source_was_prior_draw_destination
+                and authority.source_outward_side == opposite
+            )
+            if structure == side:
+                reason = "PERSISTENT_STRUCTURE_ALIGNED"
+            elif consumed_old_draw:
+                reason = "EXTERNAL_DRAW_CONSUMED_AND_RECLAIMED"
+            elif broad_price_transfer:
+                reason = "BROAD_COMMON_FAILURE_TRANSFER"
+            elif structure == opposite and draw == opposite:
+                reason = "REJECTED_ORDINARY_COUNTERTREND_RECLAIM"
+                allowed = False
+                return allowed, {
+                    **authority.to_dict(),
+                    "direction_authority_reason": reason,
+                    "direction_authority_allowed": allowed,
+                }
+            else:
+                reason = "COMPLETED_EVENT_OWNS_NEUTRAL_OR_CONFLICTED_STATE"
+        return True, {
+            **authority.to_dict(),
+            "direction_authority_reason": reason,
+            "direction_authority_allowed": True,
+            "common_broad_price_failure_time_ns": (
+                common_broad_failure_time_ns
+            ),
+            "common_symbol_reclaim_time_ns": common_symbol_reclaim_time_ns,
+        }
+
     def _route_completed_opportunity(
         self,
         candidate: StructuralOpportunity | ValueDistributionCandidate,
@@ -1156,11 +1332,27 @@ class SymbolEpisodePolicy:
                 )
         common_attack = None
         authorization: CommonCandidateAuthorization | None = None
+        common_broad_failure_time_ns: int | None = None
+        common_symbol_reclaim_time_ns: int | None = None
         if common_episodes is not None:
             try:
                 common_attack = common_episodes.attack(campaign_root)
             except CommonEpisodeError:
                 common_attack = None
+        if common_attack is not None and common_episodes is not None:
+            reclaim_pairs, broad_clock, _ = common_episodes.price_failure_state(
+                campaign_root,
+            )
+            reclaim_clocks = dict(reclaim_pairs)
+            symbol_clock = reclaim_clocks.get(self.symbol)
+            if (
+                broad_clock is not None
+                and broad_clock <= candidate.decision_time_ns
+                and symbol_clock is not None
+                and symbol_clock <= candidate.decision_time_ns
+            ):
+                common_broad_failure_time_ns = broad_clock
+                common_symbol_reclaim_time_ns = symbol_clock
         if (
             selected.role is SourceOwnershipRole.COMMON_MARKET_OWNER_ONLY
             and common_attack is not None
@@ -1179,6 +1371,18 @@ class SymbolEpisodePolicy:
                 candidate_time_ns=candidate.decision_time_ns,
                 source_campaign_root_id=campaign_root,
             )
+        direction_allowed, direction_evidence = self._directional_authorization(
+            candidate,
+            self._router_directional_authority.get(campaign_root),
+            authorization,
+            common_broad_failure_time_ns,
+            common_symbol_reclaim_time_ns,
+        )
+        if not direction_allowed:
+            reason = str(direction_evidence["direction_authority_reason"])
+            key = f"DIRECTIONAL_AUTHORITY:{reason}"
+            self._diagnostic_counts[key] = self._diagnostic_counts.get(key, 0) + 1
+            return None
         plan = ControlEpisodeRouter.route(
             candidate,
             ownership,
@@ -1190,14 +1394,14 @@ class SymbolEpisodePolicy:
         )
         if plan is None:
             return plan
-        if attack_evidence:
-            plan = replace(
-                plan,
-                evidence={
-                    **dict(plan.evidence),
-                    **attack_evidence,
-                },
-            )
+        plan = replace(
+            plan,
+            evidence={
+                **dict(plan.evidence),
+                **direction_evidence,
+                **attack_evidence,
+            },
+        )
         if common_attack is None:
             return plan
         # Even a locally owned residual response can originate inside a broad
@@ -1294,6 +1498,9 @@ class SymbolEpisodePolicy:
                 self._router_opened_sources.add(source_key)
                 self._structural_campaigns[root] = transition.current
                 self._structural_campaign_roots[transition.current.campaign_id] = root
+                if item.authority is None:
+                    raise RuntimeError("router source lost its pre-event authority")
+                self._router_directional_authority[root] = item.authority
                 newly_opened.add(root)
                 if item.boundary.boundary_id in self.market.boundary_book.boundaries:
                     newly_opened_static_source_ids.add(item.boundary.boundary_id)
@@ -1448,6 +1655,7 @@ class SymbolEpisodePolicy:
                 continue
             self._structural_campaigns.pop(root, None)
             self._structural_campaign_roots.pop(state.campaign_id, None)
+            self._router_directional_authority.pop(root, None)
         # Source discovery was frozen before ingest and every campaign has now
         # seen this physical touch.  A canonical static source is spent by its
         # first contact, but only after that contact has opened its one parent.
@@ -5301,7 +5509,15 @@ class LiquidityEpisodeCoordinator:
             snapshot = self._common_price_campaigns.snapshot(root_id)
             if snapshot.attack_time_ns >= decision_time_ns:
                 continue
-            for opportunity in self._common_price_campaigns.observe(root_id, bars):
+            opportunities = self._common_price_campaigns.observe(root_id, bars)
+            updated = self._common_price_campaigns.snapshot(root_id)
+            self._common_episodes.observe_price_failure(
+                root_id,
+                reclaim_time_ns=dict(updated.reclaim_time_ns),
+                broad_failure_time_ns=updated.fully_reclaimed_time_ns,
+                broad_failure_participants=updated.fully_reclaimed_participants,
+            )
+            for opportunity in opportunities:
                 plan = self._common_price_plan(opportunity)
                 if plan is not None:
                     plans.append(plan)
@@ -5528,10 +5744,24 @@ class LiquidityEpisodeCoordinator:
                 or not isinstance(raw_attack_bars, Mapping)
             ):
                 raise ValueError("coordinator common state is incomplete")
-            restored_common_episodes = CommonEpisodeLedger.restore_state(raw_episodes)
             restored_common_price = CommonPriceCampaignBook.restore_state(raw_price)
+            restored_common_episodes = CommonEpisodeLedger.restore_state(raw_episodes)
             if set(restored_common_episodes.roots) != set(restored_common_price.roots):
                 raise ValueError("common ledger and price roots differ")
+            for root_id in restored_common_episodes.roots:
+                price_snapshot = restored_common_price.snapshot(root_id)
+                ledger_price_state = restored_common_episodes.price_failure_state(
+                    root_id,
+                )
+                price_state = (
+                    price_snapshot.reclaim_time_ns,
+                    price_snapshot.fully_reclaimed_time_ns,
+                    price_snapshot.fully_reclaimed_participants,
+                )
+                if ledger_price_state != price_state:
+                    raise ValueError(
+                        "common ledger and price reclaim states differ"
+                    )
             restored_attack_bars = {}
             for root_id, raw_frozen in raw_attack_bars.items():
                 if not isinstance(root_id, str) or not isinstance(raw_frozen, Mapping):
@@ -5638,9 +5868,11 @@ class LiquidityEpisodeCoordinator:
         if set(bucket) != set(self.policies):
             return []
         synchronized = self._pending_by_close.pop(bar.close_time_ns)
+        prior_one_minute = self._one_minute_map()
         prebar = {
             symbol: self.policies[symbol].prepare_router_minute(
                 synchronized[symbol],
+                bars_by_symbol=prior_one_minute,
             )
             for symbol in sorted(synchronized)
         }
