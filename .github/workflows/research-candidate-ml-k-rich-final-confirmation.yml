@@ -1,0 +1,165 @@
+name: research-candidate-ml-k-rich-final-confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-rich-final-confirmation.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-rich-final-confirmation
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_final.py \
+            research/candidate-ml-k-reachable-control/stable_mechanism_router.py
+
+  confirmation-harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {period: fresh-2026-feb-confirm, start: '2026-02-05', end: '2026-02-10'}
+          - {period: fresh-2026-mar-confirm, start: '2026-03-10', end: '2026-03-15'}
+          - {period: fresh-2026-apr-confirm, start: '2026-04-10', end: '2026-04-15'}
+          - {period: fresh-2026-may-confirm, start: '2026-05-10', end: '2026-05-15'}
+          - {period: fresh-2026-jun-confirm, start: '2026-06-10', end: '2026-06-15'}
+          - {period: fresh-2026-jul-confirm, start: '2026-07-10', end: '2026-07-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          OUT="artifacts/candidate-ml-k/final-confirm/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/final-confirm/${{ matrix.period }}"
+          mkdir -p "$OUT" "$CACHE"
+          python research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rich-confirm-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/final-confirm/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-final:
+    needs: confirmation-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/final-confirm/source
+      OUT: artifacts/candidate-ml-k/final-confirm/result
+      STABLE: artifacts/candidate-ml-k/final-confirm/stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rich-confirm-*
+          path: artifacts/candidate-ml-k/final-confirm/source
+      - name: Download development harvests only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=''
+          for _ in $(seq 1 150); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow research-candidate-ml-k-rich-causal-short.yml \
+              --branch research_candidate_ML_k --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            sleep 20
+          done
+          test -n "$RUN_ID"
+          echo "$RUN_ID" >/tmp/development_run
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" || true
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'rich-dev-*' --dir "$ROOT" || true
+          DEV_COUNT="$(find "$ROOT" -type f -name '*.csv' | grep -c '/rich-dev-' || true)"
+          CONFIRM_COUNT="$(find "$ROOT" -type f -name '*.csv' | grep -c '/rich-confirm-' || true)"
+          echo "development csv: $DEV_COUNT; confirmation csv: $CONFIRM_COUNT"
+          test "$DEV_COUNT" -ge 6
+          test "$CONFIRM_COUNT" -ge 5
+      - name: Freeze development-selected policy and evaluate six later periods
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT" "$STABLE"; mkdir -p "$OUT" "$STABLE"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_final.py \
+            --root "$ROOT" --output "$OUT"
+          python research/candidate-ml-k-reachable-control/stable_mechanism_router.py \
+            --scored "$OUT/scored_actions.csv.gz" --output "$STABLE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-rich-final-confirmation-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/final-confirm/result/**
+            artifacts/candidate-ml-k/final-confirm/stable/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the untouched multi-period short result
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/rich_final_confirmation
+          rm -rf "$DEST"; mkdir -p "$DEST/integrated" "$DEST/stable"
+          cp "$OUT/summary.json" "$DEST/integrated/"
+          cp "$OUT/final_fresh_closed_trades.csv" "$DEST/integrated/"
+          cp "$OUT/final_fresh_loss_clinic.csv" "$DEST/integrated/"
+          cp "$STABLE/summary.json" "$DEST/stable/"
+          cp "$STABLE/fresh_closed_trades.csv" "$DEST/stable/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","development_source_run":"$(cat /tmp/development_run)","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record six untouched ML-k short confirmations [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
