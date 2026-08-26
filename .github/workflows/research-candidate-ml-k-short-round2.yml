@@ -1,0 +1,171 @@
+name: research-candidate-ml-k-short-round2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-round2.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-short-round2
+  cancel-in-progress: true
+
+jobs:
+  route-existing-short-actions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      SOURCE_RUN: '32931522322'
+      ROOT: artifacts/candidate-ml-k/round1-source
+      OUT: artifacts/candidate-ml-k/round2-result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - name: Verify revised decision policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt pytest
+          python -m py_compile research/candidate-ml-k-reachable-control/reachable_control_router.py
+          python -m pytest -q research/candidate-ml-k-reachable-control/test_reachable_control_router.py
+      - name: Wait for and download the diverse round-one harvest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run watch "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --exit-status
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --dir "$ROOT"
+          find "$ROOT" -name 'departure_actions.csv.gz' -print | sort
+          test "$(find "$ROOT" -name 'departure_actions.csv.gz' | wc -l)" -ge 6
+      - name: Route one account with the revised causal policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output "$OUT"
+      - name: Inspect what the policy understood and rejected
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json, math
+          import pandas as pd
+
+          root = Path('artifacts/candidate-ml-k/round1-source')
+          out = Path('artifacts/candidate-ml-k/round2-result')
+          rows=[]
+          for path in sorted(root.rglob('departure_actions.csv.gz')):
+              frame=pd.read_csv(path, low_memory=False)
+              if frame.empty: continue
+              summary_path=path.parent/'summary.json'
+              summary=json.loads(summary_path.read_text()) if summary_path.exists() else {}
+              period=str(summary.get('period') or path.parent.name)
+              frame=frame.copy(); frame['period']=period
+              rows.append(frame)
+          actions=pd.concat(rows, ignore_index=True, sort=False)
+          exists=actions.get('order_exists', False)
+          if getattr(exists, 'dtype', None) != bool:
+              exists=exists.astype(str).str.lower().isin({'true','1','yes'})
+          actions=actions[exists].copy()
+          actions['outcome']=actions.get('outcome','').fillna('').astype(str)
+          actions['net_r_num']=pd.to_numeric(actions.get('net_r'), errors='coerce')
+          actions['gross_rr_num']=pd.to_numeric(actions.get('gross_rr'), errors='coerce')
+          actions['win']=actions.outcome.eq('TARGET_FIRST')
+          actions['resolved']=actions.outcome.isin({'TARGET_FIRST','STOP_FIRST','AMBIGUOUS_SAME_MINUTE','AMBIGUOUS_FILL_BARRIER_SAME_MINUTE'})
+          geometry=actions.get('entry_geometry','').fillna('').astype(str)
+          actions['first_return_geometry']=geometry.str.contains('OVERLAP|TRANSFERRED_SOURCE|RETEST|MITIGATION', case=False, regex=True)
+          scored=pd.read_csv(out/'scored_orders.csv.gz', low_memory=False)
+          selected=pd.read_csv(out/'closed_trades.csv', low_memory=False)
+
+          def group(frame, key):
+              result=[]
+              if key not in frame: return result
+              work=frame.copy()
+              net=pd.to_numeric(work.get('net_r', work.get('net_r_num')), errors='coerce')
+              work=work[net.notna()].copy(); work['_net']=net[net.notna()]
+              work['_win']=work.get('outcome','').astype(str).eq('TARGET_FIRST')
+              for value,g in work.groupby(key, dropna=False):
+                  result.append({key:str(value),'trades':int(len(g)),
+                    'target_first_rate':float(g._win.mean()),
+                    'mean_net_r':float(g._net.mean()),
+                    'mean_gross_rr':float(pd.to_numeric(g.get('gross_rr'),errors='coerce').mean())})
+              return result
+
+          raw_closed=actions[actions.resolved & actions.net_r_num.notna()].copy()
+          reasons=(
+              scored.loc[~scored.get('policy_eligible',False).fillna(False), 'prediction_source']
+              .fillna('UNKNOWN').astype(str).value_counts().head(20).to_dict()
+              if 'policy_eligible' in scored else {}
+          )
+          clinic={
+            'raw_order_rows':int(len(actions)),
+            'raw_closed_plans':int(len(raw_closed)),
+            'raw_target_first_rate':float(raw_closed.win.mean()) if len(raw_closed) else None,
+            'raw_mean_net_r':float(raw_closed.net_r_num.mean()) if len(raw_closed) else None,
+            'raw_median_gross_rr':float(raw_closed.gross_rr_num.median()) if len(raw_closed) else None,
+            'first_return_geometry':group(raw_closed[raw_closed.first_return_geometry], 'period'),
+            'raw_by_period':group(raw_closed,'period'),
+            'raw_by_family':group(raw_closed,'family'),
+            'raw_by_geometry':group(raw_closed,'entry_geometry'),
+            'selected_by_period':group(selected,'period'),
+            'selected_by_family':group(selected,'family'),
+            'selected_by_symbol':group(selected,'symbol'),
+            'prediction_source_rejections':reasons,
+            'interpretation':(
+              'A trade is now possible only after local counterfactual control ownership, '
+              'a first defended structural return, a reachable inherited destination, '
+              'strictly earlier mature labels, completion probability above one half, '
+              'and positive cost-adjusted expected log growth.'
+            )
+          }
+          (out/'decision_clinic.json').write_text(json.dumps(clinic,indent=2,sort_keys=True,default=str)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-short-round2-${{ github.sha }}
+          path: artifacts/candidate-ml-k/round2-result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Persist the actual short result
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_round2
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/decision_clinic.json" "$DEST/"
+          cp "$OUT/selected_orders.csv" "$DEST/"
+          cp "$OUT/closed_trades.csv" "$DEST/"
+          cp "$OUT/near_miss_rejected_orders.csv" "$DEST/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","source_run":"${SOURCE_RUN}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record ML-k owned-first-return short diagnostic [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
