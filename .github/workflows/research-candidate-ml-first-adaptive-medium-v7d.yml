@@ -1,0 +1,246 @@
+name: Research ML-first adaptive medium v7d
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-adaptive-medium-v7d.yml'
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-adaptive-medium-v7d
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-prior-harvest:
+    runs-on: ubuntu-24.04
+    outputs:
+      harvest_run_id: ${{ steps.resolve.outputs.harvest_run_id }}
+    steps:
+      - name: Wait for robust prior harvest
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          endpoint='repos/${{ github.repository }}/actions/workflows/research-candidate-ml-first-mechanism-harvest-v5d.yml/runs?branch=research_candidate_ML_first&per_page=1'
+          for _ in $(seq 1 360); do
+            payload=$(gh api "$endpoint")
+            run_id=$(jq -r '.workflow_runs[0].id // empty' <<<"$payload")
+            status=$(jq -r '.workflow_runs[0].status // empty' <<<"$payload")
+            conclusion=$(jq -r '.workflow_runs[0].conclusion // empty' <<<"$payload")
+            if [[ -n "$run_id" && "$status" == completed ]]; then
+              [[ "$conclusion" == success ]] || exit 1
+              echo "harvest_run_id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          exit 1
+
+  harvest-untouched-medium:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {fraction: '0.25', frontier: '025', period: 2024-may, start: 2024-05-01, end: 2024-05-15}
+          - {fraction: '0.25', frontier: '025', period: 2024-nov, start: 2024-11-01, end: 2024-11-15}
+          - {fraction: '0.25', frontier: '025', period: 2025-may, start: 2025-05-01, end: 2025-05-15}
+          - {fraction: '0.25', frontier: '025', period: 2026-may, start: 2026-05-01, end: 2026-05-15}
+          - {fraction: '0.35', frontier: '035', period: 2024-may, start: 2024-05-01, end: 2024-05-15}
+          - {fraction: '0.35', frontier: '035', period: 2024-nov, start: 2024-11-01, end: 2024-11-15}
+          - {fraction: '0.35', frontier: '035', period: 2025-may, start: 2025-05-01, end: 2025-05-15}
+          - {fraction: '0.35', frontier: '035', period: 2026-may, start: 2026-05-01, end: 2026-05-15}
+          - {fraction: '0.50', frontier: '050', period: 2024-may, start: 2024-05-01, end: 2024-05-15}
+          - {fraction: '0.50', frontier: '050', period: 2024-nov, start: 2024-11-01, end: 2024-11-15}
+          - {fraction: '0.50', frontier: '050', period: 2025-may, start: 2025-05-01, end: 2025-05-15}
+          - {fraction: '0.50', frontier: '050', period: 2026-may, start: 2026-05-01, end: 2026-05-15}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-adaptive-medium-v7d/${{ matrix.frontier }}/${{ matrix.period }}
+      OUT: artifacts/ml-first-adaptive-medium-v7d/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      FRACTION: ${{ matrix.fraction }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: 9df00cdf2db3a99f6c98c538326909188d349741
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Patch robust alternate frontier
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-first-reachable-frontier-v4/patch_route_fraction_v2.py \
+            --root candidate4_runtime --fraction "$FRACTION"
+      - name: Harvest untouched medium window
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+            --start "$START" --end "$END" --role fresh --warmup-days 60 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          printf '{"target_fraction":%s,"research_epoch":"untouched_medium"}\n' \
+            "$FRACTION" > "$OUT/action_contract.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-adaptive-medium-v7d-${{ matrix.frontier }}-${{ matrix.period }}
+          path: artifacts/ml-first-adaptive-medium-v7d/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-adaptive-medium:
+    needs: [resolve-prior-harvest, harvest-untouched-medium]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      PRIOR_HARVEST_RUN_ID: ${{ needs.resolve-prior-harvest.outputs.harvest_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-mechanism-harvest-v5d-*
+          path: downloaded/prior-short
+          run-id: ${{ needs.resolve-prior-harvest.outputs.harvest_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-adaptive-medium-v7d-*
+          path: downloaded/untouched-medium
+      - name: Normalize research epochs
+        run: |
+          set -euo pipefail
+          PRIOR=artifacts/ml-first-adaptive-medium-v7d/normalized/prior-short
+          MEDIUM=artifacts/ml-first-adaptive-medium-v7d/normalized/untouched-medium
+          rm -rf "$PRIOR" "$MEDIUM"
+          mkdir -p "$PRIOR" "$MEDIUM"
+          shopt -s nullglob
+          prior_count=0
+          for d in downloaded/prior-short/ml-first-mechanism-harvest-v5d-*; do
+            name="${d##*/ml-first-mechanism-harvest-v5d-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-mechanism-harvest-v5d/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$PRIOR/fraction-$frontier/$period"
+            cp -a "$src"/. "$PRIOR/fraction-$frontier/$period"/
+            prior_count=$((prior_count + 1))
+          done
+          medium_count=0
+          for d in downloaded/untouched-medium/ml-first-adaptive-medium-v7d-*; do
+            name="${d##*/ml-first-adaptive-medium-v7d-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-adaptive-medium-v7d/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$MEDIUM/fraction-$frontier/$period"
+            cp -a "$src"/. "$MEDIUM/fraction-$frontier/$period"/
+            medium_count=$((medium_count + 1))
+          done
+          test "$prior_count" -eq 24
+          test "$medium_count" -eq 12
+      - name: Aggregate and merge epochs
+        run: |
+          set -euo pipefail
+          NORM=artifacts/ml-first-adaptive-medium-v7d/normalized
+          AGG=artifacts/ml-first-adaptive-medium-v7d/aggregates
+          MERGED=artifacts/ml-first-adaptive-medium-v7d/merged
+          rm -rf "$AGG" "$MERGED"
+          mkdir -p "$AGG/prior-short" "$AGG/untouched-medium" "$MERGED"
+          for frontier in 025 035 050; do
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORM/prior-short/fraction-$frontier" \
+              --output "$AGG/prior-short/fraction-$frontier"
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORM/untouched-medium/fraction-$frontier" \
+              --output "$AGG/untouched-medium/fraction-$frontier"
+          done
+          python research/candidate-ml-first-adaptive-medium-v7/merge_research_epochs.py \
+            --development-root "$AGG/prior-short" \
+            --evaluation-root "$AGG/untouched-medium" \
+            --output "$MERGED"
+      - name: Run chronological adaptive mechanism policy
+        run: |
+          set -euo pipefail
+          RUNTIME=artifacts/ml-first-adaptive-medium-v7d/runtime/mechanism_router_v2.py
+          ACTION=artifacts/ml-first-adaptive-medium-v7d/runtime/causal_action_value_v3.py
+          OUT=artifacts/ml-first-adaptive-medium-v7d/routed
+          mkdir -p "$(dirname "$RUNTIME")" "$OUT"
+          python research/candidate-ml-first-mechanism-router-v5/materialize_router_v2.py \
+            --source research/candidate-ml-first-mechanism-router-v5/mechanism_router.py \
+            --output "$RUNTIME"
+          python research/candidate-ml-first-action-value-v6/materialize_action_value_v3.py \
+            --source research/candidate-ml-first-action-value-v6/causal_action_value_router.py \
+            --output "$ACTION"
+          python "$ACTION" \
+            --plans artifacts/ml-first-adaptive-medium-v7d/merged/all_epoch_candidate_plans.csv.gz \
+            --router-runtime "$RUNTIME" --output "$OUT" --risk 0.03
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' "$PRIOR_HARVEST_RUN_ID" > "$OUT/prior_harvest_run_id.txt"
+          printf '%s\n' 9df00cdf2db3a99f6c98c538326909188d349741 > "$OUT/inherited_engine_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-adaptive-medium-v7d-result-${{ github.sha }}
+          path: artifacts/ml-first-adaptive-medium-v7d/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit adaptive medium result
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-adaptive-medium-v7d
+          DEST=research_results/candidate_ml_first/adaptive_medium_v7d/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$SRC/routed"/. "$DEST"/
+          cp "$SRC/merged/summary.json" "$DEST/merged_epoch_summary.json"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            brief=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('research_results/candidate_ml_first/adaptive_medium_v7d/latest/summary.json').read_text())
+          f=s.get('selected_fresh', {})
+          print(f"variant={s.get('selected_variant_from_development')} trades={f.get('trades')} meanR={f.get('mean_net_r')} nav={f.get('ending_nav')}")
+          PY
+          )
+            git commit -m "Record ML-first adaptive medium v7d ${brief} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
