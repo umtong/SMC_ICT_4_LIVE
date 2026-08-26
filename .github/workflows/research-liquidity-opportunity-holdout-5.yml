@@ -1,0 +1,92 @@
+name: Research liquidity opportunity fifth untouched windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v3"]
+    paths:
+      - ".github/workflows/research-liquidity-opportunity-holdout-5.yml"
+      - "research/candidate-liquidity-auction-v3/.dispatch-opportunity-holdout-5"
+
+concurrency:
+  group: research-liquidity-opportunity-holdout-5
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record fifth untouched-window run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-liquidity-opportunity-holdout-5
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-opportunity-holdout-5
+          git commit -m "Record fifth untouched opportunity run $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {period: holdout5-2022-feb-23, start: 2022-02-23, end: 2022-03-02}
+          - {period: holdout5-2022-may-23, start: 2022-05-23, end: 2022-05-30}
+          - {period: holdout5-2022-aug-23, start: 2022-08-23, end: 2022-08-30}
+          - {period: holdout5-2022-nov-23, start: 2022-11-23, end: 2022-11-30}
+          - {period: holdout5-2023-feb-23, start: 2023-02-23, end: 2023-03-02}
+          - {period: holdout5-2023-may-23, start: 2023-05-23, end: 2023-05-30}
+          - {period: holdout5-2023-aug-23, start: 2023-08-23, end: 2023-08-30}
+          - {period: holdout5-2023-nov-23, start: 2023-11-23, end: 2023-11-30}
+          - {period: holdout5-2024-feb-23, start: 2024-02-23, end: 2024-03-01}
+          - {period: holdout5-2024-may-23, start: 2024-05-23, end: 2024-05-30}
+          - {period: holdout5-2024-aug-23, start: 2024-08-23, end: 2024-08-30}
+          - {period: holdout5-2024-nov-23, start: 2024-11-23, end: 2024-11-30}
+          - {period: holdout5-2025-feb-23, start: 2025-02-23, end: 2025-03-02}
+          - {period: holdout5-2025-may-23, start: 2025-05-23, end: 2025-05-30}
+          - {period: holdout5-2025-aug-23, start: 2025-08-23, end: 2025-08-30}
+          - {period: holdout5-2025-nov-23, start: 2025-11-23, end: 2025-11-30}
+          - {period: holdout5-2026-feb-23, start: 2026-02-23, end: 2026-03-02}
+          - {period: holdout5-2026-may-23, start: 2026-05-23, end: 2026-05-30}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export fifth untouched exact one-minute price and aggressor flow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-cache "holdout5/${{ matrix.period }}"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --before-days 3 \
+            --after-days 2 \
+            --cache /tmp/binance-cache \
+            --output "holdout5/${{ matrix.period }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-opportunity-${{ matrix.period }}
+          path: holdout5/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

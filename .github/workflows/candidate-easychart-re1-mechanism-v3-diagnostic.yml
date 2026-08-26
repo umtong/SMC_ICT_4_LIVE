@@ -1,0 +1,101 @@
+name: candidate-easychart-re1-mechanism-v3-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_mechanism_v3.py"
+      - "research/candidate-easychart_re1/run_mtf_backtest_re1_mechanism_v3_invalidation.py"
+      - ".github/workflows/candidate-easychart-re1-mechanism-v3-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-mechanism-v3-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        policy:
+          - {name: v3-diagonal-acceptance, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: DIAGONAL_ACCEPTANCE}
+          - {name: v3-diagonal-rejection, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: DIAGONAL_REJECTION}
+          - {name: v3-horizontal-acceptance, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: HORIZONTAL_ACCEPTANCE}
+          - {name: v3-horizontal-rejection, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: HORIZONTAL_REJECTION}
+          - {name: v3-horizontal-rotation, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: HORIZONTAL_ROTATION}
+          - {name: v3-major-liquidity-rejection, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: MAJOR_LIQUIDITY_REJECTION}
+          - {name: v3-decision-ob-rejection, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: DECISION_AREA_OB_REJECTION}
+          - {name: v3-decision-ob-rotation, runner: run_mtf_backtest_re1_mechanism_v3.py, enabled: DECISION_AREA_OB_ROTATION}
+          - name: v3-continuation-5m
+            runner: run_mtf_backtest_re1_mechanism_v3.py
+            enabled: DIAGONAL_ACCEPTANCE,HORIZONTAL_ACCEPTANCE,DECISION_AREA_OB_ROTATION
+          - name: v3-continuation-invalidation
+            runner: run_mtf_backtest_re1_mechanism_v3_invalidation.py
+            enabled: DIAGONAL_ACCEPTANCE,HORIZONTAL_ACCEPTANCE,DECISION_AREA_OB_ROTATION
+          - name: v3-rejection-5m
+            runner: run_mtf_backtest_re1_mechanism_v3.py
+            enabled: DIAGONAL_REJECTION,HORIZONTAL_REJECTION,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION
+          - name: v3-rejection-invalidation
+            runner: run_mtf_backtest_re1_mechanism_v3_invalidation.py
+            enabled: DIAGONAL_REJECTION,HORIZONTAL_REJECTION,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION
+          - name: v3-easychart-core-5m
+            runner: run_mtf_backtest_re1_mechanism_v3.py
+            enabled: DIAGONAL_ACCEPTANCE,HORIZONTAL_ACCEPTANCE,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION,DECISION_AREA_OB_ROTATION
+          - name: v3-easychart-core-invalidation
+            runner: run_mtf_backtest_re1_mechanism_v3_invalidation.py
+            enabled: DIAGONAL_ACCEPTANCE,HORIZONTAL_ACCEPTANCE,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION,DECISION_AREA_OB_ROTATION
+          - name: v3-liquidity-reversal-5m
+            runner: run_mtf_backtest_re1_mechanism_v3.py
+            enabled: HORIZONTAL_REJECTION,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION
+          - name: v3-liquidity-reversal-invalidation
+            runner: run_mtf_backtest_re1_mechanism_v3_invalidation.py
+            enabled: HORIZONTAL_REJECTION,MAJOR_LIQUIDITY_REJECTION,DECISION_AREA_OB_REJECTION
+        period:
+          - {name: dev-february-2024, start: 2024-02-01, end: 2024-02-14}
+          - {name: dev-august-2024, start: 2024-08-01, end: 2024-08-14}
+          - {name: dev-february-2025, start: 2025-02-01, end: 2025-02-14}
+          - {name: random-aug20-sep02-2024, start: 2024-08-20, end: 2024-09-02}
+          - {name: random-sep09-sep22-2024, start: 2024-09-09, end: 2024-09-22}
+          - {name: random-mar07-mar20-2025, start: 2025-03-07, end: 2025-03-20}
+          - {name: random-jun09-jun22-2025, start: 2025-06-09, end: 2025-06-22}
+          - {name: random-sep10-sep23-2025, start: 2025-09-10, end: 2025-09-23}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      EASYCHART_RE1_MECHANISMS: ${{ matrix.policy.enabled }}
+      CACHE: .cache/re1-mechanism-v3/${{ matrix.policy.name }}/${{ matrix.period.name }}
+      OUT: artifacts/re1-mechanism-v3/${{ matrix.policy.name }}/${{ matrix.period.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile selected mechanism graph
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_geometry_v3.py \
+            research/candidate-easychart_re1/easychart_re1_decision_area_v3.py \
+            research/candidate-easychart_re1/execution_re1_mechanism_filter.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_mechanism_v3.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_mechanism_v3_invalidation.py
+      - name: Run integrated mechanism account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.policy.runner }}" \
+            --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" --warmup-days 35 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-easychart-re1-${{ matrix.policy.name }}-${{ matrix.period.name }}-${{ github.sha }}
+          path: artifacts/re1-mechanism-v3/${{ matrix.policy.name }}/${{ matrix.period.name }}/**
+          if-no-files-found: warn
+          retention-days: 90

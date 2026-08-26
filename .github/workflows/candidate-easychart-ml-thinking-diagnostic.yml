@@ -1,0 +1,134 @@
+name: candidate-easychart-ml-thinking-diagnostic
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-easychart-ml-thinking/**"
+      - ".github/workflows/candidate-easychart-ml-thinking-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml-thinking-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  train-and-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-ml-thinking:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml-thinking
+      DEV_OUT: artifacts/candidate-easychart-ml-thinking/development
+      BASE_OUT: artifacts/candidate-easychart-ml-thinking/evaluation-baseline
+      ML_OUT: artifacts/candidate-easychart-ml-thinking/evaluation-ml
+      MODEL: artifacts/candidate-easychart-ml-thinking/development/ml_router.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and dependency-light self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart-ml-thinking/ml_router.py \
+            research/candidate-easychart-ml-thinking/train_ml_router.py \
+            research/candidate-easychart-ml-thinking/execution_ml_thinking.py \
+            research/candidate-easychart-ml-thinking/run_mtf_backtest_ml_thinking.py \
+            research/candidate-easychart-ml-thinking/self_check_ml_thinking.py
+          python research/candidate-easychart-ml-thinking/self_check_ml_thinking.py
+
+      - name: Generate broad causal plans on development interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$DEV_OUT" "$BASE_OUT" "$ML_OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_flow.py \
+            --start 2025-06-15 \
+            --end 2025-08-09 \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$DEV_OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Build identity-safe causal counterfactual answer sheet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date
+          import json
+          from pathlib import Path
+          from counterfactual_plan_harvest import HarvestConfig
+          from counterfactual_plan_harvest_fixed import harvest_counterfactual_plans
+
+          output = Path("artifacts/candidate-easychart-ml-thinking/development")
+          summary = harvest_counterfactual_plans(
+              HarvestConfig(
+                  start=date(2025, 6, 15),
+                  end=date(2025, 8, 9),
+                  load_start=date(2025, 6, 1),
+                  symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+                  cache=Path(".cache/candidate-easychart-ml-thinking"),
+                  output=output,
+                  fee_profile="usd_m_vip0",
+                  entry_slippage_ticks=2,
+                  stop_slippage_ticks=2,
+              ),
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Train causal target-before-stop router
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart-ml-thinking/train_ml_router.py \
+            --input "$DEV_OUT/counterfactual_plans.csv" \
+            --output "$MODEL" \
+            --cv-folds 3
+
+      - name: Run unchanged flow baseline on later interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_flow.py \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$BASE_OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Run ML router in one continuous four-symbol account
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart-ml-thinking/run_mtf_backtest_ml_thinking.py \
+            --ml-model "$MODEL" \
+            --start 2025-08-10 \
+            --end 2025-08-20 \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$ML_OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve development and evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-ml-thinking-${{ github.sha }}
+          path: artifacts/candidate-easychart-ml-thinking/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,71 @@
+name: candidate-coherent-auction-system-v4-watch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-auction-system-v4/.watch-dispatch"
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait and preserve compact status or traceback
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-coherent-auction-system-v4/.latest-run').read_text())['run_id'])
+          PY
+          )
+          STATUS=queued
+          CONCLUSION=null
+          for _ in $(seq 1 900); do
+            PAYLOAD=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+            STATUS=$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$PAYLOAD")
+            CONCLUSION=$(python -c 'import json,sys; print(json.load(sys.stdin).get("conclusion"))' <<<"$PAYLOAD")
+            if [ "$STATUS" = completed ]; then break; fi
+            sleep 30
+          done
+          mkdir -p /tmp/v4logs
+          TRACE=""
+          if [ "$STATUS" = completed ] && [ "$CONCLUSION" != success ]; then
+            curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/logs" -o /tmp/v4logs/logs.zip || true
+            if [ -s /tmp/v4logs/logs.zip ]; then
+              unzip -p /tmp/v4logs/logs.zip 2>/dev/null | grep -E -B 4 -A 18 'Traceback|ModuleNotFoundError|ImportError|AttributeError|TypeError|ValueError|RuntimeError|SyntaxError|Process completed with exit code' | tail -n 260 > /tmp/v4logs/trace.txt || true
+              TRACE=$(python - <<'PY'
+              import json
+              from pathlib import Path
+              text=Path('/tmp/v4logs/trace.txt').read_text(errors='replace') if Path('/tmp/v4logs/trace.txt').exists() else ''
+              print(json.dumps(text[-16000:]))
+              PY
+              )
+            fi
+          fi
+          python - <<PY
+          import json
+          from pathlib import Path
+          trace=json.loads('''${TRACE:-""}''') if '''${TRACE:-}''' else ''
+          payload={'run_id':int('$RUN_ID'),'status':'$STATUS','conclusion':'$CONCLUSION','trace':trace}
+          Path('research/candidate-coherent-auction-system-v4/LATEST_WORKFLOW_STATUS.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-coherent-auction-system-v4/LATEST_WORKFLOW_STATUS.json
+          git commit -m "Preserve coherent auction v4 workflow status $RUN_ID" || exit 0
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking

@@ -1,0 +1,145 @@
+name: candidate-easychart-re1-flow-phase-ob-expansion
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.flow_phase_ob_expansion_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-flow-phase-ob-expansion
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: march-2023
+            start: 2023-03-01
+            end: 2023-03-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: march-2023
+            start: 2023-03-01
+            end: 2023-03-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: october-2023
+            start: 2023-10-01
+            end: 2023-10-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: october-2023
+            start: 2023-10-01
+            end: 2023-10-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: may-2024
+            start: 2024-05-01
+            end: 2024-05-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: may-2024
+            start: 2024-05-01
+            end: 2024-05-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: november-2024
+            start: 2024-11-01
+            end: 2024-11-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: november-2024
+            start: 2024-11-01
+            end: 2024-11-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: may-2025
+            start: 2025-05-01
+            end: 2025-05-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: may-2025
+            start: 2025-05-01
+            end: 2025-05-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: february-2026
+            start: 2026-02-01
+            end: 2026-02-14
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: february-2026
+            start: 2026-02-01
+            end: 2026-02-14
+          - candidate: phase
+            runner: run_mtf_backtest_re1_flow_phase.py
+            period: live-examples-2025-full
+            start: 2025-08-01
+            end: 2025-09-03
+          - candidate: flow-ob
+            runner: run_mtf_backtest_re1_flow_ob.py
+            period: live-examples-2025-full
+            start: 2025-08-01
+            end: 2025-09-03
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-flow-phase-ob-expansion/${{ matrix.candidate }}/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-flow-phase-ob-expansion/${{ matrix.candidate }}/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile promoted causal-flow candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_flow.py \
+            research/candidate-easychart_re1/mtf_data_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_auction_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow_focused.py \
+            research/candidate-easychart_re1/easychart_re1_flow_phase.py \
+            research/candidate-easychart_re1/easychart_re1_flow_ob.py \
+            research/candidate-easychart_re1/execution_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow_phase.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow_ob.py
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "research/candidate-easychart_re1/${{ matrix.runner }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 14 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve continuous-account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-flow-phase-ob-expansion-${{ matrix.candidate }}-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-flow-phase-ob-expansion/${{ matrix.candidate }}/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90

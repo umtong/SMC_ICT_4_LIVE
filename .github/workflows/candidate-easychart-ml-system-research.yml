@@ -1,0 +1,307 @@
+name: candidate-easychart-ml-system-research
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-easychart-ml-system/.ml_system_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-ml-system-research
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile causal system
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart-ml-system/causal_state.py \
+            research/candidate-easychart-ml-system/opportunity_universe.py \
+            research/candidate-easychart-ml-system/augment_causal_state.py \
+            research/candidate-easychart-ml-system/counterfactual_harvest_ml_system.py \
+            research/candidate-easychart-ml-system/robust_router.py \
+            research/candidate-easychart-ml-system/robust_router_system.py \
+            research/candidate-easychart-ml-system/train_robust_router.py \
+            research/candidate-easychart-ml-system/execution_ml_system.py \
+            research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
+            research/candidate-easychart-ml-system/run_mtf_backtest_ml_system.py \
+            research/candidate-easychart-ml-system/self_check_ml_system.py
+      - name: Dependency-light causality and learning check
+        run: |
+          python - <<'PY'
+          import robust_router_system  # noqa: F401
+          import self_check_ml_system
+          self_check_ml_system.main()
+          PY
+      - name: Construct every mechanism owner on all symbols
+        run: |
+          python - <<'PY'
+          from opportunity_universe import EasyChartMLOpportunityUniverse
+          contracts = (
+              ("BTCUSDT", 0.1),
+              ("ETHUSDT", 0.01),
+              ("SOLUSDT", 0.001),
+              ("XRPUSDT", 0.0001),
+          )
+          for symbol, tick in contracts:
+              universe = EasyChartMLOpportunityUniverse(symbol, tick, 1.0)
+              assert tuple(universe.owners) == universe.OWNER_ORDER
+              assert universe.plans == []
+              assert universe.diagnostics["ml_opportunity_universe"]["owner_priority"].startswith("NONE")
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml-system/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-ml-system/harvest/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      WARMUP_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate complete causal opportunity plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
+            --start "$START" \
+            --end "$END" \
+            --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Build causal episode traces and target-before-stop labels
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          from counterfactual_harvest_ml_system import (
+              HarvestConfig,
+              harvest_counterfactual_plans,
+          )
+
+          start = date.fromisoformat(os.environ["START"])
+          end = date.fromisoformat(os.environ["END"])
+          warmup = int(os.environ["WARMUP_DAYS"])
+          summary = harvest_counterfactual_plans(
+              HarvestConfig(
+                  start=start,
+                  end=end,
+                  load_start=start - timedelta(days=warmup),
+                  symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+                  cache=Path(os.environ["CACHE"]),
+                  output=Path(os.environ["OUT"]),
+                  fee_profile="usd_m_vip0",
+                  entry_slippage_ticks=2,
+                  stop_slippage_ticks=2,
+              ),
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+      - name: Attach exact shared online-offline causal state
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart-ml-system/augment_causal_state.py \
+            --start "$START" \
+            --end "$END" \
+            --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Preserve environment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-system-harvest-${{ matrix.period }}
+          path: artifacts/candidate-easychart-ml-system/harvest/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  train:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      MODEL_DIR: artifacts/candidate-easychart-ml-system/model
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-system-harvest-*
+          path: artifacts/candidate-easychart-ml-system/downloaded-harvest
+      - name: Train cross-environment robust nonlinear router
+        run: |
+          set -euo pipefail
+          mkdir -p "$MODEL_DIR"
+          ARGS=()
+          while IFS= read -r file; do
+            parent="$(basename "$(dirname "$file")")"
+            environment="${parent#ml-system-harvest-}"
+            ARGS+=(--input "${environment}=${file}")
+          done < <(find artifacts/candidate-easychart-ml-system/downloaded-harvest -name counterfactual_plans.csv -type f | sort)
+          if [ "${#ARGS[@]}" -ne 16 ]; then
+            echo "Expected 8 environment inputs, got $((${#ARGS[@]} / 2))" >&2
+            find artifacts/candidate-easychart-ml-system/downloaded-harvest -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          python research/candidate-easychart-ml-system/train_robust_router.py \
+            "${ARGS[@]}" \
+            --output "$MODEL_DIR/ml_system_model.json" \
+            --summary-output "$MODEL_DIR/training_summary.json" \
+            --trees 44 \
+            --depth 2 \
+            --feature-subsample 56 \
+            --seed 20260817
+      - name: Preserve trained system
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-system-model
+          path: artifacts/candidate-easychart-ml-system/model/**
+          if-no-files-found: error
+          retention-days: 30
+
+  evaluate:
+    needs: train
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {period: eval-2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: eval-2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: eval-2026-summer, start: 2026-07-01, end: 2026-07-10}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-ml-system/evaluation/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-ml-system/evaluation/${{ matrix.period }}
+      WARMUP_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ml-system-model
+          path: artifacts/candidate-easychart-ml-system/model
+      - name: Run one continuous four-symbol account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_system.py \
+            --ml-model artifacts/candidate-easychart-ml-system/model/ml_system_model.json \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve continuous account evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-system-evaluation-${{ matrix.period }}
+          path: artifacts/candidate-easychart-ml-system/evaluation/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  summarize:
+    if: always() && needs.evaluate.result != 'skipped'
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-system-evaluation-*
+          path: artifacts/evaluation
+      - name: Summarize direct continuous-account results
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          result = {}
+          for metrics_path in sorted(Path("artifacts/evaluation").glob("*/metrics.json")):
+              period = metrics_path.parent.name.removeprefix("ml-system-evaluation-")
+              metrics = json.loads(metrics_path.read_text())
+              audit_path = metrics_path.parent / "trade_audit.csv"
+              audit = pd.read_csv(audit_path) if audit_path.exists() else pd.DataFrame()
+              result[period] = {
+                  "metrics": metrics,
+                  "completed_trades_from_audit": int(len(audit)),
+                  "winning_trades_from_audit": (
+                      int((pd.to_numeric(audit.get("realized_pnl"), errors="coerce") > 0).sum())
+                      if not audit.empty and "realized_pnl" in audit
+                      else None
+                  ),
+              }
+          Path("artifacts/ml_system_evaluation_summary.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-system-evaluation-summary
+          path: artifacts/ml_system_evaluation_summary.json
+          if-no-files-found: warn
+          retention-days: 30

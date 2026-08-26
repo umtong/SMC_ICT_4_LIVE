@@ -1,0 +1,186 @@
+name: candidate-liquidity-auction-v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction"]
+    paths:
+      - "research/candidate-liquidity-auction-v1/**"
+      - "!research/candidate-liquidity-auction-v1/.latest-run"
+      - "!research/candidate-liquidity-auction-v1/LATEST_RESULT.json"
+      - ".github/workflows/candidate-liquidity-auction-v1.yml"
+
+concurrency:
+  group: candidate-liquidity-auction-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Record run identity without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '{"run_id":%s,"run_attempt":%s,"head_sha":"%s","created_at":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > research/candidate-liquidity-auction-v1/.latest-run
+          git add research/candidate-liquidity-auction-v1/.latest-run
+          git commit -m "Record liquidity auction v1 run $GITHUB_RUN_ID" || true
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin HEAD:"$GITHUB_REF_NAME"
+
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v1:research/candidate-coherent-auction-system-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and import causal liquidity auction policy
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-liquidity-auction-v1/semantic_liquidity_full.py \
+            research/candidate-liquidity-auction-v1/liquidity_auction_system.py \
+            research/candidate-liquidity-auction-v1/run_research.py \
+            research/candidate-liquidity-auction-v1/train_route.py
+          python - <<'PY'
+          from liquidity_auction_system import POLICY, MAX_HOLD_MINUTES, LIMIT_EXPIRY_MINUTES
+          assert 'NEAREST_LOCAL_SEMANTIC_OR_MULTISCALE_VOLUME' in POLICY
+          assert MAX_HOLD_MINUTES == 360 and LIMIT_EXPIRY_MINUTES > 0
+          print(POLICY)
+          PY
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {period: dev-2023-feb, start: 2023-02-01, end: 2023-02-08}
+          - {period: dev-2023-aug, start: 2023-08-01, end: 2023-08-08}
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {period: eval-2026-feb, start: 2026-02-01, end: 2026-02-08}
+          - {period: eval-2026-may, start: 2026-05-01, end: 2026-05-08}
+          - {period: eval-2026-aug, start: 2026-08-01, end: 2026-08-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-liquidity-auction-v1:research/candidate-coherent-auction-system-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-liquidity-auction-v1/${{ matrix.period }}
+      OUT: artifacts/candidate-liquidity-auction-v1/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest episode-conditioned immutable plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-liquidity-auction-v1/run_research.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          test -f "$OUT/summary.json"
+          if [ ! -s "$OUT/coherent_actions.csv" ]; then printf 'action_id\n' > "$OUT/coherent_actions.csv"; fi
+          if [ ! -s "$OUT/destination_states.csv" ]; then printf 'state_id\n' > "$OUT/destination_states.csv"; fi
+      - name: Verify causal geometry and fixed account risk
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          out=Path(os.environ['OUT']); actions=pd.read_csv(out/'coherent_actions.csv')
+          if actions.empty:
+              print({'actions':0}); raise SystemExit(0)
+          if actions.action_id.duplicated().any(): raise RuntimeError('duplicate action identity')
+          if not pd.to_numeric(actions.gross_rr,errors='coerce').ge(1.0).all(): raise RuntimeError('gross RR below one')
+          if not (pd.to_numeric(actions.planned_account_stop_r,errors='coerce')+1.0).abs().lt(1e-12).all(): raise RuntimeError('planned stop is not -1 account R')
+          if not actions.entry_geometry.isin(['COMPLETED_RESPONSE_MARKET','PUBLIC_PROXIMAL_LIMIT']).all(): raise RuntimeError('unexpected entry geometry')
+          if not actions.stop_geometry.astype(str).str.contains('WICK_NOISE_INVALIDATION').all(): raise RuntimeError('unexpected stop geometry')
+          filled=actions[actions.fill_state.astype(str).str.startswith('FILLED')]
+          if not filled.empty and not (pd.to_numeric(filled.actual_stop_net_r,errors='coerce')+1.0).abs().lt(1e-9).all(): raise RuntimeError('actual stop is not -1 account R')
+          print(actions.groupby(['narrative_branch','entry_geometry','stop_geometry','objective_kind']).outcome.value_counts())
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liquidity-auction-v1-${{ matrix.period }}
+          path: artifacts/candidate-liquidity-auction-v1/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  learn-route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: liquidity-auction-v1-*
+          path: downloaded
+          merge-multiple: false
+      - name: Install solved modeling libraries
+        run: python -m pip install --quiet --no-cache-dir lightgbm==4.6.0 scikit-learn==1.8.0
+      - name: Learn causal plan quality and route one continuous account
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          python research/candidate-liquidity-auction-v1/train_route.py \
+            --root downloaded --output result
+          cat result/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v1-result
+          path: result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve compact result without retriggering
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-liquidity-auction-v1/LATEST_RESULT.json
+          git add research/candidate-liquidity-auction-v1/LATEST_RESULT.json
+          git commit -m "Preserve liquidity auction v1 result $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin HEAD:"$GITHUB_REF_NAME"

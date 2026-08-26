@@ -1,0 +1,203 @@
+name: research-candidate-ml-k-short-local-frontier
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-local-frontier.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-short-local-frontier
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt pytest
+          python -m py_compile \
+            research/candidate-liquidity-episode-policy-v1/episode_policy.py \
+            research/candidate-ml-k-reachable-control/reachable_control_router.py
+          python -m pytest -q research/candidate-ml-k-reachable-control/test_reachable_control_router.py
+          python research/candidate-liquidity-episode-policy-v1/reproduce.py verify \
+            --output artifacts/candidate-ml-k/local-frontier/preflight
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-may-lf, start: '2023-05-01', end: '2023-05-06'}
+          - {role: dev, period: dev-2023-nov-lf, start: '2023-11-10', end: '2023-11-15'}
+          - {role: fresh, period: fresh-2024-feb-lf, start: '2024-02-01', end: '2024-02-06'}
+          - {role: dev, period: dev-2024-jun-lf, start: '2024-06-10', end: '2024-06-15'}
+          - {role: fresh, period: fresh-2024-aug-lf, start: '2024-08-03', end: '2024-08-08'}
+          - {role: dev, period: dev-2025-jan-lf, start: '2025-01-10', end: '2025-01-15'}
+          - {role: fresh, period: fresh-2025-apr-lf, start: '2025-04-05', end: '2025-04-10'}
+          - {role: dev, period: dev-2025-aug-lf, start: '2025-08-17', end: '2025-08-22'}
+          - {role: fresh, period: fresh-2025-sep-lf, start: '2025-09-01', end: '2025-09-06'}
+          - {role: dev, period: dev-2026-jan-lf, start: '2026-01-01', end: '2026-01-06'}
+          - {role: fresh, period: fresh-2026-mar-lf, start: '2026-03-01', end: '2026-03-06'}
+          - {role: fresh, period: fresh-2026-jun-lf, start: '2026-06-10', end: '2026-06-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          OUT="artifacts/candidate-ml-k/local-frontier/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/local-frontier/${{ matrix.period }}"
+          python research/candidate-liquidity-episode-policy-v1/reproduce.py harvest \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --period '${{ matrix.period }}' \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-frontier-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/local-frontier/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-persist:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/local-frontier/downloaded
+      OUT: artifacts/candidate-ml-k/local-frontier/routed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: local-frontier-*
+          path: artifacts/candidate-ml-k/local-frontier/downloaded
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output "$OUT"
+      - name: Raw plan clinic across every short regime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          root=Path('artifacts/candidate-ml-k/local-frontier/downloaded')
+          out=Path('artifacts/candidate-ml-k/local-frontier/routed')
+          frames=[]
+          for path in root.rglob('departure_actions.csv.gz'):
+              frame=pd.read_csv(path,low_memory=False)
+              if frame.empty: continue
+              sp=path.parent/'summary.json'
+              summary=json.loads(sp.read_text()) if sp.exists() else {}
+              frame=frame.copy(); frame['period']=str(summary.get('period') or path.parent.name)
+              frame['role']='fresh' if str(frame.period.iloc[0]).startswith('fresh-') else 'dev'
+              frames.append(frame)
+          all_rows=pd.concat(frames,ignore_index=True,sort=False)
+          exists=all_rows.get('order_exists',False)
+          if getattr(exists,'dtype',None) != bool:
+              exists=exists.astype(str).str.lower().isin({'true','1','yes'})
+          orders=all_rows[exists].copy()
+          orders['net_r_num']=pd.to_numeric(orders.get('net_r'),errors='coerce')
+          orders['gross_rr_num']=pd.to_numeric(orders.get('gross_rr'),errors='coerce')
+          orders['win']=orders.get('outcome','').fillna('').astype(str).eq('TARGET_FIRST')
+          orders['local_frontier']=orders.get('route_kind','').fillna('').astype(str).str.contains('LOCAL_')
+          orders['rr_band']=pd.cut(orders.gross_rr_num,[-1e9,1.25,1.75,2.5,4.0,1e9],labels=['1-1.25','1.25-1.75','1.75-2.5','2.5-4','4+']).astype(str)
+          closed=orders[orders.net_r_num.notna()].copy()
+          def grouped(frame,key):
+              rows=[]
+              if key not in frame:return rows
+              for value,g in frame.groupby(key,dropna=False):
+                  rows.append({key:str(value),'trades':int(len(g)),
+                    'target_first_rate':float(g.win.mean()),
+                    'mean_net_r':float(g.net_r_num.mean()),
+                    'mean_gross_rr':float(g.gross_rr_num.mean())})
+              return rows
+          selected=pd.read_csv(out/'closed_trades.csv',low_memory=False)
+          if len(selected):
+              selected['net_r_num']=pd.to_numeric(selected.net_r,errors='coerce')
+              selected['gross_rr_num']=pd.to_numeric(selected.gross_rr,errors='coerce')
+              selected['win']=selected.outcome.astype(str).eq('TARGET_FIRST')
+          clinic={
+            'raw_episode_rows':int(len(all_rows)),
+            'raw_order_rows':int(len(orders)),
+            'raw_closed_plans':int(len(closed)),
+            'local_frontier_share':float(orders.local_frontier.mean()) if len(orders) else None,
+            'raw_by_period':grouped(closed,'period'),
+            'raw_by_role':grouped(closed,'role'),
+            'raw_by_family':grouped(closed,'family'),
+            'raw_by_geometry':grouped(closed,'entry_geometry'),
+            'raw_by_route_kind':grouped(closed,'route_kind'),
+            'raw_by_rr_band':grouped(closed,'rr_band'),
+            'selected_by_period':grouped(selected,'period') if len(selected) else [],
+            'selected_by_family':grouped(selected,'family') if len(selected) else [],
+            'selected_by_symbol':grouped(selected,'symbol') if len(selected) else [],
+          }
+          (out/'logic_clinic.json').write_text(json.dumps(clinic,indent=2,sort_keys=True,default=str)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-local-frontier-result-${{ github.sha }}
+          path: artifacts/candidate-ml-k/local-frontier/routed/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the result, not a promise
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_local_frontier
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/logic_clinic.json" "$DEST/"
+          cp "$OUT/selected_orders.csv" "$DEST/"
+          cp "$OUT/closed_trades.csv" "$DEST/"
+          cp "$OUT/near_miss_rejected_orders.csv" "$DEST/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record ML-k local-frontier short diagnostics [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

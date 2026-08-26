@@ -1,0 +1,113 @@
+name: candidate-coherent-liquidity-policy-v1-full-research
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-coherent-liquidity-policy-v1/.full-research-dispatch"
+
+concurrency:
+  group: candidate-coherent-liquidity-policy-v1-full-research
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-coherent-liquidity-policy-v1:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - id: source
+        name: Wait for complete source universe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-coherent-liquidity-policy-v1/.latest-run').read_text())['run_id'])
+          PY
+          )
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          COMPLETED=0
+          for _ in $(seq 1 480); do
+            PAYLOAD=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+            STATUS=$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$PAYLOAD")
+            if [ "$STATUS" = completed ]; then COMPLETED=1; break; fi
+            sleep 30
+          done
+          if [ "$COMPLETED" != 1 ]; then echo "source run did not complete" >&2; exit 1; fi
+      - name: Download period action universes
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          pattern: coherent-liquidity-*
+          path: downloaded
+          merge-multiple: false
+      - name: Run blocked causal policy and structural audit
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-coherent-liquidity-policy-v1/train_select.py \
+            research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py \
+            research/candidate-coherent-liquidity-policy-v1/audit_results.py \
+            research/candidate-coherent-liquidity-policy-v1/render_selected.py
+          mkdir -p result audit cases cache
+          python research/candidate-coherent-liquidity-policy-v1/train_select_causal_v2.py --root downloaded --output result
+          python research/candidate-coherent-liquidity-policy-v1/audit_results.py --root downloaded --result result --output audit
+      - name: Render every selected account trade
+        run: |
+          set -euo pipefail
+          DEV=$(python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          n=0
+          for name in ('development_oof_account_trades.csv','evaluation_account_trades.csv'):
+              p=Path('result')/name
+              if p.exists(): n+=len(pd.read_csv(p))
+          print(n)
+          PY
+          )
+          if [ "$DEV" -gt 0 ]; then
+            python research/candidate-coherent-liquidity-policy-v1/render_selected.py --result result --cache cache --output cases
+          fi
+      - name: Preserve model decisions, audit and every trade chart
+        uses: actions/upload-artifact@v4
+        with:
+          name: coherent-liquidity-policy-v1-full-research
+          path: |
+            result/**
+            audit/**
+            cases/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Preserve compact research state
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp result/summary.json research/candidate-coherent-liquidity-policy-v1/LATEST_CAUSAL_RESULT.json
+          cp audit/audit_summary.json research/candidate-coherent-liquidity-policy-v1/LATEST_AUDIT.json
+          git add research/candidate-coherent-liquidity-policy-v1/LATEST_CAUSAL_RESULT.json research/candidate-coherent-liquidity-policy-v1/LATEST_AUDIT.json
+          git commit -m "Preserve coherent policy trade audit $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_ML_thinking
+          git push origin HEAD:research_ML_thinking

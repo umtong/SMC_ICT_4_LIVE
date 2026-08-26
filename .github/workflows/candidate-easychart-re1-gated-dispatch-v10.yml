@@ -1,0 +1,22 @@
+name: candidate-easychart-re1-gated-dispatch-v10
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - ".github/workflows/candidate-easychart-re1-gated-dispatch-v10.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          gh workflow run candidate-easychart-re1-gated-validation-v10.yml \
+            --repo "${{ github.repository }}" \
+            --ref research/candidate-easychart_re1

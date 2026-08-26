@@ -1,0 +1,78 @@
+name: Research liquidity untouched continuous 2021
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v3"]
+    paths:
+      - ".github/workflows/research-liquidity-continuous-2021.yml"
+      - "research/candidate-liquidity-auction-v3/.dispatch-continuous-2021"
+
+concurrency:
+  group: research-liquidity-continuous-2021
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v3
+      - name: Record continuous 2021 run
+        run: |
+          set -euo pipefail
+          printf '{"run_id":%s,"head_sha":"%s","created_at":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > .latest-liquidity-continuous-2021
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .latest-liquidity-continuous-2021
+          git commit -m "Record untouched continuous 2021 run $GITHUB_RUN_ID" || exit 0
+          git push origin HEAD:research_liquidity_auction_v3
+
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: untouched-continuous-2021-q1, start: 2021-01-01, end: 2021-03-31}
+          - {period: untouched-continuous-2021-q2, start: 2021-04-01, end: 2021-06-30}
+          - {period: untouched-continuous-2021-q3, start: 2021-07-01, end: 2021-09-30}
+          - {period: untouched-continuous-2021-q4, start: 2021-10-01, end: 2021-12-31}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export untouched continuous one-minute price and aggressor flow
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-cache "continuous2021/${{ matrix.period }}"
+          python research/candidate-liquidity-auction-v3/export_chart_universe.py \
+            --period "${{ matrix.period }}" \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --before-days 3 \
+            --after-days 2 \
+            --cache /tmp/binance-cache \
+            --output "continuous2021/${{ matrix.period }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-continuous-${{ matrix.period }}
+          path: continuous2021/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

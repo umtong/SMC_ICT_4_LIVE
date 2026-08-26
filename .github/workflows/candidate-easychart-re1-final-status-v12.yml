@@ -1,0 +1,77 @@
+name: candidate-easychart-re1-final-status-v12
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/NOT_PROMOTED_V12"
+      - "research/candidate-easychart_re1/PAPER_READY_FOR_DEMO_V12"
+      - "research/candidate-easychart_re1/canonical_candidate_v12.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-easychart_re1
+          fetch-depth: 0
+      - name: Build final isolated status
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          root = Path('research/candidate-easychart_re1')
+          output = {
+              'candidate': 'candidate-easychart_re1',
+              'validation_lineage': 'v12-final-nonduplicated-structure',
+              'generated_at_utc': datetime.now(UTC).isoformat(),
+              'long_and_paper_ready': False,
+          }
+          manifest = root / 'canonical_candidate_v12.json'
+          paper = root / 'paper_contract_v12.json'
+          paper_ready = root / 'PAPER_READY_FOR_DEMO_V12'
+          failed = root / 'NOT_PROMOTED_V12'
+          if manifest.exists() and paper.exists() and paper_ready.exists():
+              output['long_and_paper_ready'] = True
+              output['promotion'] = json.loads(manifest.read_text(encoding='utf-8'))
+              output['paper_contract'] = json.loads(paper.read_text(encoding='utf-8'))
+              output['paper_ready_marker'] = paper_ready.read_text(encoding='utf-8').strip()
+          else:
+              output['reason'] = (
+                  failed.read_text(encoding='utf-8').strip()
+                  if failed.exists()
+                  else 'paper validation or promotion incomplete'
+              )
+              status = root / 'reports/v12/latest_gate_status.json'
+              if status.exists():
+                  output['gate_status'] = json.loads(status.read_text(encoding='utf-8'))
+              for mode in ('short', 'holdout', 'long'):
+                  path = root / f'reports/v12/latest_{mode}_gate.json'
+                  if path.exists():
+                      output[f'{mode}_gate'] = json.loads(path.read_text(encoding='utf-8'))
+          (root / 'FINAL_STATUS_V12.json').write_text(
+              json.dumps(output, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+      - name: Commit final status
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-easychart_re1/FINAL_STATUS_V12.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-easychart_re1: publish final isolated v12 status [skip ci]"
+          git push origin HEAD:research/candidate-easychart_re1

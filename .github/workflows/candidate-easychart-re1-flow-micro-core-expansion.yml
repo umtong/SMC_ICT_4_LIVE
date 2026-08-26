@@ -1,0 +1,91 @@
+name: candidate-easychart-re1-flow-micro-core-expansion
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.flow_micro_core_expansion_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-flow-micro-core-expansion
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integrated-account:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period: february-2024
+            start: 2024-02-01
+            end: 2024-02-14
+          - period: august-2024
+            start: 2024-08-01
+            end: 2024-08-14
+          - period: february-2025
+            start: 2025-02-01
+            end: 2025-02-14
+          - period: live-examples-2025
+            start: 2025-08-01
+            end: 2025-09-03
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-flow-micro-core-expansion/${{ matrix.period }}
+      OUT: artifacts/candidate-easychart-re1-flow-micro-core-expansion/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile promoted micro flow core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-easychart_re1/data_re1_flow.py \
+            research/candidate-easychart_re1/mtf_data_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow.py \
+            research/candidate-easychart_re1/easychart_re1_flow_routed.py \
+            research/candidate-easychart_re1/easychart_re1_flow_volume_clock.py \
+            research/candidate-easychart_re1/easychart_re1_flow_micro_core.py \
+            research/candidate-easychart_re1/execution_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_flow_micro_core.py
+
+      - name: Validate paper configuration without credentials or network
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-easychart_re1/run_binance_demo_re1.py --check-config
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_flow_micro_core.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+
+      - name: Preserve decision, flow and execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-flow-micro-core-expansion-${{ matrix.period }}-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-flow-micro-core-expansion/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 90

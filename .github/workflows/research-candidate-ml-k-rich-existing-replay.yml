@@ -1,0 +1,89 @@
+name: research-candidate-ml-k-rich-existing-replay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-rich-existing-replay.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-rich-existing-replay
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SOURCE_RUN: '32592363635'
+      ROOT: artifacts/candidate-ml-k/rich-existing/source
+      OUT: artifacts/candidate-ml-k/rich-existing/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py
+      - name: Download completed candidate 1k action harvests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'candidate-1k-dev-*' --dir "$ROOT"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'candidate-1k-fresh-*' --dir "$ROOT"
+          test "$(find "$ROOT" -name '*.csv' | wc -l)" -ge 4
+      - name: Synthesize without using fresh outcomes for selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            --root "$ROOT" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-rich-existing-replay-${{ github.sha }}
+          path: artifacts/candidate-ml-k/rich-existing/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit result for immediate diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/rich_existing_replay
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/selected_orders.csv" "$DEST/"
+          cp "$OUT/closed_trades.csv" "$DEST/"
+          cp "$OUT/fresh_closed_trades.csv" "$DEST/"
+          cp "$OUT/fresh_loss_clinic.csv" "$DEST/"
+          cp "$OUT/near_miss_actions.csv" "$DEST/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","source_run":"${SOURCE_RUN}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record immediate rich causal replay [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

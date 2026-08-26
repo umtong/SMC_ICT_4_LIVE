@@ -1,0 +1,191 @@
+name: research-candidate-ml-k-short-local-rr
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-local-rr.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-short-local-rr
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt pytest
+          python -m py_compile \
+            research/candidate-liquidity-episode-policy-v1/episode_policy_local_rr.py \
+            research/candidate-liquidity-episode-policy-v1/reproduce_local_rr.py \
+            research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py
+          python research/candidate-liquidity-episode-policy-v1/reproduce_local_rr.py verify \
+            --output artifacts/candidate-ml-k/local-rr/preflight
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-may-rr, start: '2023-05-01', end: '2023-05-06'}
+          - {role: dev, period: dev-2023-nov-rr, start: '2023-11-10', end: '2023-11-15'}
+          - {role: fresh, period: fresh-2024-feb-rr, start: '2024-02-01', end: '2024-02-06'}
+          - {role: dev, period: dev-2024-jun-rr, start: '2024-06-10', end: '2024-06-15'}
+          - {role: fresh, period: fresh-2024-aug-rr, start: '2024-08-03', end: '2024-08-08'}
+          - {role: dev, period: dev-2025-jan-rr, start: '2025-01-10', end: '2025-01-15'}
+          - {role: fresh, period: fresh-2025-apr-rr, start: '2025-04-05', end: '2025-04-10'}
+          - {role: dev, period: dev-2025-aug-rr, start: '2025-08-17', end: '2025-08-22'}
+          - {role: fresh, period: fresh-2025-sep-rr, start: '2025-09-01', end: '2025-09-06'}
+          - {role: dev, period: dev-2026-jan-rr, start: '2026-01-01', end: '2026-01-06'}
+          - {role: fresh, period: fresh-2026-mar-rr, start: '2026-03-01', end: '2026-03-06'}
+          - {role: fresh, period: fresh-2026-jun-rr, start: '2026-06-10', end: '2026-06-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          OUT="artifacts/candidate-ml-k/local-rr/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/local-rr/${{ matrix.period }}"
+          python research/candidate-liquidity-episode-policy-v1/reproduce_local_rr.py harvest \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --period '${{ matrix.period }}' \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-rr-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/local-rr/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-persist:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/local-rr/downloaded
+      HIER: artifacts/candidate-ml-k/local-rr/hierarchical
+      NONLINEAR: artifacts/candidate-ml-k/local-rr/nonlinear
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: local-rr-*
+          path: artifacts/candidate-ml-k/local-rr/downloaded
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          mkdir -p "$HIER" "$NONLINEAR"
+          python research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py \
+            --root "$ROOT" --output "$HIER"
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output "$NONLINEAR"
+      - name: Record plan-geometry effects directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          root=Path('artifacts/candidate-ml-k/local-rr/downloaded')
+          frames=[]
+          for path in root.rglob('departure_actions.csv.gz'):
+              frame=pd.read_csv(path,low_memory=False)
+              if frame.empty: continue
+              summary_path=path.parent/'summary.json'
+              summary=json.loads(summary_path.read_text()) if summary_path.exists() else {}
+              frame=frame.copy(); frame['period']=str(summary.get('period') or path.parent.name)
+              frames.append(frame)
+          rows=pd.concat(frames,ignore_index=True,sort=False)
+          exists=rows.get('order_exists',False)
+          if getattr(exists,'dtype',None) != bool:
+              exists=exists.astype(str).str.lower().isin({'true','1','yes'})
+          rows=rows[exists].copy()
+          rows['net_r_num']=pd.to_numeric(rows.get('net_r'),errors='coerce')
+          rows['win']=rows.get('outcome','').fillna('').astype(str).eq('TARGET_FIRST')
+          closed=rows[rows.net_r_num.notna()].copy()
+          def group(key):
+              result=[]
+              if key not in closed:return result
+              for value,g in closed.groupby(key,dropna=False):
+                  result.append({key:str(value),'trades':int(len(g)),
+                    'target_first_rate':float(g.win.mean()),
+                    'mean_net_r':float(g.net_r_num.mean()),
+                    'mean_gross_rr':float(pd.to_numeric(g.get('gross_rr'),errors='coerce').mean())})
+              return result
+          clinic={
+            'raw_orders':int(len(rows)), 'raw_closed':int(len(closed)),
+            'frontiers_skipped_below_one_r':int(pd.to_numeric(rows.get('nearer_frontiers_below_one_r'),errors='coerce').fillna(0).sum()),
+            'mean_completion_frontier_rank':float(pd.to_numeric(rows.get('completion_frontier_rank'),errors='coerce').mean()),
+            'by_period':group('period'),'by_family':group('family'),
+            'by_route_kind':group('route_kind'),'by_frontier_rank':group('completion_frontier_rank'),
+          }
+          Path('artifacts/candidate-ml-k/local-rr/hierarchical/geometry_clinic.json').write_text(json.dumps(clinic,indent=2,sort_keys=True,default=str)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-local-rr-result-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/local-rr/hierarchical/**
+            artifacts/candidate-ml-k/local-rr/nonlinear/summary.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit actual risk-aware short accounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_local_rr
+          rm -rf "$DEST"; mkdir -p "$DEST/hierarchical" "$DEST/nonlinear"
+          cp "$HIER/summary.json" "$DEST/hierarchical/"
+          cp "$HIER/geometry_clinic.json" "$DEST/hierarchical/"
+          cp "$HIER/closed_trades.csv" "$DEST/hierarchical/"
+          cp "$NONLINEAR/summary.json" "$DEST/nonlinear/"
+          cp "$NONLINEAR/closed_trades.csv" "$DEST/nonlinear/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record risk-aware local destination short diagnostics [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

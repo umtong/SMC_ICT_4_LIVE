@@ -1,0 +1,105 @@
+name: Research liquidity auction v5 strict fresh clinic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_liquidity_auction_v5"]
+    paths:
+      - ".github/workflows/research-liquidity-auction-v5-strict-fresh-clinic.yml"
+      - "research/candidate-liquidity-auction-v5/strict_fresh_trade_clinic.py"
+
+concurrency:
+  group: research-liquidity-auction-v5-strict-fresh-clinic
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  clinic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_liquidity_auction_v5
+      - name: Find completed strict-global and fresh runs
+        id: runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.request
+          repo=os.environ['REPOSITORY']; token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','User-Agent':'v5-clinic'}
+          outputs={}
+          for key,path in [('result','research-liquidity-auction-v5-strict-global-router.yml'),('fresh','research-liquidity-auction-v5-fresh-causal-departures.yml')]:
+              url=f'https://api.github.com/repos/{repo}/actions/workflows/{path}/runs?branch=research_liquidity_auction_v5&per_page=5'
+              chosen=None
+              for _ in range(90):
+                  with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=30) as response:
+                      runs=json.load(response).get('workflow_runs',[])
+                  completed=[run for run in runs if run.get('status')=='completed']
+                  if completed:
+                      chosen=completed[0]; break
+                  time.sleep(20)
+              if chosen is None:
+                  raise SystemExit(f'{key} run not found')
+              outputs[key]=chosen['id']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"result_run={outputs['result']}\n")
+              out.write(f"fresh_run={outputs['fresh']}\n")
+          print(json.dumps(outputs,indent=2))
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.runs.outputs.result_run }}
+          name: liquidity-auction-v5-strict-global-result
+          path: artifacts/v5-strict-result
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.runs.outputs.fresh_run }}
+          pattern: liquidity-auction-v5-fresh-departure-*
+          path: artifacts/v5-strict-fresh
+      - name: Render exact fresh trade/no-trade paths
+        run: |
+          set -euo pipefail
+          python research/candidate-liquidity-auction-v5/strict_fresh_trade_clinic.py \
+            --result-root artifacts/v5-strict-result \
+            --fresh-root artifacts/v5-strict-fresh \
+            --output artifacts/v5-strict-clinic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidity-auction-v5-strict-fresh-clinic
+          path: artifacts/v5-strict-clinic/**
+          retention-days: 30
+      - name: Record clinic tables and selected chart images
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          target=research/candidate-liquidity-auction-v5/results/fresh_clinic
+          rm -rf "$target"
+          mkdir -p "$target"
+          cp artifacts/v5-strict-clinic/CLINIC.md "$target/CLINIC.md"
+          cp artifacts/v5-strict-clinic/INDEX.csv "$target/INDEX.csv"
+          find artifacts/v5-strict-clinic/loss -type f -name '*.png' | head -n 12 | xargs -r -I{} cp {} "$target/"
+          find artifacts/v5-strict-clinic/missed_win -type f -name '*.png' | head -n 8 | xargs -r -I{} cp {} "$target/"
+          git add "$target"
+          git commit -m "Record v5 strict fresh trade clinic $GITHUB_RUN_ID" || exit 0
+          git pull --rebase origin research_liquidity_auction_v5
+          git push origin HEAD:research_liquidity_auction_v5

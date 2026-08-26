@@ -1,0 +1,112 @@
+name: research-candidate-ml-k-short-diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research_candidate_ML_k
+    paths:
+      - "research/candidate-ml-k-reachable-control/**"
+      - ".github/workflows/research-candidate-ml-k-short-diagnostic.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-candidate-ml-k-short-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PYTHONUNBUFFERED: "1"
+      BASE: research/candidate-liquidity-episode-policy-v1
+      CANDIDATE: research/candidate-ml-k-reachable-control
+      ROOT: research_results/candidate_ml_k/short_diagnostic
+      CACHE: .cache/candidate_ml_k
+    steps:
+      - name: Checkout exact branch source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install strict causal model dependency
+        shell: bash
+        run: |
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$BASE/runtime-requirements.txt" pytest
+
+      - name: Compile and test the decision policy
+        shell: bash
+        run: |
+          python -m py_compile "$CANDIDATE/reachable_control_router.py"
+          python -m pytest -q "$CANDIDATE/test_reachable_control_router.py"
+          python "$BASE/reproduce.py" verify --output "$ROOT/verify"
+
+      - name: Harvest first development window
+        shell: bash
+        run: |
+          python "$BASE/reproduce.py" harvest \
+            --start 2025-05-01 --end 2025-05-15 --warmup-days 45 \
+            --period dev-2025-may-a \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$ROOT/dev-2025-may-a"
+
+      - name: Harvest second development window
+        shell: bash
+        run: |
+          python "$BASE/reproduce.py" harvest \
+            --start 2025-06-01 --end 2025-06-15 --warmup-days 45 \
+            --period dev-2025-jun-b \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$ROOT/dev-2025-jun-b"
+
+      - name: Harvest untouched fresh window
+        shell: bash
+        run: |
+          python "$BASE/reproduce.py" harvest \
+            --start 2025-08-01 --end 2025-08-15 --warmup-days 45 \
+            --period fresh-2025-aug-c \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$ROOT/fresh-2025-aug-c"
+
+      - name: Route one continuous global account
+        shell: bash
+        run: |
+          python "$CANDIDATE/reachable_control_router.py" \
+            --root "$ROOT" --output "$ROOT/routed"
+          python "$BASE/reproduce.py" inspect \
+            --root "$ROOT" --output "$ROOT/artifact_contract.json"
+
+      - name: Preserve exact source and result identity
+        shell: bash
+        run: |
+          git rev-parse HEAD > "$ROOT/source_sha.txt"
+          git branch --show-current > "$ROOT/source_branch.txt"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("research_results/candidate_ml_k/short_diagnostic/routed/summary.json")
+          summary = json.loads(path.read_text(encoding="utf-8"))
+          assert summary["risk_fraction"] == 0.03
+          assert summary["one_global_account_slot"] is True
+          assert summary["one_plan_per_causal_episode"] is True
+          assert summary["gross_planned_rr_floor"] == 1.0
+          assert summary["symbol_identity_is_model_feature"] is False
+          assert summary["absolute_price_is_model_feature"] is False
+          assert summary["future_information_is_model_feature"] is False
+          PY
+
+      - name: Upload complete diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-short-diagnostic-${{ github.sha }}
+          path: research_results/candidate_ml_k/short_diagnostic
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

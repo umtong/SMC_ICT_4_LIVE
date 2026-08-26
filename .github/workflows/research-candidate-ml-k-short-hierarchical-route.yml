@@ -1,0 +1,104 @@
+name: research-candidate-ml-k-short-hierarchical-route
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-hierarchical-route.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-short-hierarchical-route
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/hierarchical/source
+      OUT: artifacts/candidate-ml-k/hierarchical/result
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt pytest
+          python -m py_compile \
+            research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py
+      - name: Wait for local-frontier harvest and download it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SOURCE_RUN="$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow research-candidate-ml-k-short-local-frontier.yml \
+            --branch research_candidate_ML_k --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          test -n "$SOURCE_RUN"
+          echo "$SOURCE_RUN" > /tmp/source_run
+          gh run watch "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --exit-status
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'local-frontier-*' --dir "$ROOT"
+          test "$(find "$ROOT" -name departure_actions.csv.gz | wc -l)" -ge 10
+      - name: Route with low-dimensional regime-balanced causal evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py \
+            --root "$ROOT" --output "$OUT"
+      - name: Preserve a direct comparison to the nonlinear causal router
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output artifacts/candidate-ml-k/hierarchical/nonlinear
+          cp artifacts/candidate-ml-k/hierarchical/nonlinear/summary.json \
+            "$OUT/nonlinear_comparison_summary.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-hierarchical-short-${{ github.sha }}
+          path: artifacts/candidate-ml-k/hierarchical/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit actual trade decisions and result
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_hierarchical
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/nonlinear_comparison_summary.json" "$DEST/"
+          cp "$OUT/selected_orders.csv" "$DEST/"
+          cp "$OUT/closed_trades.csv" "$DEST/"
+          cp "$OUT/near_miss_rejected_orders.csv" "$DEST/"
+          SOURCE_RUN="$(cat /tmp/source_run)"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","source_run":"${SOURCE_RUN}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record regime-balanced ML-k short result [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

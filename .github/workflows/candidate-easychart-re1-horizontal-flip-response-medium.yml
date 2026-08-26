@@ -1,0 +1,57 @@
+name: candidate-easychart-re1-horizontal-flip-response-medium
+
+on:
+  push:
+    branches: ["research/candidate-easychart_re1"]
+    paths:
+      - "research/candidate-easychart_re1/.horizontal_flip_response_medium_dispatch_marker"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-easychart-re1-horizontal-flip-response-medium
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  medium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-easychart-re1-horizontal-flip-response/medium-2025-q2
+      OUT: artifacts/candidate-easychart-re1-horizontal-flip-response/medium-2025-q2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile candidate
+        run: |
+          python -m py_compile \
+            research/candidate-easychart_re1/easychart_re1_local_auction_continuation.py \
+            research/candidate-easychart_re1/easychart_re1_local_auction_continuation_v2.py \
+            research/candidate-easychart_re1/easychart_re1_horizontal_flip_response.py \
+            research/candidate-easychart_re1/run_mtf_backtest_re1_horizontal_flip_response.py
+      - name: Run fresh three-month four-symbol continuous account
+        run: |
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart_re1/run_mtf_backtest_re1_horizontal_flip_response.py \
+            --start 2025-04-01 \
+            --end 2025-06-30 \
+            --warmup-days 30 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            --fee-profile usd_m_vip0
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-easychart-re1-horizontal-flip-response-medium-2025-q2-${{ github.sha }}
+          path: artifacts/candidate-easychart-re1-horizontal-flip-response/medium-2025-q2/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,164 @@
+name: research-candidate-ml-k-local-rr-final-confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-local-rr-final-confirmation.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-local-rr-final-confirmation
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          python -m py_compile \
+            research/candidate-liquidity-episode-policy-v1/episode_policy_local_rr.py \
+            research/candidate-liquidity-episode-policy-v1/reproduce_local_rr.py \
+            research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py
+
+  confirmation-harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {period: fresh-2026-feb-rr-confirm, start: '2026-02-05', end: '2026-02-10'}
+          - {period: fresh-2026-mar-rr-confirm, start: '2026-03-10', end: '2026-03-15'}
+          - {period: fresh-2026-apr-rr-confirm, start: '2026-04-10', end: '2026-04-15'}
+          - {period: fresh-2026-may-rr-confirm, start: '2026-05-10', end: '2026-05-15'}
+          - {period: fresh-2026-jun-rr-confirm, start: '2026-06-10', end: '2026-06-15'}
+          - {period: fresh-2026-jul-rr-confirm, start: '2026-07-10', end: '2026-07-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          OUT="artifacts/candidate-ml-k/local-rr-confirm/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/local-rr-confirm/${{ matrix.period }}"
+          python research/candidate-liquidity-episode-policy-v1/reproduce_local_rr.py harvest \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --period '${{ matrix.period }}' \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-rr-confirm-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/local-rr-confirm/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-final:
+    needs: confirmation-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/local-rr-confirm/source
+      HIER: artifacts/candidate-ml-k/local-rr-confirm/hierarchical
+      NONLINEAR: artifacts/candidate-ml-k/local-rr-confirm/nonlinear
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: local-rr-confirm-*
+          path: artifacts/candidate-ml-k/local-rr-confirm/source
+      - name: Download development local-RR plans only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=''
+          for _ in $(seq 1 150); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow research-candidate-ml-k-short-local-rr.yml \
+              --branch research_candidate_ML_k --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            sleep 20
+          done
+          test -n "$RUN_ID"
+          echo "$RUN_ID" >/tmp/development_run
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" || true
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'local-rr-dev-*' --dir "$ROOT" || true
+          DEV_COUNT="$(find "$ROOT" -name departure_actions.csv.gz | grep -c '/local-rr-dev-' || true)"
+          FRESH_COUNT="$(find "$ROOT" -name departure_actions.csv.gz | grep -c '/local-rr-confirm-' || true)"
+          echo "development actions: $DEV_COUNT; confirmation actions: $FRESH_COUNT"
+          test "$DEV_COUNT" -ge 5
+          test "$FRESH_COUNT" -ge 5
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          rm -rf "$HIER" "$NONLINEAR"; mkdir -p "$HIER" "$NONLINEAR"
+          python research/candidate-ml-k-reachable-control/hierarchical_first_passage_router.py \
+            --root "$ROOT" --output "$HIER"
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output "$NONLINEAR"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-local-rr-final-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/local-rr-confirm/hierarchical/**
+            artifacts/candidate-ml-k/local-rr-confirm/nonlinear/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit six-period local-RR confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/local_rr_final_confirmation
+          rm -rf "$DEST"; mkdir -p "$DEST/hierarchical" "$DEST/nonlinear"
+          cp "$HIER/summary.json" "$DEST/hierarchical/"
+          cp "$HIER/closed_trades.csv" "$DEST/hierarchical/"
+          cp "$NONLINEAR/summary.json" "$DEST/nonlinear/"
+          cp "$NONLINEAR/closed_trades.csv" "$DEST/nonlinear/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","development_source_run":"$(cat /tmp/development_run)","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record six untouched local-RR confirmations [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

@@ -1,0 +1,137 @@
+name: research-candidate-ml-k-parallel-diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research_candidate_ML_k
+    paths:
+      - ".github/workflows/research-candidate-ml-k-parallel-diagnostic.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-candidate-ml-k-parallel-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - shell: bash
+        run: |
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt pytest
+          python -m py_compile research/candidate-ml-k-reachable-control/reachable_control_router.py
+          python -m pytest -q research/candidate-ml-k-reachable-control/test_reachable_control_router.py
+          python research/candidate-liquidity-episode-policy-v1/reproduce.py verify \
+            --output research_results/candidate_ml_k/parallel/preflight
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - { period: dev-2025-may-a, start: '2025-05-01', end: '2025-05-15', symbol: BTCUSDT }
+          - { period: dev-2025-may-a, start: '2025-05-01', end: '2025-05-15', symbol: ETHUSDT }
+          - { period: dev-2025-may-a, start: '2025-05-01', end: '2025-05-15', symbol: SOLUSDT }
+          - { period: dev-2025-may-a, start: '2025-05-01', end: '2025-05-15', symbol: XRPUSDT }
+          - { period: dev-2025-jun-b, start: '2025-06-01', end: '2025-06-15', symbol: BTCUSDT }
+          - { period: dev-2025-jun-b, start: '2025-06-01', end: '2025-06-15', symbol: ETHUSDT }
+          - { period: dev-2025-jun-b, start: '2025-06-01', end: '2025-06-15', symbol: SOLUSDT }
+          - { period: dev-2025-jun-b, start: '2025-06-01', end: '2025-06-15', symbol: XRPUSDT }
+          - { period: fresh-2025-aug-c, start: '2025-08-01', end: '2025-08-15', symbol: BTCUSDT }
+          - { period: fresh-2025-aug-c, start: '2025-08-01', end: '2025-08-15', symbol: ETHUSDT }
+          - { period: fresh-2025-aug-c, start: '2025-08-01', end: '2025-08-15', symbol: SOLUSDT }
+          - { period: fresh-2025-aug-c, start: '2025-08-01', end: '2025-08-15', symbol: XRPUSDT }
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - shell: bash
+        run: |
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          OUT="research_results/candidate_ml_k/parallel/${{ matrix.period }}/${{ matrix.symbol }}"
+          CACHE=".cache/candidate_ml_k/${{ matrix.period }}/${{ matrix.symbol }}"
+          python research/candidate-liquidity-episode-policy-v1/reproduce.py harvest \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 45 \
+            --period "${{ matrix.period }}" --symbols "${{ matrix.symbol }}" \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harvest-${{ matrix.period }}-${{ matrix.symbol }}
+          path: research_results/candidate_ml_k/parallel/${{ matrix.period }}/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      ROOT: research_results/candidate_ml_k/parallel/downloaded
+      ROUTED: research_results/candidate_ml_k/parallel/routed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: harvest-*
+          path: research_results/candidate_ml_k/parallel/downloaded
+      - shell: bash
+        run: |
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          python research/candidate-ml-k-reachable-control/reachable_control_router.py \
+            --root "$ROOT" --output "$ROUTED"
+          python research/candidate-liquidity-episode-policy-v1/reproduce.py inspect \
+            --root "$ROOT" \
+            --output research_results/candidate_ml_k/parallel/artifact_contract.json
+          git rev-parse HEAD > research_results/candidate_ml_k/parallel/source_sha.txt
+          git branch --show-current > research_results/candidate_ml_k/parallel/source_branch.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('research_results/candidate_ml_k/parallel/routed/summary.json')
+          summary = json.loads(path.read_text(encoding='utf-8'))
+          assert summary['risk_fraction'] == 0.03
+          assert summary['one_global_account_slot'] is True
+          assert summary['one_plan_per_causal_episode'] is True
+          assert summary['gross_planned_rr_floor'] == 1.0
+          assert summary['symbol_identity_is_model_feature'] is False
+          assert summary['absolute_price_is_model_feature'] is False
+          assert summary['future_information_is_model_feature'] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-parallel-result-${{ github.sha }}
+          path: |
+            research_results/candidate_ml_k/parallel/routed
+            research_results/candidate_ml_k/parallel/artifact_contract.json
+            research_results/candidate_ml_k/parallel/source_sha.txt
+            research_results/candidate_ml_k/parallel/source_branch.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

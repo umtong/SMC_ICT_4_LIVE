@@ -1,0 +1,116 @@
+name: candidate-direct-auction-policy-harvest
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - "research/candidate-direct-auction-policy/.dispatch"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-direct-auction-policy-harvest
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile direct auction policy research
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-direct-auction-policy/direct_state_action_harvest.py \
+            research/candidate-direct-auction-policy/run_direct_state_action_harvest.py \
+            research/candidate-direct-auction-policy/self_check_direct_policy.py
+          python research/candidate-direct-auction-policy/self_check_direct_policy.py
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: "1"
+      CACHE: .cache/candidate-direct-auction-policy/${{ matrix.period }}
+      OUT: artifacts/candidate-direct-auction-policy/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harvest direct synchronized states and natural actions
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-direct-auction-policy/run_direct_state_action_harvest.py \
+            --start "$START" \
+            --end "$END" \
+            --warmup-days 20 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" \
+            --output "$OUT"
+      - name: Verify decision-time causality and action integrity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path(os.environ["OUT"])
+          states = pd.read_csv(out / "states.csv.gz")
+          actions = pd.read_csv(out / "actions.csv.gz")
+          if states.empty or actions.empty:
+              raise RuntimeError("empty direct state-action universe")
+          if states["state_id"].duplicated().any() or actions["action_id"].duplicated().any():
+              raise RuntimeError("duplicate causal identity")
+          if not set(actions["state_id"]).issubset(set(states["state_id"])):
+              raise RuntimeError("action without decision state")
+          if not (pd.to_numeric(actions["entry_time_ns"]) > pd.to_numeric(actions["decision_time_ns"])).all():
+              raise RuntimeError("entry was not strictly after decision")
+          if not (pd.to_numeric(actions["resolution_time_ns"]) >= pd.to_numeric(actions["entry_time_ns"])).all():
+              raise RuntimeError("resolution precedes entry")
+          if not actions["symbol"].isin(["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]).all():
+              raise RuntimeError("unexpected symbol")
+          print({"states": len(states), "actions": len(actions), "features": len(states.columns) - 3})
+          PY
+      - name: Preserve direct state-action universe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct-auction-policy-${{ matrix.period }}
+          path: artifacts/candidate-direct-auction-policy/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6

@@ -1,0 +1,177 @@
+name: research-candidate-ml-k-hybrid-local-rich-short
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-hybrid-local-rich-short.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-hybrid-local-rich-short
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state.py \
+            research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state_v2.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            research/candidate-ml-k-reachable-control/stable_mechanism_router.py
+
+  rich-state-harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-may-lf, start: '2023-05-01', end: '2023-05-06'}
+          - {role: dev, period: dev-2023-nov-lf, start: '2023-11-10', end: '2023-11-15'}
+          - {role: fresh, period: fresh-2024-feb-lf, start: '2024-02-01', end: '2024-02-06'}
+          - {role: dev, period: dev-2024-jun-lf, start: '2024-06-10', end: '2024-06-15'}
+          - {role: fresh, period: fresh-2024-aug-lf, start: '2024-08-03', end: '2024-08-08'}
+          - {role: dev, period: dev-2025-jan-lf, start: '2025-01-10', end: '2025-01-15'}
+          - {role: fresh, period: fresh-2025-apr-lf, start: '2025-04-05', end: '2025-04-10'}
+          - {role: dev, period: dev-2025-aug-lf, start: '2025-08-17', end: '2025-08-22'}
+          - {role: fresh, period: fresh-2025-sep-lf, start: '2025-09-01', end: '2025-09-06'}
+          - {role: dev, period: dev-2026-jan-lf, start: '2026-01-01', end: '2026-01-06'}
+          - {role: fresh, period: fresh-2026-mar-lf, start: '2026-03-01', end: '2026-03-06'}
+          - {role: fresh, period: fresh-2026-jun-lf, start: '2026-06-10', end: '2026-06-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          OUT="artifacts/candidate-ml-k/hybrid-rich/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/hybrid-rich/${{ matrix.period }}"
+          mkdir -p "$OUT" "$CACHE"
+          python research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hybrid-rich-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/hybrid-rich/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  join-and-route:
+    needs: rich-state-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      WORLD: artifacts/candidate-ml-k/hybrid/world
+      RICH: artifacts/candidate-ml-k/hybrid/rich
+      HYBRID: artifacts/candidate-ml-k/hybrid/actions
+      OUT: artifacts/candidate-ml-k/hybrid/result
+      STABLE: artifacts/candidate-ml-k/hybrid/stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hybrid-rich-*
+          path: artifacts/candidate-ml-k/hybrid/rich
+      - name: Download matching local-frontier plan harvests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=''
+          for _ in $(seq 1 120); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow research-candidate-ml-k-short-local-frontier.yml \
+              --branch research_candidate_ML_k --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            sleep 20
+          done
+          test -n "$RUN_ID"
+          echo "$RUN_ID" >/tmp/world_run
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" || true
+          rm -rf "$WORLD"; mkdir -p "$WORLD"
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'local-frontier-*' --dir "$WORLD"
+          test "$(find "$WORLD" -name departure_actions.csv.gz | wc -l)" -ge 10
+      - name: Join only earlier public rich states to immutable local plans
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HYBRID" "$OUT" "$STABLE"
+          mkdir -p "$HYBRID" "$OUT" "$STABLE"
+          python research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state_v2.py \
+            --world-root "$WORLD" --rich-root "$RICH" --output "$HYBRID"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            --root "$HYBRID" --output "$OUT"
+          python research/candidate-ml-k-reachable-control/stable_mechanism_router.py \
+            --scored "$OUT/scored_actions.csv.gz" --output "$STABLE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-hybrid-local-rich-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/hybrid/actions/join_summary.json
+            artifacts/candidate-ml-k/hybrid/result/**
+            artifacts/candidate-ml-k/hybrid/stable/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit integrated short decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/hybrid_local_rich_short
+          rm -rf "$DEST"; mkdir -p "$DEST/integrated" "$DEST/stable"
+          cp "$HYBRID/join_summary.json" "$DEST/"
+          cp "$OUT/summary.json" "$DEST/integrated/"
+          cp "$OUT/closed_trades.csv" "$DEST/integrated/"
+          cp "$OUT/fresh_closed_trades.csv" "$DEST/integrated/"
+          cp "$STABLE/summary.json" "$DEST/stable/"
+          cp "$STABLE/closed_trades.csv" "$DEST/stable/"
+          cp "$STABLE/fresh_closed_trades.csv" "$DEST/stable/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","world_source_run":"$(cat /tmp/world_run)","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record hybrid local-plan rich-state short accounts [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi

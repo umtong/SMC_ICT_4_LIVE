@@ -1,0 +1,56 @@
+name: bootstrap-liquidity-displacement-diagnostics
+
+on:
+  push:
+    branches: ["research_ML_thinking"]
+    paths:
+      - ".github/workflows/bootstrap-liquidity-displacement-diagnostics.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve causal event geometry for chart inspection
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('research/candidate-liquidity-displacement-v1/liquidity_displacement.py')
+          text=path.read_text()
+          old='''        "event_bars": event["event_bars"],
+                  "event_to_displacement_minutes": float(zone["displacement_index"] - event["event_index"]),
+                  "source_strength_ratio": boundary.strength_ratio,
+          '''
+          new='''        "event_bars": event["event_bars"],
+                  "event_to_displacement_minutes": float(zone["displacement_index"] - event["event_index"]),
+                  # Absolute prices/times below are diagnostic-only. They are never
+                  # part of the ML contract or the action decision.
+                  "diagnostic_event_time_ns": _time_ns(data.index, int(event["event_index"])),
+                  "diagnostic_event_extreme": float(event["event_extreme"]),
+                  "diagnostic_displacement_time_ns": _time_ns(data.index, int(zone["displacement_index"])),
+                  "diagnostic_origin_lower": float(zone["lower"]),
+                  "diagnostic_origin_upper": float(zone["upper"]),
+                  "diagnostic_first_return_time_ns": _time_ns(data.index, int(response["touch_index"])),
+                  "diagnostic_response_time_ns": _time_ns(data.index, int(response["response_index"])),
+                  "diagnostic_retest_extreme": float(response["retest_extreme"]),
+                  "source_strength_ratio": boundary.strength_ratio,
+          '''
+          # tolerate the exact indentation of the checked-in source
+          old=old.replace('          "event_to','        "event_to').replace('          "source','        "source')
+          new=new.replace('          "event_to','        "event_to').replace('          #','        #').replace('          "diagnostic','        "diagnostic').replace('          "source','        "source')
+          if old not in text:
+              if '"diagnostic_origin_lower"' in text:
+                  raise SystemExit(0)
+              raise RuntimeError('diagnostic insertion point changed')
+          path.write_text(text.replace(old,new))
+          PY
+          python -m py_compile research/candidate-liquidity-displacement-v1/liquidity_displacement.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-liquidity-displacement-v1/liquidity_displacement.py
+          git commit -m "Preserve liquidity displacement chart geometry"
+          git push origin HEAD:research_ML_thinking
