@@ -1,0 +1,108 @@
+name: Research ML-first causal family router v5b
+
+on:
+  workflow_run:
+    workflows: ["Research ML-first reachable scenario fusion v3"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful reachable-scenario-fusion-v3 run ID
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-causal-family-router-v5b
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  causal-family-policy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'research_candidate_ML_first')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install family router runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.3.2 pandas==2.3.2 scikit-learn==1.9.0 joblib
+      - name: Download successful v3 research artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-reachable-scenario-fusion-v3-*
+          path: artifacts/ml-first-causal-family-router-v5b/source
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run corrected deterministic causal-family research
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py \
+            research/candidate-ml-first-causal-family-router-v5/causal_family_router.py \
+            research/candidate-ml-first-causal-family-router-v5/causal_family_router_fixed.py
+          aggregates=$(find artifacts/ml-first-causal-family-router-v5b/source -type d -name aggregates -print -quit)
+          test -n "$aggregates"
+          OUT=artifacts/ml-first-causal-family-router-v5b/policy
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          python research/candidate-ml-first-causal-family-router-v5/causal_family_router_fixed.py \
+            --root "$aggregates" --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' "$SOURCE_RUN_ID" > "$OUT/source_research_run_id.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-causal-family-router-v5b-${{ github.sha }}
+          path: artifacts/ml-first-causal-family-router-v5b/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit corrected deterministic family result
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-causal-family-router-v5b/policy
+          DEST=research_results/candidate_ml_first/causal_family_router_v5b/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$SRC/summary.json" "$DEST/"
+          cp "$SRC/completed_trades.csv" "$DEST/"
+          cp "$SRC/variant_metrics.csv" "$DEST/"
+          cp "$SRC/component_catalog.csv" "$DEST/"
+          cp "$SRC/period_metrics.csv" "$DEST/"
+          cp "$SRC/family_score_model.json" "$DEST/"
+          cp "$SRC/source_sha.txt" "$DEST/"
+          cp "$SRC/source_branch.txt" "$DEST/"
+          cp "$SRC/source_research_run_id.txt" "$DEST/"
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json, sys
+          s=json.load(open(sys.argv[1])); d=s['development']; f=s['fresh']
+          print(f"dev_nav={d['ending_nav_multiplier']:.3f} fresh_nav={f['ending_nav_multiplier']:.3f} fresh_n={f['completed_trades']} fresh_meanR={f['mean_net_r']:.3f} fresh_mdd={f['maximum_drawdown']:.3f}")
+          PY
+          )
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record causal family router v5b ${GITHUB_RUN_ID}: ${digest} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
