@@ -1,0 +1,82 @@
+name: research-candidate-ml-first-liquidity-response
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - 'research/candidate-ml-first-liquidity-response/**'
+      - '.bootstrap/ml-first-liquidity-response/**'
+      - '.github/workflows/research-candidate-ml-first-liquidity-response.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-liquidity-response
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: research/candidate-ml-first-liquidity-response/requirements.txt
+      - name: Materialize research source
+        run: |
+          mkdir -p research/candidate-ml-first-liquidity-response
+          gzip -dc .bootstrap/ml-first-liquidity-response/research_policy.py.gz > \
+            research/candidate-ml-first-liquidity-response/research_policy.py
+      - name: Install research runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r research/candidate-ml-first-liquidity-response/requirements.txt
+      - name: Compile and run causal route-completion research
+        env:
+          OUT: artifacts/candidate_ml_first/liquidity_response_v1
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-first-liquidity-response/research_policy.py
+          rm -rf "$OUT"
+          python research/candidate-ml-first-liquidity-response/research_policy.py \
+            --trades research_results/candidate_ml_first/imported_candidate4_short_v2/all_global_trades.csv \
+            --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          git branch --show-current > "$OUT/source_branch.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-first-liquidity-response-${{ github.sha }}
+          path: artifacts/candidate_ml_first/liquidity_response_v1/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit compact research result
+        run: |
+          set -euo pipefail
+          OUT=artifacts/candidate_ml_first/liquidity_response_v1
+          DEST=research_results/candidate_ml_first/liquidity_response_v1/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/integrated_selected_trades.csv" "$DEST/"
+          cp "$OUT/variant_selection.csv" "$DEST/"
+          cp "$OUT/source_sha.txt" "$DEST/"
+          cp "$OUT/source_branch.txt" "$DEST/"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$DEST" research/candidate-ml-first-liquidity-response/research_policy.py
+          git commit -m "Record ML-first causal route-completion short research ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_ML_first
