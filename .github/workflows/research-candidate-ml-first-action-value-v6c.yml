@@ -1,0 +1,156 @@
+name: Research ML-first action value v6c
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-action-value-v6c.yml'
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-action-value-v6c
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-harvest:
+    runs-on: ubuntu-24.04
+    outputs:
+      v5_run_id: ${{ steps.resolve.outputs.v5_run_id }}
+    steps:
+      - name: Wait for completed mechanism harvest
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          endpoint='repos/${{ github.repository }}/actions/workflows/research-candidate-ml-first-mechanism-router-v5.yml/runs?branch=research_candidate_ML_first&per_page=1'
+          for _ in $(seq 1 360); do
+            payload=$(gh api "$endpoint")
+            run_id=$(jq -r '.workflow_runs[0].id // empty' <<<"$payload")
+            status=$(jq -r '.workflow_runs[0].status // empty' <<<"$payload")
+            if [[ -n "$run_id" && "$status" == completed ]]; then
+              echo "v5_run_id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'mechanism harvest did not complete in time' >&2
+          exit 1
+
+  route-existing-causal-actions:
+    needs: resolve-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      SOURCE_RUN_ID: ${{ needs.resolve-harvest.outputs.v5_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-mechanism-v5-*
+          path: downloaded/ml-first-mechanism-v5
+          run-id: ${{ needs.resolve-harvest.outputs.v5_run_id }}
+          github-token: ${{ github.token }}
+      - name: Normalize inherited causal-action windows
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-action-value-v6c/normalized
+          rm -rf "$NORMAL"
+          mkdir -p "$NORMAL"
+          shopt -s nullglob
+          count=0
+          for d in downloaded/ml-first-mechanism-v5/ml-first-mechanism-v5-*; do
+            name="${d##*/ml-first-mechanism-v5-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-mechanism-router-v5/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$NORMAL/fraction-$frontier/$period"
+            cp -a "$src"/. "$NORMAL/fraction-$frontier/$period"/
+            count=$((count + 1))
+          done
+          test "$count" -eq 24
+      - name: Build alternate causal-action set
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-action-value-v6c/normalized
+          AGG=artifacts/ml-first-action-value-v6c/fraction-aggregates
+          COMBINED=artifacts/ml-first-action-value-v6c/combined
+          rm -rf "$AGG" "$COMBINED"
+          mkdir -p "$AGG" "$COMBINED"
+          for frontier in 025 035 050; do
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORMAL/fraction-$frontier" \
+              --output "$AGG/fraction-$frontier"
+          done
+          python research/candidate-ml-first-mechanism-router-v5/combine_fraction_plans.py \
+            --root "$AGG" --output "$COMBINED"
+      - name: Run chronological empirical action values
+        run: |
+          set -euo pipefail
+          RUNTIME=artifacts/ml-first-action-value-v6c/runtime/mechanism_router_v2.py
+          ACTION=artifacts/ml-first-action-value-v6c/runtime/causal_action_value_v3.py
+          OUT=artifacts/ml-first-action-value-v6c/routed
+          mkdir -p "$(dirname "$RUNTIME")" "$OUT"
+          python research/candidate-ml-first-mechanism-router-v5/materialize_router_v2.py \
+            --source research/candidate-ml-first-mechanism-router-v5/mechanism_router.py \
+            --output "$RUNTIME"
+          python research/candidate-ml-first-action-value-v6/materialize_action_value_v3.py \
+            --source research/candidate-ml-first-action-value-v6/causal_action_value_router.py \
+            --output "$ACTION"
+          python "$ACTION" \
+            --plans artifacts/ml-first-action-value-v6c/combined/all_fraction_candidate_plans.csv.gz \
+            --router-runtime "$RUNTIME" --output "$OUT" --risk 0.03
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' "$SOURCE_RUN_ID" > "$OUT/source_workflow_run_id.txt"
+          printf '%s\n' 9df00cdf2db3a99f6c98c538326909188d349741 > "$OUT/inherited_engine_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-action-value-v6c-result-${{ github.sha }}
+          path: artifacts/ml-first-action-value-v6c/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit action-value research
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-action-value-v6c
+          DEST=research_results/candidate_ml_first/action_value_v6c/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$SRC/routed"/. "$DEST"/
+          cp "$SRC/combined/summary.json" "$DEST/combined_plan_summary.json"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            brief=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('research_results/candidate_ml_first/action_value_v6c/latest/summary.json').read_text())
+          f=s.get('selected_fresh', {})
+          print(f"variant={s.get('selected_variant_from_development')} trades={f.get('trades')} meanR={f.get('mean_net_r')} nav={f.get('ending_nav')}")
+          PY
+          )
+            git commit -m "Record ML-first action-value v6c ${brief} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
