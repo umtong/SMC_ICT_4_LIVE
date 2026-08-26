@@ -30,6 +30,13 @@ jobs:
         with:
           ref: research_candidate_ML_first
           fetch-depth: 1
+      - name: Snapshot exact candidate-4 engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_snapshot
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -56,6 +63,11 @@ jobs:
             --output "$OUT"
           gzip -c research_results/candidate_ml_first/imported_candidate4_short_v2/all_global_trades.csv > \
             "$OUT/input_all_global_trades.csv.gz"
+          tar -czf "$OUT/candidate4_exact_engine_snapshot.tar.gz" \
+            -C candidate4_snapshot \
+            research/candidate-causal-liquidity-route-system \
+            research_results/causal_liquidity_route_system \
+            .github/workflows
           git rev-parse HEAD > "$OUT/source_sha.txt"
           git branch --show-current > "$OUT/source_branch.txt"
       - uses: actions/upload-artifact@v4
