@@ -1,0 +1,108 @@
+name: research-candidate-ml-k-rich-causal-salvage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-rich-causal-salvage.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-rich-causal-salvage
+  cancel-in-progress: true
+
+jobs:
+  synthesize-available-periods:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/rich-salvage/source
+      OUT: artifacts/candidate-ml-k/rich-salvage/result
+      STABLE: artifacts/candidate-ml-k/rich-salvage/stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            research/candidate-ml-k-reachable-control/stable_mechanism_router.py
+      - name: Wait for diverse rich harvest, regardless of a single matrix failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=''
+          for _ in $(seq 1 120); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow research-candidate-ml-k-rich-causal-short.yml \
+              --branch research_candidate_ML_k --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            sleep 20
+          done
+          test -n "$RUN_ID"
+          echo "$RUN_ID" >/tmp/source_run
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" || true
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'rich-*' --dir "$ROOT" || true
+          DEV_COUNT="$(find "$ROOT" -type f -name '*.csv' | grep -c '/rich-dev-' || true)"
+          FRESH_COUNT="$(find "$ROOT" -type f -name '*.csv' | grep -c '/rich-fresh-' || true)"
+          echo "development csv: $DEV_COUNT; fresh csv: $FRESH_COUNT"
+          test "$DEV_COUNT" -ge 6
+          test "$FRESH_COUNT" -ge 3
+      - name: Run integrated and stable-mechanism policies on every available period
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT" "$STABLE"; mkdir -p "$OUT" "$STABLE"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            --root "$ROOT" --output "$OUT"
+          python research/candidate-ml-k-reachable-control/stable_mechanism_router.py \
+            --scored "$OUT/scored_actions.csv.gz" --output "$STABLE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-rich-causal-salvage-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/rich-salvage/result/**
+            artifacts/candidate-ml-k/rich-salvage/stable/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit both actual short accounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/rich_causal_salvage
+          rm -rf "$DEST"; mkdir -p "$DEST/integrated" "$DEST/stable"
+          cp "$OUT/summary.json" "$DEST/integrated/"
+          cp "$OUT/closed_trades.csv" "$DEST/integrated/"
+          cp "$OUT/fresh_closed_trades.csv" "$DEST/integrated/"
+          cp "$STABLE/summary.json" "$DEST/stable/"
+          cp "$STABLE/closed_trades.csv" "$DEST/stable/"
+          cp "$STABLE/fresh_closed_trades.csv" "$DEST/stable/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","source_run":"$(cat /tmp/source_run)","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record available-period rich causal short accounts [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
