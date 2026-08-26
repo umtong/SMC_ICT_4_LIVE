@@ -1,0 +1,232 @@
+name: research-candidate-ml-k-v3-fresh1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-v3-fresh1.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: research-candidate-ml-k-v3-fresh1-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  EPISODE: research/candidate-liquidity-episode-policy-v1
+  ROUTER: research/candidate-ml-k-control-transfer-v3/control_transfer_router_v3.py
+  TEST: research/candidate-ml-k-control-transfer-v3/test_control_transfer_router_v3.py
+  MANIFEST: research/candidate-ml-k-control-transfer-v3/fresh1_windows.json
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt" pytest
+          python -m py_compile "$ROUTER"
+          PYTHONPATH="$(dirname "$ROUTER"):research/candidate-ml-k-control-transfer-v2" \
+            python -m pytest -q "$TEST"
+          python "$EPISODE/reproduce.py" verify \
+            --output research_results/candidate_ml_k/control_transfer_v3/fresh1_preflight
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('research/candidate-ml-k-control-transfer-v3/fresh1_windows.json').read_text())
+          source = Path('research/candidate-ml-k-control-transfer-v3/control_transfer_router_v3.py')
+          blob = hashlib.sha1(b'blob ' + str(source.stat().st_size).encode() + b'\0' + source.read_bytes()).hexdigest()
+          assert blob == manifest['policy_source_blob_sha'], (blob, manifest['policy_source_blob_sha'])
+          assert manifest['selection_uses_fresh_outcomes'] is False
+          assert len(manifest['windows']) == 4
+          PY
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        window:
+          - {period: fresh1-2024-may, start: '2024-05-12', end: '2024-05-15'}
+          - {period: fresh1-2024-nov, start: '2024-11-10', end: '2024-11-13'}
+          - {period: fresh1-2025-feb, start: '2025-02-02', end: '2025-02-05'}
+          - {period: fresh1-2025-nov, start: '2025-11-02', end: '2025-11-05'}
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PERIOD: ${{ matrix.window.period }}
+      START: ${{ matrix.window.start }}
+      END: ${{ matrix.window.end }}
+      SYMBOL: ${{ matrix.symbol }}
+      CACHE: .cache/candidate_ml_k/control_transfer_v3/fresh1/${{ matrix.window.period }}/${{ matrix.symbol }}
+      OUT: artifacts/candidate_ml_k/control_transfer_v3/fresh1/${{ matrix.window.period }}/${{ matrix.symbol }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          python "$EPISODE/reproduce.py" harvest \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --period "$PERIOD" --symbols "$SYMBOL" \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-v3-fresh1-${{ matrix.window.period }}-${{ matrix.symbol }}
+          path: artifacts/candidate_ml_k/control_transfer_v3/fresh1/${{ matrix.window.period }}/${{ matrix.symbol }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route-and-record:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      DOWNLOADED: artifacts/candidate_ml_k/control_transfer_v3/fresh1/downloaded
+      ROOT: artifacts/candidate_ml_k/control_transfer_v3/fresh1/all_periods
+      RESULT: artifacts/candidate_ml_k/control_transfer_v3/fresh1/result
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mlk-v3-fresh1-*
+          path: artifacts/candidate_ml_k/control_transfer_v3/fresh1/downloaded
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          mkdir -p "$ROOT" "$RESULT"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          downloaded = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/downloaded')
+          root = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/all_periods')
+          prefix = 'mlk-v3-fresh1-'
+          grouped = {}
+          harvest = {}
+          for directory in sorted(path for path in downloaded.iterdir() if path.is_dir()):
+              if not directory.name.startswith(prefix):
+                  continue
+              tail = directory.name[len(prefix):]
+              period, symbol = tail.rsplit('-', 1)
+              action_files = [p for p in directory.rglob('departure_actions.csv.gz') if p.name == 'departure_actions.csv.gz']
+              if len(action_files) != 1:
+                  raise RuntimeError(f'{directory}: expected one aggregate departure_actions.csv.gz, found {action_files}')
+              frame = pd.read_csv(action_files[0], low_memory=False)
+              observed = sorted(frame['symbol'].dropna().astype(str).unique())
+              if observed != [symbol]:
+                  raise RuntimeError(f'{directory}: symbol mismatch {observed} != {[symbol]}')
+              grouped.setdefault(period, []).append(frame)
+              summaries = [p for p in directory.rglob('summary.json') if p.name == 'summary.json']
+              payload = json.loads(summaries[0].read_text()) if len(summaries) == 1 else {}
+              harvest[f'{period}:{symbol}'] = {
+                  'rows': int(len(frame)),
+                  'states': int(frame['state_id'].nunique()),
+                  'episodes': int(frame['episode_id'].nunique()),
+                  'outcomes': frame['outcome'].astype(str).value_counts().sort_index().to_dict(),
+                  'source_summary': payload,
+              }
+
+          expected_periods = {'fresh1-2024-may', 'fresh1-2024-nov', 'fresh1-2025-feb', 'fresh1-2025-nov'}
+          if set(grouped) != expected_periods:
+              raise RuntimeError(f'period mismatch: {set(grouped)}')
+          for period, frames in sorted(grouped.items()):
+              if len(frames) != 4:
+                  raise RuntimeError(f'{period}: expected four symbols, found {len(frames)}')
+              combined = pd.concat(frames, ignore_index=True, sort=False)
+              if set(combined.symbol.astype(str)) != {'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'}:
+                  raise RuntimeError(f'{period}: incomplete universe')
+              destination = root / period
+              destination.mkdir(parents=True, exist_ok=True)
+              combined.to_csv(destination / 'departure_actions.csv.gz', index=False, compression='gzip')
+          (root / 'harvest_summary.json').write_text(json.dumps(harvest, indent=2, sort_keys=True, default=str) + '\n')
+          PY
+          python "$ROUTER" --root "$ROOT" --output "$RESULT"
+          python - <<'PY'
+          from pathlib import Path
+          from datetime import date
+          import json
+
+          result = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/result')
+          root = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/all_periods')
+          manifest = json.loads(Path('research/candidate-ml-k-control-transfer-v3/fresh1_windows.json').read_text())
+          summary = json.loads((result / 'summary.json').read_text())
+          days = sum((date.fromisoformat(w['end']) - date.fromisoformat(w['start'])).days for w in manifest['windows'])
+          overall = summary['overall_continuous_account']
+          direct = {
+              'policy': summary['policy'],
+              'selection_uses_fresh_outcomes': False,
+              'source_sha': '${{ github.sha }}',
+              'policy_source_blob_sha': manifest['policy_source_blob_sha'],
+              'calendar_days': days,
+              'completed_trades_per_calendar_day': overall['closed_trades'] / days if days else 0.0,
+              'overall_continuous_account': overall,
+              'by_period_standalone': summary.get('by_period_standalone', {}),
+              'by_scenario_family': summary.get('by_scenario_family', {}),
+              'by_symbol': summary.get('by_symbol', {}),
+              'harvest': json.loads((root / 'harvest_summary.json').read_text()),
+          }
+          (result / 'direct_result.json').write_text(json.dumps(direct, indent=2, sort_keys=True, default=str) + '\n')
+          PY
+          git rev-parse HEAD > "$RESULT/source_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-v3-fresh1-result-${{ github.sha }}
+          path: artifacts/candidate_ml_k/control_transfer_v3/fresh1/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit compact fresh result
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/control_transfer_v3/fresh1
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$RESULT/summary.json" "$DEST/"
+          cp "$RESULT/direct_result.json" "$DEST/"
+          cp "$RESULT/source_sha.txt" "$DEST/"
+          cp "$RESULT/selected_orders.csv" "$DEST/"
+          cp "$RESULT/closed_trades.csv" "$DEST/"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$DEST"
+          git commit -m "results(ML-k): record frozen V3 fresh1 ${GITHUB_RUN_ID} [skip ci]"
+          git push origin HEAD:research_candidate_ML_k
