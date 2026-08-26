@@ -1,0 +1,210 @@
+name: Research ML-first mechanism router v5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-mechanism-router-v5.yml'
+      - 'research/candidate-ml-first-mechanism-router-v5/**'
+      - 'research/candidate-ml-first-reachable-frontier-v4/**'
+      - 'research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py'
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-mechanism-router-v5
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest-actions:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-mechanism-router-v5/${{ matrix.frontier }}/${{ matrix.period }}
+      OUT: artifacts/ml-first-mechanism-router-v5/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      ROLE: ${{ matrix.role }}
+      FRACTION: ${{ matrix.fraction }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: 9df00cdf2db3a99f6c98c538326909188d349741
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Patch alternate reachable frontier
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-first-reachable-frontier-v4/patch_route_fraction.py \
+            --root candidate4_runtime --fraction "$FRACTION"
+      - name: Harvest coherent causal plans
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+            --start "$START" --end "$END" --role "$ROLE" --warmup-days 60 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          printf '{"target_fraction":%s,"engine_sha":"9df00cdf2db3a99f6c98c538326909188d349741"}\n' \
+            "$FRACTION" > "$OUT/action_contract.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-mechanism-v5-${{ matrix.frontier }}-${{ matrix.period }}
+          path: artifacts/ml-first-mechanism-router-v5/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-one-account:
+    needs: harvest-actions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-mechanism-v5-*
+          path: downloaded/ml-first-mechanism-v5
+      - name: Normalize 24 causal-action windows
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-mechanism-router-v5/normalized
+          rm -rf "$NORMAL"
+          mkdir -p "$NORMAL"
+          shopt -s nullglob
+          count=0
+          for d in downloaded/ml-first-mechanism-v5/ml-first-mechanism-v5-*; do
+            name="${d##*/ml-first-mechanism-v5-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-mechanism-router-v5/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$NORMAL/fraction-$frontier/$period"
+            cp -a "$src"/. "$NORMAL/fraction-$frontier/$period"/
+            count=$((count + 1))
+          done
+          test "$count" -eq 24
+      - name: Build alternate-action plan set
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-mechanism-router-v5/normalized
+          AGG=artifacts/ml-first-mechanism-router-v5/fraction-aggregates
+          COMBINED=artifacts/ml-first-mechanism-router-v5/combined
+          rm -rf "$AGG" "$COMBINED"
+          mkdir -p "$AGG" "$COMBINED"
+          for frontier in 025 035 050; do
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORMAL/fraction-$frontier" \
+              --output "$AGG/fraction-$frontier"
+          done
+          python research/candidate-ml-first-mechanism-router-v5/combine_fraction_plans.py \
+            --root "$AGG" --output "$COMBINED"
+      - name: Materialize and run causal mechanism router
+        run: |
+          set -euo pipefail
+          RUNTIME=artifacts/ml-first-mechanism-router-v5/runtime/mechanism_router_v2.py
+          ROUTED=artifacts/ml-first-mechanism-router-v5/routed
+          mkdir -p "$(dirname "$RUNTIME")" "$ROUTED"
+          python research/candidate-ml-first-mechanism-router-v5/materialize_router_v2.py \
+            --source research/candidate-ml-first-mechanism-router-v5/mechanism_router.py \
+            --output "$RUNTIME"
+          python "$RUNTIME" \
+            --plans artifacts/ml-first-mechanism-router-v5/combined/all_fraction_candidate_plans.csv.gz \
+            --output "$ROUTED" --risk 0.03
+          git rev-parse HEAD > "$ROUTED/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$ROUTED/source_branch.txt"
+          printf '%s\n' 9df00cdf2db3a99f6c98c538326909188d349741 > "$ROUTED/inherited_engine_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-mechanism-router-v5-result-${{ github.sha }}
+          path: artifacts/ml-first-mechanism-router-v5/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit mechanism-router research
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-mechanism-router-v5
+          DEST=research_results/candidate_ml_first/mechanism_router_v5/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$SRC/routed"/. "$DEST"/
+          cp "$SRC/combined/summary.json" "$DEST/combined_plan_summary.json"
+          for frontier in 025 035 050; do
+            cp "$SRC/fraction-aggregates/fraction-$frontier/summary.json" \
+              "$DEST/fraction_${frontier}_engine_summary.json"
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            brief=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('research_results/candidate_ml_first/mechanism_router_v5/latest/summary.json').read_text())
+          f=s.get('fresh', {})
+          print(f"trades={f.get('trades')} meanR={f.get('mean_net_r')} nav={f.get('ending_nav')}")
+          PY
+          )
+            git commit -m "Record ML-first mechanism-router v5 ${brief} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
