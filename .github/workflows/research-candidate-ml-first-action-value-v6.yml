@@ -1,0 +1,137 @@
+name: Research ML-first action value v6
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Research ML-first mechanism router v5']
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-action-value-v6
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  route-existing-causal-actions:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_branch == 'research_candidate_ML_first' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Resolve source run for manual dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh api \
+            'repos/${{ github.repository }}/actions/workflows/research-candidate-ml-first-mechanism-router-v5.yml/runs?branch=research_candidate_ML_first&per_page=1' \
+            --jq '.workflow_runs[0].id')
+          test -n "$run_id"
+          echo "SOURCE_RUN_ID=$run_id" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-mechanism-v5-*
+          path: downloaded/ml-first-mechanism-v5
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Normalize inherited causal-action windows
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-action-value-v6/normalized
+          rm -rf "$NORMAL"
+          mkdir -p "$NORMAL"
+          shopt -s nullglob
+          count=0
+          for d in downloaded/ml-first-mechanism-v5/ml-first-mechanism-v5-*; do
+            name="${d##*/ml-first-mechanism-v5-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-mechanism-router-v5/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$NORMAL/fraction-$frontier/$period"
+            cp -a "$src"/. "$NORMAL/fraction-$frontier/$period"/
+            count=$((count + 1))
+          done
+          test "$count" -eq 24
+      - name: Build alternate causal-action set
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-action-value-v6/normalized
+          AGG=artifacts/ml-first-action-value-v6/fraction-aggregates
+          COMBINED=artifacts/ml-first-action-value-v6/combined
+          rm -rf "$AGG" "$COMBINED"
+          mkdir -p "$AGG" "$COMBINED"
+          for frontier in 025 035 050; do
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORMAL/fraction-$frontier" \
+              --output "$AGG/fraction-$frontier"
+          done
+          python research/candidate-ml-first-mechanism-router-v5/combine_fraction_plans.py \
+            --root "$AGG" --output "$COMBINED"
+      - name: Run empirical causal action values
+        run: |
+          set -euo pipefail
+          RUNTIME=artifacts/ml-first-action-value-v6/runtime/mechanism_router_v2.py
+          OUT=artifacts/ml-first-action-value-v6/routed
+          mkdir -p "$(dirname "$RUNTIME")" "$OUT"
+          python research/candidate-ml-first-mechanism-router-v5/materialize_router_v2.py \
+            --source research/candidate-ml-first-mechanism-router-v5/mechanism_router.py \
+            --output "$RUNTIME"
+          python research/candidate-ml-first-action-value-v6/causal_action_value_router.py \
+            --plans artifacts/ml-first-action-value-v6/combined/all_fraction_candidate_plans.csv.gz \
+            --router-runtime "$RUNTIME" --output "$OUT" --risk 0.03
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' "$SOURCE_RUN_ID" > "$OUT/source_workflow_run_id.txt"
+          printf '%s\n' 9df00cdf2db3a99f6c98c538326909188d349741 > "$OUT/inherited_engine_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-action-value-v6-result-${{ github.sha }}
+          path: artifacts/ml-first-action-value-v6/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit action-value research
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-action-value-v6
+          DEST=research_results/candidate_ml_first/action_value_v6/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$SRC/routed"/. "$DEST"/
+          cp "$SRC/combined/summary.json" "$DEST/combined_plan_summary.json"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            brief=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          s=json.loads(Path('research_results/candidate_ml_first/action_value_v6/latest/summary.json').read_text())
+          f=s.get('selected_fresh', {})
+          print(f"variant={s.get('selected_variant_from_development')} trades={f.get('trades')} meanR={f.get('mean_net_r')} nav={f.get('ending_nav')}")
+          PY
+          )
+            git commit -m "Record ML-first action-value v6 ${brief} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
