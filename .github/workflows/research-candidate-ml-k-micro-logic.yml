@@ -1,0 +1,139 @@
+name: research-candidate-ml-k-micro-logic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-micro-logic.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: research-candidate-ml-k-micro-logic
+  cancel-in-progress: false
+
+env:
+  EPISODE: research/candidate-liquidity-episode-policy-v1
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { period: micro-2024-feb, start: '2024-02-01', end: '2024-02-03' }
+          - { period: micro-2025-sep, start: '2025-09-01', end: '2025-09-03' }
+          - { period: micro-2026-mar, start: '2026-03-01', end: '2026-03-03' }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      OUT: artifacts/mlk_micro/${{ matrix.period }}
+      CACHE: .cache/mlk_micro/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python -r "$EPISODE/runtime-requirements.txt"
+          python "$EPISODE/reproduce.py" harvest \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --period '${{ matrix.period }}' --symbols BTCUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-micro-${{ matrix.period }}
+          path: artifacts/mlk_micro/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  diagnose:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mlk-micro-*
+          path: downloaded
+      - run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          import numpy as np
+
+          frames=[]
+          harvest={}
+          for path in sorted(Path('downloaded').rglob('departure_actions.csv.gz')):
+              period=path.parents[0].name
+              # artifact directory may wrap the period; prefer summary period.
+              summary_path=path.parent/'summary.json'
+              summary=json.loads(summary_path.read_text()) if summary_path.exists() else {}
+              period=str(summary.get('period',period))
+              frame=pd.read_csv(path,low_memory=False)
+              frame['period']=period
+              frames.append(frame)
+              harvest[period]=summary
+          all_rows=pd.concat(frames,ignore_index=True,sort=False) if frames else pd.DataFrame()
+          orders=all_rows[all_rows.get('order_exists',False).astype(str).str.lower().isin({'true','1','yes'})].copy()
+          resolved=orders[orders.get('outcome','').astype(str).isin({'TARGET_FIRST','STOP_FIRST','AMBIGUOUS_SAME_MINUTE','AMBIGUOUS_FILL_BARRIER_SAME_MINUTE'})].copy()
+          resolved['win']=resolved.outcome.astype(str).eq('TARGET_FIRST')
+          resolved['net_r']=pd.to_numeric(resolved.get('net_r'),errors='coerce')
+          def grouped(key):
+              if key not in resolved or resolved.empty: return {}
+              out={}
+              for value,g in resolved.groupby(key,dropna=False):
+                  out[str(value)]={'trades':int(len(g)),'target_first_rate':float(g.win.mean()),'mean_net_r':float(g.net_r.mean()),'mean_gross_rr':float(pd.to_numeric(g.get('gross_rr'),errors='coerce').mean())}
+              return out
+          summary={
+              'run_id':'${{ github.run_id }}',
+              'source_sha':'${{ github.sha }}',
+              'rows':int(len(all_rows)),
+              'orders':int(len(orders)),
+              'resolved':int(len(resolved)),
+              'target_first_rate':float(resolved.win.mean()) if len(resolved) else None,
+              'mean_net_r':float(resolved.net_r.mean()) if len(resolved) else None,
+              'by_period':grouped('period'),
+              'by_family':grouped('family'),
+              'by_entry_geometry':grouped('entry_geometry'),
+              'by_route_kind':grouped('route_kind'),
+              'harvest':harvest,
+          }
+          dest=Path('research_results/candidate_ml_k/micro_logic')
+          dest.mkdir(parents=True,exist_ok=True)
+          (dest/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2,default=str)+'\n')
+          resolved.to_csv(dest/'resolved_plans.csv',index=False)
+          orders.sort_values('gross_rr').head(300).to_csv(dest/'orders_sample.csv',index=False)
+          print(json.dumps(summary,ensure_ascii=False,indent=2,default=str))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research_results/candidate_ml_k/micro_logic
+          git commit -m "Record ML-k micro logic ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_ML_k
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-micro-logic-result-${{ github.sha }}
+          path: research_results/candidate_ml_k/micro_logic/**
+          if-no-files-found: error
+          retention-days: 30
