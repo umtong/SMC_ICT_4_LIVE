@@ -1,0 +1,156 @@
+name: research-candidate-ml-k-hybrid-rr-final-confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-hybrid-rr-final-confirmation.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-hybrid-rr-final-confirmation
+  cancel-in-progress: true
+
+jobs:
+  join-route-confirm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      WORLD: artifacts/candidate-ml-k/hybrid-rr-final/world
+      RICH: artifacts/candidate-ml-k/hybrid-rr-final/rich
+      HYBRID: artifacts/candidate-ml-k/hybrid-rr-final/actions
+      OUT: artifacts/candidate-ml-k/hybrid-rr-final/result
+      STABLE: artifacts/candidate-ml-k/hybrid-rr-final/stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state.py \
+            research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state_v2.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_final.py \
+            research/candidate-ml-k-reachable-control/stable_mechanism_router.py
+      - name: Wait for all four source harvest families
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find_run() {
+            local workflow="$1"
+            local id=''
+            for _ in $(seq 1 180); do
+              id="$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" --branch research_candidate_ML_k --limit 1 \
+                --json databaseId --jq '.[0].databaseId // empty')"
+              [ -n "$id" ] && { echo "$id"; return 0; }
+              sleep 20
+            done
+            return 1
+          }
+          LOCAL_DEV_RUN="$(find_run research-candidate-ml-k-short-local-rr.yml)"
+          RICH_DEV_RUN="$(find_run research-candidate-ml-k-hybrid-local-rich-short.yml)"
+          LOCAL_CONFIRM_RUN="$(find_run research-candidate-ml-k-local-rr-final-confirmation.yml)"
+          RICH_CONFIRM_RUN="$(find_run research-candidate-ml-k-rich-final-confirmation.yml)"
+          printf '%s\n' "$LOCAL_DEV_RUN" "$RICH_DEV_RUN" "$LOCAL_CONFIRM_RUN" "$RICH_CONFIRM_RUN" > /tmp/source_runs
+          for run in "$LOCAL_DEV_RUN" "$RICH_DEV_RUN" "$LOCAL_CONFIRM_RUN" "$RICH_CONFIRM_RUN"; do
+            gh run watch "$run" --repo "$GITHUB_REPOSITORY" || true
+          done
+          rm -rf "$WORLD" "$RICH"; mkdir -p "$WORLD" "$RICH"
+          gh run download "$LOCAL_DEV_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'local-rr-dev-*' --dir "$WORLD"
+          gh run download "$RICH_DEV_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'hybrid-rich-dev-*' --dir "$RICH"
+          gh run download "$LOCAL_CONFIRM_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'local-rr-confirm-*' --dir "$WORLD"
+          gh run download "$RICH_CONFIRM_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'rich-confirm-*' --dir "$RICH"
+      - name: Normalize rich artifact period names to the risk-aware plan clock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          root=Path('artifacts/candidate-ml-k/hybrid-rr-final/rich')
+          for path in sorted(root.iterdir()):
+              if not path.is_dir(): continue
+              name=path.name
+              new=name.replace('-lf','-rr')
+              if '-confirm' in new and '-rr-confirm' not in new:
+                  new=new.replace('-confirm','-rr-confirm')
+              if new != name:
+                  target=path.with_name(new)
+                  if target.exists():
+                      for item in path.rglob('*'):
+                          if item.is_file():
+                              rel=item.relative_to(path)
+                              dest=target/rel; dest.parent.mkdir(parents=True,exist_ok=True)
+                              dest.write_bytes(item.read_bytes())
+                  else:
+                      path.rename(target)
+          PY
+          test "$(find "$WORLD" -name departure_actions.csv.gz | wc -l)" -ge 10
+          test "$(find "$RICH" -name '*.csv' | wc -l)" -ge 10
+      - name: Join public rich states, then freeze development-selected policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HYBRID" "$OUT" "$STABLE"; mkdir -p "$HYBRID" "$OUT" "$STABLE"
+          python research/candidate-ml-k-reachable-control/hybrid_local_plan_rich_state_v2.py \
+            --world-root "$WORLD" --rich-root "$RICH" --output "$HYBRID"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_final.py \
+            --root "$HYBRID" --output "$OUT"
+          python research/candidate-ml-k-reachable-control/stable_mechanism_router.py \
+            --scored "$OUT/scored_actions.csv.gz" --output "$STABLE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-hybrid-rr-final-${{ github.sha }}
+          path: |
+            artifacts/candidate-ml-k/hybrid-rr-final/actions/join_summary.json
+            artifacts/candidate-ml-k/hybrid-rr-final/result/**
+            artifacts/candidate-ml-k/hybrid-rr-final/stable/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit the six-period hybrid result
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/hybrid_rr_final_confirmation
+          rm -rf "$DEST"; mkdir -p "$DEST/integrated" "$DEST/stable"
+          cp "$HYBRID/join_summary.json" "$DEST/"
+          cp "$OUT/summary.json" "$DEST/integrated/"
+          cp "$OUT/final_fresh_closed_trades.csv" "$DEST/integrated/"
+          cp "$OUT/final_fresh_loss_clinic.csv" "$DEST/integrated/"
+          cp "$STABLE/summary.json" "$DEST/stable/"
+          cp "$STABLE/fresh_closed_trades.csv" "$DEST/stable/"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          runs=Path('/tmp/source_runs').read_text().splitlines()
+          item={'run_id':os.environ['GITHUB_RUN_ID'],'head_sha':os.environ['GITHUB_SHA'],
+                'source_runs':runs}
+          Path('research_results/candidate_ml_k/hybrid_rr_final_confirmation/run.json').write_text(json.dumps(item,indent=2)+'\n')
+          PY
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record six untouched hybrid RR confirmations [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
