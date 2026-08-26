@@ -1,0 +1,145 @@
+name: research-candidate-ml-k-rich-causal-short
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-rich-causal-short.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-rich-causal-short
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router.py \
+            research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py --help >/dev/null
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - {role: dev, period: dev-2023-jan-rich, start: '2023-01-05', end: '2023-01-10'}
+          - {role: dev, period: dev-2023-mar-rich, start: '2023-03-10', end: '2023-03-15'}
+          - {role: dev, period: dev-2023-jun-rich, start: '2023-06-15', end: '2023-06-20'}
+          - {role: dev, period: dev-2023-oct-rich, start: '2023-10-10', end: '2023-10-15'}
+          - {role: fresh, period: fresh-2024-feb-rich, start: '2024-02-10', end: '2024-02-15'}
+          - {role: dev, period: dev-2024-apr-rich, start: '2024-04-10', end: '2024-04-15'}
+          - {role: fresh, period: fresh-2024-aug-rich, start: '2024-08-20', end: '2024-08-25'}
+          - {role: dev, period: dev-2024-nov-rich, start: '2024-11-10', end: '2024-11-15'}
+          - {role: fresh, period: fresh-2025-feb-rich, start: '2025-02-10', end: '2025-02-15'}
+          - {role: dev, period: dev-2025-may-rich, start: '2025-05-10', end: '2025-05-15'}
+          - {role: fresh, period: fresh-2025-sep-rich, start: '2025-09-10', end: '2025-09-15'}
+          - {role: dev, period: dev-2025-nov-rich, start: '2025-11-10', end: '2025-11-15'}
+          - {role: fresh, period: fresh-2026-mar-rich, start: '2026-03-10', end: '2026-03-15'}
+          - {role: fresh, period: fresh-2026-jun-rich, start: '2026-06-10', end: '2026-06-15'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-1k-auction-system:research/candidate-auction-episode-system:research/candidate-liquidity-auction-v6:research/candidate-liquidity-auction-v5:research/candidate-coherent-auction-system-v4:research/candidate-coherent-auction-system-v3:research/candidate-coherent-liquidity-policy-v2:research/candidate-coherent-liquidity-policy-v1:research/candidate-hierarchical-liquidity-bpr-v2:research/candidate-hierarchical-liquidity-bpr-v1:research/candidate-liquidity-displacement-v1:research/candidate-auction-dislocation-confluence-v1:research/candidate-derivatives-dislocation-v1:research/candidate-auction-episode-policy:research/candidate-auction-event-v2:research/candidate-direct-auction-policy:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research_candidate_ML_k}
+      - shell: bash
+        run: |
+          set -euo pipefail
+          OUT="artifacts/candidate-ml-k/rich/${{ matrix.period }}"
+          CACHE=".cache/candidate-ml-k/rich/${{ matrix.period }}"
+          mkdir -p "$OUT" "$CACHE"
+          python research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            --start '${{ matrix.start }}' --end '${{ matrix.end }}' --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rich-${{ matrix.role }}-${{ matrix.period }}
+          path: artifacts/candidate-ml-k/rich/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  synthesize:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-k/rich/downloaded
+      OUT: artifacts/candidate-ml-k/rich/result
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rich-*
+          path: artifacts/candidate-ml-k/rich/downloaded
+      - shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$ROOT" -name '*.csv' | wc -l)" -ge 14
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/rich_causal_action_router_fast.py \
+            --root "$ROOT" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-rich-causal-short-${{ github.sha }}
+          path: artifacts/candidate-ml-k/rich/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Persist actual decisions and short results
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/rich_causal_short
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/selected_orders.csv" "$DEST/"
+          cp "$OUT/closed_trades.csv" "$DEST/"
+          cp "$OUT/fresh_closed_trades.csv" "$DEST/"
+          cp "$OUT/fresh_loss_clinic.csv" "$DEST/"
+          cp "$OUT/near_miss_actions.csv" "$DEST/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record ML-k rich causal short synthesis [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
