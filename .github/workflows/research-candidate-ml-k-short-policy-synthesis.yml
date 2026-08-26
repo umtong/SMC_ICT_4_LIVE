@@ -1,0 +1,95 @@
+name: research-candidate-ml-k-short-policy-synthesis
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-policy-synthesis.yml'
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-k-short-policy-synthesis
+  cancel-in-progress: true
+
+jobs:
+  synthesize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SOURCE: artifacts/candidate-ml-k/synthesis/source
+      OUT: artifacts/candidate-ml-k/synthesis/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r research/candidate-liquidity-episode-policy-v1/runtime-requirements.txt
+          python -m py_compile research/candidate-ml-k-reachable-control/short_policy_synthesis.py
+      - name: Download completed hierarchical short result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow research-candidate-ml-k-short-hierarchical-route.yml \
+            --branch research_candidate_ML_k --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          test -n "$RUN_ID"
+          echo "$RUN_ID" >/tmp/source_run
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+          rm -rf "$SOURCE"; mkdir -p "$SOURCE"
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'candidate-ml-k-hierarchical-short-*' --dir "$SOURCE"
+          SCORED="$(find "$SOURCE" -name scored_orders.csv.gz | head -1)"
+          SUMMARY="$(find "$SOURCE" -name summary.json | head -1)"
+          test -f "$SCORED"; test -f "$SUMMARY"
+          echo "$SCORED" >/tmp/scored_path
+          echo "$SUMMARY" >/tmp/summary_path
+      - name: Select no rule with fresh outcomes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-k-reachable-control/short_policy_synthesis.py \
+            --scored "$(cat /tmp/scored_path)" \
+            --source-summary "$(cat /tmp/summary_path)" \
+            --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-ml-k-short-policy-synthesis-${{ github.sha }}
+          path: artifacts/candidate-ml-k/synthesis/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Persist selected policy and untouched fresh result
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_policy_synthesis
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/development_selected_policy_trades.csv" "$DEST/"
+          cat > "$DEST/run.json" <<EOF
+          {"run_id":"${GITHUB_RUN_ID}","source_run":"$(cat /tmp/source_run)","head_sha":"${GITHUB_SHA}","completed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git pull --rebase origin research_candidate_ML_k
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record development-selected ML-k scenario synthesis [skip ci]'
+            git push origin HEAD:research_candidate_ML_k
+          fi
