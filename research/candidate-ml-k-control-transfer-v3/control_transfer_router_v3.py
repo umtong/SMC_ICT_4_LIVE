@@ -32,6 +32,9 @@ THRESHOLDS.update({
     "residual_control_return": 0.001,
 })
 
+route_account = core.route_account
+load_actions = core.load_actions
+
 SCENARIO_PRIORITY = {
     "DEFENDED_BASIS_ABSORPTION": 6,
     "PUSH_PULL_ABSORPTION": 5,
