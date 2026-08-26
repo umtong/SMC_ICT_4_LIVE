@@ -1,0 +1,110 @@
+name: Research ML-first direct reachable control v4
+
+on:
+  workflow_run:
+    workflows: ["Research ML-first reachable scenario fusion v3"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful reachable-scenario-fusion-v3 run ID
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-reachable-control-v4
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  direct-policy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'research_candidate_ML_first')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install direct policy runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.3.2 pandas==2.3.2 scikit-learn==1.9.0 joblib
+      - name: Download successful v3 research artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-reachable-scenario-fusion-v3-*
+          path: artifacts/ml-first-direct-reachable-control-v4/source
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compile and run direct reachable-control policy
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py
+          aggregates=$(find artifacts/ml-first-direct-reachable-control-v4/source -type d -name aggregates -print -quit)
+          if [ -z "$aggregates" ]; then
+            echo "aggregate root not found in source artifact" >&2
+            find artifacts/ml-first-direct-reachable-control-v4/source -maxdepth 5 -type f | head -100 >&2
+            exit 1
+          fi
+          OUT=artifacts/ml-first-direct-reachable-control-v4/policy
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          python research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py \
+            --root "$aggregates" --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' "$SOURCE_RUN_ID" > "$OUT/source_research_run_id.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-direct-reachable-control-v4-${{ github.sha }}
+          path: artifacts/ml-first-direct-reachable-control-v4/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit direct policy and exact short result
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-direct-reachable-control-v4/policy
+          DEST=research_results/candidate_ml_first/direct_reachable_control_v4/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$SRC/summary.json" "$DEST/"
+          cp "$SRC/completed_trades.csv" "$DEST/"
+          cp "$SRC/variant_metrics.csv" "$DEST/"
+          cp "$SRC/component_catalog.csv" "$DEST/"
+          cp "$SRC/period_metrics.csv" "$DEST/"
+          cp "$SRC/feature_audit.json" "$DEST/"
+          cp "$SRC/model_bundle.joblib" "$DEST/"
+          cp "$SRC/source_sha.txt" "$DEST/"
+          cp "$SRC/source_branch.txt" "$DEST/"
+          cp "$SRC/source_research_run_id.txt" "$DEST/"
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json, sys
+          s=json.load(open(sys.argv[1])); d=s['development']; f=s['fresh']
+          print(f"dev_nav={d['ending_nav_multiplier']:.3f} fresh_nav={f['ending_nav_multiplier']:.3f} fresh_n={f['completed_trades']} fresh_meanR={f['mean_net_r']:.3f} fresh_mdd={f['maximum_drawdown']:.3f}")
+          PY
+          )
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record direct reachable control v4 ${GITHUB_RUN_ID}: ${digest} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
