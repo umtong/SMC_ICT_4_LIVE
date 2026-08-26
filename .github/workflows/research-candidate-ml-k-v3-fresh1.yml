@@ -6,6 +6,10 @@ on:
     branches: [research_candidate_ML_k]
     paths:
       - '.github/workflows/research-candidate-ml-k-v3-fresh1.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-v3-fresh1.yml'
 
 permissions:
   contents: write
@@ -186,7 +190,7 @@ jobs:
           import json
 
           result = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/result')
-          root = Path('artifacts/candidate_ml_k/control_transfer_v3/fresh1/all_periods')
+          root = Path('artifacts/candidate_ml_k/control-transfer-v3/fresh1/all_periods')
           manifest = json.loads(Path('research/candidate-ml-k-control-transfer-v3/fresh1_windows.json').read_text())
           summary = json.loads((result / 'summary.json').read_text())
           days = sum((date.fromisoformat(w['end']) - date.fromisoformat(w['start'])).days for w in manifest['windows'])
@@ -215,6 +219,7 @@ jobs:
           retention-days: 30
           compression-level: 6
       - name: Commit compact fresh result
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           DEST=research_results/candidate_ml_k/control_transfer_v3/fresh1
