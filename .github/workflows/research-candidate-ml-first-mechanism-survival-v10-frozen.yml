@@ -1,0 +1,238 @@
+name: Research ML-first frozen mechanism survival v10
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-mechanism-survival-v10-frozen.yml'
+      - 'research/candidate-ml-first-mechanism-survival-v9/fixed_mechanism_inference.py'
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-frozen-mechanism-v10
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-v9:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 390
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 250); do
+            run_id=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-mechanism-survival-v9.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            if [ -n "$run_id" ]; then
+              echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 90
+          done
+          echo "Timed out waiting for mechanism survival v9" >&2
+          exit 1
+
+  harvest-fifth-panel:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: y-2024-may25, start: 2024-05-25, end: 2024-06-01}
+          - {period: y-2024-aug25, start: 2024-08-25, end: 2024-09-01}
+          - {period: y-2024-nov25, start: 2024-11-25, end: 2024-12-02}
+          - {period: y-2025-feb20, start: 2025-02-20, end: 2025-02-27}
+          - {period: y-2025-may25, start: 2025-05-25, end: 2025-06-01}
+          - {period: y-2025-aug20, start: 2025-08-20, end: 2025-08-27}
+          - {period: y-2026-feb20, start: 2026-02-20, end: 2026-02-27}
+          - {period: y-2026-may20, start: 2026-05-20, end: 2026-05-27}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-frozen-mechanism-v10/${{ matrix.period }}
+      WINDOW_ROOT: artifacts/ml-first-frozen-mechanism-v10/windows/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      PERIOD: ${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Harvest fixed mechanism-policy actions
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py
+          mkdir -p "$CACHE" "$WINDOW_ROOT"
+          for spec in f120:0.12 f180:0.18 f250:0.25 f330:0.33 f500:0.50; do
+            tag=${spec%%:*}; fraction=${spec##*:}
+            git -C candidate4_runtime checkout -- .
+            python research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py --root candidate4_runtime --fraction "$fraction"
+            out="$WINDOW_ROOT/$tag"
+            rm -rf "$out"; mkdir -p "$out"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+              --start "$START" --end "$END" --role fresh --warmup-days 60 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$out"
+            python - "$out" "$fraction" "$PERIOD" <<'PY'
+          import json,sys
+          from pathlib import Path
+          out,fraction,period=sys.argv[1:]
+          Path(out,'route_fraction.json').write_text(json.dumps({
+              'route_target_fraction':float(fraction),'period':period,'role':'fresh',
+              'labeling':'exact minute path; same-minute target and stop is loss'
+          },indent=2)+'\n')
+          PY
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-frozen-v10-window-${{ matrix.period }}
+          path: artifacts/ml-first-frozen-mechanism-v10/windows/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  evaluate-and-publish:
+    needs: [resolve-v9, harvest-fifth-panel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_runtime
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-mechanism-survival-v9-*
+          path: artifacts/ml-first-frozen-mechanism-v10/source-v9
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ needs.resolve-v9.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-frozen-v10-window-*
+          path: artifacts/ml-first-frozen-mechanism-v10/downloaded-fifth-panel
+      - name: Stage fifth panel
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('artifacts/ml-first-frozen-mechanism-v10/downloaded-fifth-panel')
+          stage=Path('artifacts/ml-first-frozen-mechanism-v10/staged-fifth-panel')
+          shutil.rmtree(stage,ignore_errors=True)
+          for tag in ('f120','f180','f250','f330','f500'):
+              matches=sorted(path for path in root.rglob(tag) if path.is_dir())
+              if len(matches)!=8:
+                  raise SystemExit(f'{tag}: expected 8 windows, found {len(matches)}')
+              for source in matches:
+                  period=next((part for part in source.parts if part.startswith('y-')),None)
+                  if period is None:
+                      artifact=next((part for part in source.parts if part.startswith('ml-first-frozen-v10-window-y-')),None)
+                      if artifact:
+                          period=artifact.removeprefix('ml-first-frozen-v10-window-')
+                  if period is None:
+                      raise SystemExit(f'cannot infer period from {source}')
+                  target=stage/tag/period
+                  if target.exists():
+                      raise SystemExit(f'duplicate {target}')
+                  shutil.copytree(source,target)
+          PY
+      - name: Aggregate fifth-panel plans
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system
+        run: |
+          set -euo pipefail
+          ROOT=artifacts/ml-first-frozen-mechanism-v10
+          for tag in f120 f180 f250 f330 f500; do
+            out="$ROOT/fifth-aggregates/$tag"
+            mkdir -p "$out"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/aggregate_short.py \
+              --root "$ROOT/staged-fifth-panel/$tag" --output "$out"
+          done
+      - name: Apply frozen v9 system
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.3.2 pandas==2.3.2 scikit-learn==1.9.0 joblib
+          python -m py_compile \
+            research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py \
+            research/candidate-ml-first-ordered-reachability-v7/ordered_reachability_policy.py \
+            research/candidate-ml-first-mechanism-survival-v9/mechanism_survival_policy.py \
+            research/candidate-ml-first-mechanism-survival-v9/fixed_mechanism_inference.py
+          ROOT=artifacts/ml-first-frozen-mechanism-v10
+          source_policy=$(find "$ROOT/source-v9" -type d -name policy -print -quit)
+          test -n "$source_policy"
+          OUT="$ROOT/evaluation"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-first-mechanism-survival-v9/fixed_mechanism_inference.py \
+            --root "$ROOT/fifth-aggregates" --source-policy "$source_policy" --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' '${{ needs.resolve-v9.outputs.run_id }}' > "$OUT/source_v9_run_id.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-frozen-mechanism-v10-${{ github.sha }}
+          path: |
+            artifacts/ml-first-frozen-mechanism-v10/evaluation/**
+            artifacts/ml-first-frozen-mechanism-v10/fifth-aggregates/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit fifth independent evaluation
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-frozen-mechanism-v10/evaluation
+          DEST=research_results/candidate_ml_first/frozen_mechanism_v10/latest
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$SRC/summary.json" "$DEST/"
+          cp "$SRC/completed_trades.csv" "$DEST/"
+          cp "$SRC/period_metrics.csv" "$DEST/"
+          cp "$SRC/source_sha.txt" "$DEST/"
+          cp "$SRC/source_branch.txt" "$DEST/"
+          cp "$SRC/source_v9_run_id.txt" "$DEST/"
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json,sys
+          s=json.load(open(sys.argv[1]));f=s['fifth_panel']
+          print(f"fifth_nav={f['ending_nav_multiplier']:.3f} fifth_n={f['completed_trades']} fifth_meanR={f['mean_net_r']:.3f} fifth_mdd={f['maximum_drawdown']:.3f} fifth_tpd={f['trades_per_day']:.3f} fifth_pos={f['positive_periods']}")
+          PY
+          )
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          git commit -m "Record frozen mechanism policy v10 ${GITHUB_RUN_ID}: ${digest}"
+          git pull --rebase origin research_candidate_ML_first
+          git push origin HEAD:research_candidate_ML_first
