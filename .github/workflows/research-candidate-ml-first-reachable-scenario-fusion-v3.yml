@@ -1,0 +1,219 @@
+name: Research ML-first reachable scenario fusion v3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-reachable-scenario-fusion-v3.yml'
+      - 'research/candidate-ml-first-reachable-scenario-fusion-v3/**'
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-reachable-scenario-fusion-v3
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest-fractions:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-reachable-scenario-fusion-v3/${{ matrix.period }}
+      WINDOW_ROOT: artifacts/ml-first-reachable-scenario-fusion-v3/windows/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      ROLE: ${{ matrix.role }}
+      PERIOD: ${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Compile research materializers
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py \
+            research/candidate-ml-first-reachable-scenario-fusion-v3/discover_policy.py
+      - name: Harvest fixed route fractions from the same causal engine
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$WINDOW_ROOT"
+          for spec in f120:0.12 f180:0.18 f250:0.25 f330:0.33 f500:0.50; do
+            tag=${spec%%:*}
+            fraction=${spec##*:}
+            git -C candidate4_runtime checkout -- .
+            python research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py \
+              --root candidate4_runtime --fraction "$fraction"
+            out="$WINDOW_ROOT/$tag"
+            rm -rf "$out"
+            mkdir -p "$out"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+              --start "$START" --end "$END" --role "$ROLE" --warmup-days 60 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+              --cache "$CACHE" --output "$out"
+            python - "$out" "$fraction" "$PERIOD" "$ROLE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          out, fraction, period, role = sys.argv[1:]
+          Path(out, 'route_fraction.json').write_text(json.dumps({
+              'route_target_fraction': float(fraction),
+              'period': period,
+              'role': role,
+              'labeling': 'exact minute path; same-minute target and stop is loss',
+          }, indent=2) + '\n')
+          PY
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-reachable-v3-window-${{ matrix.period }}
+          path: artifacts/ml-first-reachable-scenario-fusion-v3/windows/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  fuse-and-publish:
+    needs: harvest-fractions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_runtime
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-reachable-v3-window-*
+          path: artifacts/ml-first-reachable-scenario-fusion-v3/downloaded-windows
+      - name: Stage each route fraction without mixing causal windows
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('artifacts/ml-first-reachable-scenario-fusion-v3/downloaded-windows')
+          stage = Path('artifacts/ml-first-reachable-scenario-fusion-v3/staged-fractions')
+          shutil.rmtree(stage, ignore_errors=True)
+          for tag in ('f120', 'f180', 'f250', 'f330', 'f500'):
+              matches = sorted(path for path in root.rglob(tag) if path.is_dir())
+              if len(matches) != 8:
+                  raise SystemExit(f'{tag}: expected 8 window directories, found {len(matches)}: {matches}')
+              for index, source in enumerate(matches):
+                  artifact_name = next((part for part in source.parts if part.startswith('ml-first-reachable-v3-window-')), f'window-{index}')
+                  target = stage / tag / artifact_name
+                  shutil.copytree(source, target)
+          PY
+      - name: Aggregate and strictly route each fixed fraction
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system
+        run: |
+          set -euo pipefail
+          ROOT=artifacts/ml-first-reachable-scenario-fusion-v3
+          for spec in f120:0.12 f180:0.18 f250:0.25 f330:0.33 f500:0.50; do
+            tag=${spec%%:*}
+            fraction=${spec##*:}
+            aggregate="$ROOT/aggregates/$tag"
+            routed="$ROOT/strict-routers/$tag"
+            mkdir -p "$aggregate" "$routed"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/aggregate_short.py \
+              --root "$ROOT/staged-fractions/$tag" --output "$aggregate"
+            python research/candidate-ml-first-liquidity-response-v2/strict_exact_policy.py \
+              --plans "$aggregate/all_candidate_plans.csv.gz" --output "$routed"
+            printf '{"route_target_fraction":%s}\n' "$fraction" > "$routed/route_fraction.json"
+          done
+      - name: Discover one integrated scenario-fraction policy on development periods
+        run: |
+          set -euo pipefail
+          ROOT=artifacts/ml-first-reachable-scenario-fusion-v3
+          python research/candidate-ml-first-reachable-scenario-fusion-v3/discover_policy.py \
+            --root "$ROOT/strict-routers" --output "$ROOT/fused-policy"
+          git rev-parse HEAD > "$ROOT/fused-policy/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$ROOT/fused-policy/source_branch.txt"
+          printf '%s\n' research_candidate_4_causal_inventory_transfer > "$ROOT/fused-policy/inherited_engine_branch.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-reachable-scenario-fusion-v3-${{ github.sha }}
+          path: artifacts/ml-first-reachable-scenario-fusion-v3/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit executable research result
+        run: |
+          set -euo pipefail
+          ROOT=artifacts/ml-first-reachable-scenario-fusion-v3
+          DEST=research_results/candidate_ml_first/reachable_scenario_fusion_v3/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST/fraction_summaries"
+          cp "$ROOT/fused-policy/summary.json" "$DEST/"
+          cp "$ROOT/fused-policy/selected_fused_trades.csv" "$DEST/"
+          cp "$ROOT/fused-policy/variant_metrics.csv" "$DEST/"
+          cp "$ROOT/fused-policy/rule_catalog.csv" "$DEST/"
+          cp "$ROOT/fused-policy/period_metrics.csv" "$DEST/"
+          cp "$ROOT/fused-policy/source_sha.txt" "$DEST/"
+          cp "$ROOT/fused-policy/source_branch.txt" "$DEST/"
+          cp "$ROOT/fused-policy/inherited_engine_branch.txt" "$DEST/"
+          for tag in f120 f180 f250 f330 f500; do
+            cp "$ROOT/strict-routers/$tag/summary.json" "$DEST/fraction_summaries/$tag.json"
+          done
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json, sys
+          s=json.load(open(sys.argv[1]))
+          f=s['fresh']; d=s['development']
+          print(f"dev_nav={d['ending_nav_multiplier']:.3f} fresh_nav={f['ending_nav_multiplier']:.3f} fresh_n={f['trades']} fresh_meanR={f['mean_net_r']:.3f}")
+          PY
+          )
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record reachable scenario fusion v3 ${GITHUB_RUN_ID}: ${digest} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
