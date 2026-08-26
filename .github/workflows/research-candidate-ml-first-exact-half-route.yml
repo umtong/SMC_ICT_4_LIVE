@@ -1,4 +1,4 @@
-name: Research ML-first exact half-route short system
+name: Research ML-first structural target frontiers v3
 
 on:
   workflow_dispatch:
@@ -6,14 +6,15 @@ on:
     branches: [research_candidate_ML_first]
     paths:
       - '.github/workflows/research-candidate-ml-first-exact-half-route.yml'
-      - 'research/candidate-ml-first-liquidity-response-v2/**'
+      - 'research/candidate-ml-first-liquidity-response-v3/**'
 
 permissions:
   contents: write
+  actions: read
   packages: read
 
 concurrency:
-  group: research-candidate-ml-first-exact-half-route
+  group: research-candidate-ml-first-target-frontiers-v3
   cancel-in-progress: true
 
 defaults:
@@ -21,20 +22,13 @@ defaults:
     shell: bash
 
 jobs:
-  exact-harvest:
+  target-harvest:
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 10
       matrix:
-        include:
-          - {role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
-          - {role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
-          - {role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
-          - {role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
-          - {role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
-          - {role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
-          - {role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
-          - {role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+        variant: [fraction35, fraction40, fraction45, first_live_rr1]
+        period: [2024-feb, 2024-aug, 2025-feb, 2025-aug, 2025-nov, 2026-jan, 2026-mar, 2026-apr]
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     container:
@@ -42,11 +36,11 @@ jobs:
       options: --user 0
     env:
       PYTHONUNBUFFERED: '1'
-      CACHE: .cache/ml-first-exact-half-route/${{ matrix.period }}
-      OUT: artifacts/ml-first-exact-half-route/windows/${{ matrix.period }}
-      START: ${{ matrix.start }}
-      END: ${{ matrix.end }}
-      ROLE: ${{ matrix.role }}
+      VARIANT: ${{ matrix.variant }}
+      PERIOD: ${{ matrix.period }}
+      ROLE: dev
+      CACHE: .cache/ml-first-target-frontier-v3/${{ matrix.variant }}/${{ matrix.period }}
+      OUT: artifacts/ml-first-target-frontier-v3/windows/${{ matrix.variant }}/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,11 +53,27 @@ jobs:
           ref: research_candidate_4_causal_inventory_transfer
           path: candidate4_runtime
           fetch-depth: 1
-      - name: Patch and compile exact half-route engine
+      - name: Resolve research window
         run: |
           set -euo pipefail
-          python research/candidate-ml-first-liquidity-response-v2/patch_exact_half_route.py --root candidate4_runtime
-      - name: Run exact causal window
+          case "$PERIOD" in
+            2024-feb) START=2024-02-01; END=2024-02-08 ;;
+            2024-aug) START=2024-08-01; END=2024-08-08 ;;
+            2025-feb) START=2025-02-01; END=2025-02-08 ;;
+            2025-aug) START=2025-08-01; END=2025-08-08 ;;
+            2025-nov) START=2025-11-01; END=2025-11-08 ;;
+            2026-jan) START=2026-01-01; END=2026-01-08 ;;
+            2026-mar) START=2026-03-01; END=2026-03-08 ;;
+            2026-apr) START=2026-04-01; END=2026-04-08 ;;
+            *) exit 2 ;;
+          esac
+          printf 'START=%s\nEND=%s\n' "$START" "$END" >> "$GITHUB_ENV"
+      - name: Patch structural target policy
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-first-liquidity-response-v3/patch_target_policy.py \
+            --root candidate4_runtime --variant "$VARIANT"
+      - name: Run exact causal target window
         env:
           PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
         run: |
@@ -73,16 +83,18 @@ jobs:
             --start "$START" --end "$END" --role "$ROLE" --warmup-days 60 \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --cache "$CACHE" --output "$OUT"
-          printf '{"route_target_fraction":0.50,"labeling":"exact minute path; same-minute target and stop is loss"}\n' > "$OUT/exact_half_route_patch.json"
+          printf '{"variant":"%s","period":"%s","role":"%s","start":"%s","end":"%s"}\n' \
+            "$VARIANT" "$PERIOD" "$ROLE" "$START" "$END" > "$OUT/target_policy_patch.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: ml-first-exact-half-route-window-${{ matrix.period }}
-          path: artifacts/ml-first-exact-half-route/windows/${{ matrix.period }}/**
+          name: ml-first-target-frontier-${{ matrix.variant }}-${{ matrix.period }}
+          path: artifacts/ml-first-target-frontier-v3/windows/${{ matrix.variant }}/${{ matrix.period }}/**
           if-no-files-found: error
           retention-days: 30
+          compression-level: 6
 
-  aggregate-route-and-publish:
-    needs: exact-harvest
+  aggregate-and-publish:
+    needs: target-harvest
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -95,61 +107,44 @@ jobs:
         with:
           ref: research_candidate_ML_first
           fetch-depth: 1
-      - name: Checkout inherited causal engine
-        uses: actions/checkout@v4
-        with:
-          repository: umtong/SMC_ICT_4_LIVE
-          ref: research_candidate_4_causal_inventory_transfer
-          path: candidate4_runtime
-          fetch-depth: 1
       - uses: actions/download-artifact@v4
         with:
-          pattern: ml-first-exact-half-route-window-*
-          path: artifacts/ml-first-exact-half-route/windows
-      - name: Aggregate exact plans and run strict-causal router
-        env:
-          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system
+          pattern: ml-first-target-frontier-*
+          path: artifacts/ml-first-target-frontier-v3/downloaded
+      - name: Aggregate structural target evidence
         run: |
           set -euo pipefail
-          EXACT=artifacts/ml-first-exact-half-route/exact-aggregate
-          ROUTED=artifacts/ml-first-exact-half-route/strict-router
-          mkdir -p "$EXACT" "$ROUTED"
-          python candidate4_runtime/research/candidate-causal-liquidity-route-system/aggregate_short.py \
-            --root artifacts/ml-first-exact-half-route/windows --output "$EXACT"
-          python research/candidate-ml-first-liquidity-response-v2/strict_exact_policy.py \
-            --plans "$EXACT/all_candidate_plans.csv.gz" --output "$ROUTED"
-          git rev-parse HEAD > "$ROUTED/source_sha.txt"
-          printf '%s\n' 'research_candidate_ML_first' > "$ROUTED/source_branch.txt"
-          printf '%s\n' 'research_candidate_4_causal_inventory_transfer' > "$ROUTED/inherited_engine_branch.txt"
+          OUT=artifacts/ml-first-target-frontier-v3/aggregate
+          python research/candidate-ml-first-liquidity-response-v3/aggregate_target_variants.py \
+            --root artifacts/ml-first-target-frontier-v3/downloaded --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' research_candidate_4_causal_inventory_transfer > "$OUT/inherited_engine_branch.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: ml-first-exact-half-route-result-${{ github.sha }}
-          path: artifacts/ml-first-exact-half-route/**
+          name: ml-first-target-frontier-v3-result-${{ github.sha }}
+          path: artifacts/ml-first-target-frontier-v3/**
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
-      - name: Commit exact research result
+      - name: Commit compact target-frontier research result
         run: |
           set -euo pipefail
-          DEST=research_results/candidate_ml_first/exact_half_route_v2/latest
-          EXACT=artifacts/ml-first-exact-half-route/exact-aggregate
-          ROUTED=artifacts/ml-first-exact-half-route/strict-router
+          OUT=artifacts/ml-first-target-frontier-v3/aggregate
+          DEST=research_results/candidate_ml_first/target_frontier_v3/latest
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp "$ROUTED/summary.json" "$DEST/"
-          cp "$ROUTED/selected_exact_trades.csv" "$DEST/"
-          cp "$ROUTED/period_metrics.csv" "$DEST/"
-          cp "$ROUTED/feature_audit.json" "$DEST/"
-          cp "$ROUTED/source_sha.txt" "$DEST/"
-          cp "$ROUTED/source_branch.txt" "$DEST/"
-          cp "$ROUTED/inherited_engine_branch.txt" "$DEST/"
-          cp "$EXACT/summary.json" "$DEST/exact_engine_summary.json"
+          cp "$OUT/summary.json" "$DEST/"
+          cp "$OUT/window_metrics.csv" "$DEST/"
+          cp "$OUT/source_sha.txt" "$DEST/"
+          cp "$OUT/source_branch.txt" "$DEST/"
+          cp "$OUT/inherited_engine_branch.txt" "$DEST/"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add "$DEST"
           if ! git diff --cached --quiet; then
-            git commit -m "Record ML-first exact half-route short research ${GITHUB_RUN_ID} [skip ci]"
+            git commit -m "Record ML-first structural target-frontier research ${GITHUB_RUN_ID} [skip ci]"
             git pull --rebase origin research_candidate_ML_first
             git push origin HEAD:research_candidate_ML_first
           fi
