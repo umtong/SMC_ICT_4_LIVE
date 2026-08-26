@@ -1,0 +1,198 @@
+name: research-candidate-ml-k-short-round1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_k]
+    paths:
+      - '.github/workflows/research-candidate-ml-k-short-round1.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: research-candidate-ml-k-short-round1
+  cancel-in-progress: false
+
+env:
+  EPISODE: research/candidate-liquidity-episode-policy-v1
+  ROUTER: research/candidate-ml-k-reachable-control/reachable_control_router.py
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt" pytest
+          python -m py_compile "$ROUTER"
+          python -m pytest -q research/candidate-ml-k-reachable-control/test_reachable_control_router.py
+          python "$EPISODE/reproduce.py" verify \
+            --output research_results/candidate_ml_k/short_round1/preflight
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - { period: dev-2024-feb-r1, start: '2024-02-01', end: '2024-02-06' }
+          - { period: fresh-2024-aug-r1, start: '2024-08-03', end: '2024-08-08' }
+          - { period: dev-2025-aug-r1, start: '2025-08-17', end: '2025-08-22' }
+          - { period: fresh-2025-sep-r1, start: '2025-09-01', end: '2025-09-06' }
+          - { period: dev-2026-jan-r1, start: '2026-01-01', end: '2026-01-06' }
+          - { period: fresh-2026-mar-r1, start: '2026-03-01', end: '2026-03-06' }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PERIOD: ${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      CACHE: .cache/candidate_ml_k/short_round1/${{ matrix.period }}
+      OUT: artifacts/candidate_ml_k/short_round1/${{ matrix.period }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          python "$EPISODE/reproduce.py" harvest \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --period "$PERIOD" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-short-r1-${{ matrix.period }}
+          path: artifacts/candidate_ml_k/short_round1/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route-and-record:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      ROOT: artifacts/candidate_ml_k/short_round1/all_periods
+      RESULT: artifacts/candidate_ml_k/short_round1/result
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_k
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mlk-short-r1-*
+          path: artifacts/candidate_ml_k/short_round1/downloaded
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          mkdir -p "$ROOT" "$RESULT"
+          find artifacts/candidate_ml_k/short_round1/downloaded -mindepth 1 -maxdepth 1 -type d -print0 |
+          while IFS= read -r -d '' directory; do
+            name="${directory##*/}"
+            period="${name#mlk-short-r1-}"
+            mkdir -p "$ROOT/$period"
+            cp -a "$directory"/. "$ROOT/$period"/
+          done
+          python "$ROUTER" --root "$ROOT" --output "$RESULT"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path('artifacts/candidate_ml_k/short_round1/all_periods')
+          result = Path('artifacts/candidate_ml_k/short_round1/result')
+          harvest = {}
+          for path in sorted(root.glob('*/summary.json')):
+              payload = json.loads(path.read_text(encoding='utf-8'))
+              harvest[path.parent.name] = {
+                  'period': payload.get('period', path.parent.name),
+                  'role': payload.get('role'),
+                  'start': payload.get('start'),
+                  'end': payload.get('end'),
+                  'episode_rows': payload.get('episode_rows'),
+                  'episode_policy_orders': payload.get('episode_policy_orders'),
+                  'causal_episode_signals': payload.get('causal_episode_signals'),
+                  'plans': payload.get('plans'),
+                  'one_plan_episodes': payload.get('one_plan_episodes'),
+              }
+          summary = json.loads((result / 'summary.json').read_text(encoding='utf-8'))
+          scored = pd.read_csv(result / 'scored_orders.csv.gz', low_memory=False)
+          period_rows = {}
+          for period, frame in scored.groupby('period', sort=True):
+              ready = frame.get('causal_models_ready', pd.Series(False, index=frame.index)).astype(str).str.lower().isin({'true','1','yes'})
+              eligible = frame.get('policy_eligible', pd.Series(False, index=frame.index)).astype(str).str.lower().isin({'true','1','yes'})
+              period_rows[str(period)] = {
+                  'orders': int(len(frame)),
+                  'models_ready': int(ready.sum()),
+                  'eligible': int(eligible.sum()),
+                  'mean_gross_rr': float(pd.to_numeric(frame.get('gross_rr'), errors='coerce').mean()),
+                  'mean_reachable_frontier_prior': float(pd.to_numeric(frame.get('reachable_frontier_prior'), errors='coerce').mean()),
+              }
+          direct = {
+              'run_id': '${{ github.run_id }}',
+              'source_sha': '${{ github.sha }}',
+              'harvest': harvest,
+              'scored_by_period': period_rows,
+              'account': summary.get('account', {}),
+              'model_diagnostics': summary.get('model_diagnostics', {}),
+          }
+          (result / 'direct_diagnosis.json').write_text(
+              json.dumps(direct, ensure_ascii=False, indent=2, default=str) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git rev-parse HEAD > "$RESULT/source_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlk-short-round1-result-${{ github.sha }}
+          path: artifacts/candidate_ml_k/short_round1/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit compact short diagnostic result
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_k/short_round1
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$RESULT/summary.json" "$DEST/"
+          cp "$RESULT/direct_diagnosis.json" "$DEST/"
+          cp "$RESULT/source_sha.txt" "$DEST/"
+          for file in selected_orders.csv closed_trades.csv near_miss_rejected_orders.csv; do
+            [ -f "$RESULT/$file" ] && cp "$RESULT/$file" "$DEST/$file"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$DEST"
+          git commit -m "Record ML-k short round1 ${GITHUB_RUN_ID} [skip ci]" || exit 0
+          git push origin HEAD:research_candidate_ML_k
