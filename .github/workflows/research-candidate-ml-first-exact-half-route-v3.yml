@@ -1,0 +1,164 @@
+name: Research ML-first exact half-route v3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-exact-half-route-v3.yml'
+      - 'research/candidate-ml-first-liquidity-response-v2/**'
+      - '.bootstrap/candidate-ml-first-liquidity-response-v2/**'
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-exact-half-route
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  exact-harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {role: dev, period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {role: dev, period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {role: fresh, period: 2026-jan, start: 2026-01-01, end: 2026-01-08}
+          - {role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {role: fresh, period: 2026-apr, start: 2026-04-01, end: 2026-04-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-exact-half-route-v3/${{ matrix.period }}
+      OUT: artifacts/ml-first-exact-half-route-v3/windows/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      ROLE: ${{ matrix.role }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: 9df00cdf2db3a99f6c98c538326909188d349741
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Patch exact response objective
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-first-liquidity-response-v2/patch_exact_half_route.py --root candidate4_runtime
+      - name: Run causal window
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+            --start "$START" --end "$END" --role "$ROLE" --warmup-days 60 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          printf '{"route_target_fraction":0.50,"engine_sha":"9df00cdf2db3a99f6c98c538326909188d349741"}\n' > "$OUT/exact_half_route_patch.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-exact-half-route-v3-window-${{ matrix.period }}
+          path: artifacts/ml-first-exact-half-route-v3/windows/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate-route-and-publish:
+    needs: exact-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-exact-half-route-v3-window-*
+          path: downloaded/ml-first-exact-half-route-v3
+      - name: Normalize downloaded windows
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-exact-half-route-v3/normalized-windows
+          rm -rf "$NORMAL"
+          mkdir -p "$NORMAL"
+          shopt -s nullglob
+          count=0
+          for d in downloaded/ml-first-exact-half-route-v3/ml-first-exact-half-route-v3-window-*; do
+            period="${d##*window-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-exact-half-route-v3/windows/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$NORMAL/$period"
+            cp -a "$src"/. "$NORMAL/$period"/
+            count=$((count + 1))
+          done
+          test "$count" -eq 8
+      - name: Aggregate and route one continuous account
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-exact-half-route-v3/normalized-windows
+          EXACT=artifacts/ml-first-exact-half-route-v3/exact-aggregate
+          ROUTED=artifacts/ml-first-exact-half-route-v3/strict-router
+          rm -rf "$EXACT" "$ROUTED"
+          mkdir -p "$EXACT" "$ROUTED"
+          python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+            --root "$NORMAL" --output "$EXACT"
+          python research/candidate-ml-first-liquidity-response-v2/strict_exact_policy.py \
+            --plans "$EXACT/all_candidate_plans.csv.gz" --output "$ROUTED"
+          git rev-parse HEAD > "$ROUTED/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$ROUTED/source_branch.txt"
+          printf '%s\n' 9df00cdf2db3a99f6c98c538326909188d349741 > "$ROUTED/inherited_engine_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-exact-half-route-v3-result-${{ github.sha }}
+          path: artifacts/ml-first-exact-half-route-v3/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit research output
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_first/exact_half_route_v3/latest
+          EXACT=artifacts/ml-first-exact-half-route-v3/exact-aggregate
+          ROUTED=artifacts/ml-first-exact-half-route-v3/strict-router
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          find "$ROUTED" -maxdepth 1 -type f \
+            \( -name '*.json' -o -name '*.csv' -o -name '*.txt' \) \
+            -exec cp {} "$DEST"/ \;
+          cp "$EXACT/summary.json" "$DEST/exact_engine_summary.json"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record ML-first exact half-route v3 research ${GITHUB_RUN_ID} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
