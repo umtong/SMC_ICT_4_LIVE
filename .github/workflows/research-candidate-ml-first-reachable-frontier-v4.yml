@@ -1,0 +1,178 @@
+name: Research ML-first reachable frontier v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-reachable-frontier-v4.yml'
+      - 'research/candidate-ml-first-reachable-frontier-v4/**'
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-reachable-frontier-v4
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  frontier-harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        include:
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.25', frontier: '025', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.25', frontier: '025', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.35', frontier: '035', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.35', frontier: '035', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {fraction: '0.50', frontier: '050', role: dev, period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+          - {fraction: '0.50', frontier: '050', role: fresh, period: 2026-mar, start: 2026-03-01, end: 2026-03-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-reachable-frontier-v4/${{ matrix.frontier }}/${{ matrix.period }}
+      OUT: artifacts/ml-first-reachable-frontier-v4/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      ROLE: ${{ matrix.role }}
+      FRACTION: ${{ matrix.fraction }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - name: Checkout inherited causal engine
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: 9df00cdf2db3a99f6c98c538326909188d349741
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Patch reachable causal frontier
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-first-reachable-frontier-v4/patch_route_fraction.py \
+            --root candidate4_runtime --fraction "$FRACTION"
+      - name: Run causal window
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+            --start "$START" --end "$END" --role "$ROLE" --warmup-days 60 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          printf '{"route_target_fraction":%s,"engine_sha":"9df00cdf2db3a99f6c98c538326909188d349741"}\n' \
+            "$FRACTION" > "$OUT/reachable_frontier.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-frontier-v4-${{ matrix.frontier }}-${{ matrix.period }}
+          path: artifacts/ml-first-reachable-frontier-v4/windows/fraction-${{ matrix.frontier }}/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-compare:
+    needs: frontier-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-frontier-v4-*
+          path: downloaded/ml-first-frontier-v4
+      - name: Normalize frontier artifacts
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-reachable-frontier-v4/normalized
+          rm -rf "$NORMAL"
+          mkdir -p "$NORMAL"
+          shopt -s nullglob
+          count=0
+          for d in downloaded/ml-first-frontier-v4/ml-first-frontier-v4-*; do
+            name="${d##*/ml-first-frontier-v4-}"
+            frontier="${name%%-*}"
+            period="${name#*-}"
+            src="$d"
+            nested="$d/artifacts/ml-first-reachable-frontier-v4/windows/fraction-$frontier/$period"
+            [[ -d "$nested" ]] && src="$nested"
+            mkdir -p "$NORMAL/fraction-$frontier/$period"
+            cp -a "$src"/. "$NORMAL/fraction-$frontier/$period"/
+            count=$((count + 1))
+          done
+          test "$count" -eq 12
+      - name: Route each causal frontier
+        run: |
+          set -euo pipefail
+          NORMAL=artifacts/ml-first-reachable-frontier-v4/normalized
+          RESULT=artifacts/ml-first-reachable-frontier-v4/results
+          rm -rf "$RESULT"
+          mkdir -p "$RESULT"
+          for frontier in 025 035 050; do
+            base="$RESULT/fraction-$frontier"
+            mkdir -p "$base/exact-aggregate" "$base/strict-router"
+            python research/candidate-ml-first-liquidity-response-v2/aggregate_exact_windows.py \
+              --root "$NORMAL/fraction-$frontier" --output "$base/exact-aggregate"
+            python research/candidate-ml-first-liquidity-response-v2/strict_exact_policy.py \
+              --plans "$base/exact-aggregate/all_candidate_plans.csv.gz" \
+              --output "$base/strict-router"
+          done
+          python research/candidate-ml-first-reachable-frontier-v4/compare_frontiers.py \
+            --root "$RESULT" --output "$RESULT/comparison"
+          git rev-parse HEAD > "$RESULT/comparison/source_sha.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-reachable-frontier-v4-result-${{ github.sha }}
+          path: artifacts/ml-first-reachable-frontier-v4/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit frontier research
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-reachable-frontier-v4/results
+          DEST=research_results/candidate_ml_first/reachable_frontier_v4/latest
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$SRC/comparison"/. "$DEST"/
+          for frontier in 025 035 050; do
+            mkdir -p "$DEST/fraction-$frontier"
+            cp "$SRC/fraction-$frontier/strict-router/summary.json" \
+              "$DEST/fraction-$frontier/summary.json"
+            find "$SRC/fraction-$frontier/strict-router" -maxdepth 1 -type f \
+              \( -name '*.csv' -o -name 'feature_audit.json' \) \
+              -exec cp {} "$DEST/fraction-$frontier"/ \;
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record ML-first reachable-frontier v4 research ${GITHUB_RUN_ID} [skip ci]"
+            git pull --rebase origin research_candidate_ML_first
+            git push origin HEAD:research_candidate_ML_first
+          fi
