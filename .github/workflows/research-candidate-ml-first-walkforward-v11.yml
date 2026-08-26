@@ -1,0 +1,164 @@
+name: Research ML-first continuous walk-forward v11
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-walkforward-v11.yml'
+      - 'research/candidate-ml-first-walkforward-v11/**'
+
+permissions:
+  contents: write
+  actions: read
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-first-walkforward-v11
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-short-panels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 450
+    outputs:
+      v10_run_id: ${{ steps.resolve.outputs.v10_run_id }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 290); do
+            run_id=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-mechanism-survival-v10-frozen.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            if [ -n "$run_id" ]; then
+              echo "v10_run_id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 90
+          done
+          echo "Timed out waiting for the completed fifth short panel" >&2
+          exit 1
+
+  harvest-continuous-events:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: '1'
+      CACHE: .cache/ml-first-walkforward-v11/continuous-2024-2026
+      ROOT: artifacts/ml-first-walkforward-v11
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: research_candidate_4_causal_inventory_transfer
+          path: candidate4_runtime
+          fetch-depth: 1
+      - name: Materialize five structural completion actions over one continuous stream
+        env:
+          PYTHONPATH: candidate4_runtime/research/candidate-causal-liquidity-route-system:candidate4_runtime/research/candidate-liquidity-auction-v6:candidate4_runtime/research/candidate-liquidity-auction-v5:candidate4_runtime/research/candidate-coherent-auction-system-v4:candidate4_runtime/research/candidate-coherent-auction-system-v3:candidate4_runtime/research/candidate-coherent-liquidity-policy-v2:candidate4_runtime/research/candidate-coherent-liquidity-policy-v1:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v2:candidate4_runtime/research/candidate-hierarchical-liquidity-bpr-v1:candidate4_runtime/research/candidate-liquidity-displacement-v1:candidate4_runtime/research/candidate-auction-dislocation-confluence-v1:candidate4_runtime/research/candidate-derivatives-dislocation-v1:candidate4_runtime/research/candidate-auction-episode-policy:candidate4_runtime/research/candidate-auction-event-v2:candidate4_runtime/research/candidate-direct-auction-policy:candidate4_runtime/research/candidate-easychart_re1:candidate4_runtime/research/candidate-easychart-v5:candidate4_runtime/research/candidate-easychart-v3
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py
+          mkdir -p "$CACHE" "$ROOT/continuous-windows" "$ROOT/long-aggregates"
+          for spec in f120:0.12 f180:0.18 f250:0.25 f330:0.33 f500:0.50; do
+            tag=${spec%%:*}; fraction=${spec##*:}
+            git -C candidate4_runtime checkout -- .
+            python research/candidate-ml-first-reachable-scenario-fusion-v3/patch_route_fraction.py --root candidate4_runtime --fraction "$fraction"
+            window="$ROOT/continuous-windows/$tag/full-2024-2026"
+            rm -rf "$window"; mkdir -p "$window"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/causal_route_research.py \
+              --start 2024-01-01 --end 2026-08-27 --role fresh --warmup-days 60 \
+              --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$window"
+            printf '{"route_target_fraction":%s,"period":"continuous-2024-2026","role":"fresh"}\n' "$fraction" > "$window/route_fraction.json"
+            aggregate="$ROOT/long-aggregates/$tag"
+            rm -rf "$aggregate"; mkdir -p "$aggregate"
+            python candidate4_runtime/research/candidate-causal-liquidity-route-system/aggregate_short.py \
+              --root "$ROOT/continuous-windows/$tag" --output "$aggregate"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-walkforward-v11-continuous-plans-${{ github.sha }}
+          path: artifacts/ml-first-walkforward-v11/long-aggregates/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  walkforward-and-publish:
+    needs: [resolve-short-panels, harvest-continuous-events]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ml-first-walkforward-v11-continuous-plans-${{ github.sha }}
+          path: artifacts/ml-first-walkforward-v11/source-plans
+      - name: Fit and execute causal quarterly walk-forward account
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.3.2 pandas==2.3.2 scikit-learn==1.9.0 joblib
+          python -m py_compile \
+            research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py \
+            research/candidate-ml-first-ordered-reachability-v7/ordered_reachability_policy.py \
+            research/candidate-ml-first-mechanism-survival-v9/mechanism_survival_policy.py \
+            research/candidate-ml-first-walkforward-v11/walkforward_mechanism_survival.py
+          ROOT=artifacts/ml-first-walkforward-v11
+          OUT="$ROOT/policy"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-first-walkforward-v11/walkforward_mechanism_survival.py \
+            --root "$ROOT/source-plans" --output "$OUT" --first-evaluation-quarter 2025Q2
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' '${{ needs.resolve-short-panels.outputs.v10_run_id }}' > "$OUT/source_v10_run_id.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-walkforward-v11-result-${{ github.sha }}
+          path: artifacts/ml-first-walkforward-v11/policy/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit continuous walk-forward account
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-walkforward-v11/policy
+          DEST=research_results/candidate_ml_first/walkforward_v11/latest
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$SRC/summary.json" "$DEST/"
+          cp "$SRC/completed_trades.csv" "$DEST/"
+          cp "$SRC/selected_plans.csv" "$DEST/"
+          cp "$SRC/quarter_metrics.csv" "$DEST/"
+          cp "$SRC/models_by_quarter.json" "$DEST/"
+          cp "$SRC/source_sha.txt" "$DEST/"
+          cp "$SRC/source_branch.txt" "$DEST/"
+          cp "$SRC/source_v10_run_id.txt" "$DEST/"
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json,sys
+          s=json.load(open(sys.argv[1]));f=s['continuous_account']
+          print(f"nav={f['ending_nav_multiplier']:.3f} n={f['completed_trades']} meanR={f['mean_net_r']:.3f} mdd={f['maximum_drawdown']:.3f} tpd={f['trades_per_day']:.3f} posQ={f['positive_quarters']}")
+          PY
+          )
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          git commit -m "Record continuous walk-forward v11 ${GITHUB_RUN_ID}: ${digest}"
+          git pull --rebase origin research_candidate_ML_first
+          git push origin HEAD:research_candidate_ML_first
