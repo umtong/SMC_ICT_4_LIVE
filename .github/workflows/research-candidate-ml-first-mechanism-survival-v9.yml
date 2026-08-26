@@ -1,0 +1,169 @@
+name: Research ML-first mechanism survival v9
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_first]
+    paths:
+      - '.github/workflows/research-candidate-ml-first-mechanism-survival-v9.yml'
+      - 'research/candidate-ml-first-mechanism-survival-v9/**'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: research-candidate-ml-first-mechanism-survival-v9
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve-panels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    outputs:
+      v3: ${{ steps.resolve.outputs.v3 }}
+      v6: ${{ steps.resolve.outputs.v6 }}
+      v7: ${{ steps.resolve.outputs.v7 }}
+      v8: ${{ steps.resolve.outputs.v8 }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 210); do
+            v3=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-reachable-scenario-fusion-v3.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            v6=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-integrated-router-v6.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            v7=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-ordered-reachability-v7.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            v8=$(gh api 'repos/umtong/SMC_ICT_4_LIVE/actions/workflows/research-candidate-ml-first-ordered-reachability-v8-frozen.yml/runs?branch=research_candidate_ML_first&status=success&per_page=1' --jq '.workflow_runs[0].id // empty')
+            if [ -n "$v3" ] && [ -n "$v6" ] && [ -n "$v7" ] && [ -n "$v8" ]; then
+              echo "v3=$v3" >> "$GITHUB_OUTPUT"
+              echo "v6=$v6" >> "$GITHUB_OUTPUT"
+              echo "v7=$v7" >> "$GITHUB_OUTPUT"
+              echo "v8=$v8" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 90
+          done
+          echo "Timed out waiting for four completed panels" >&2
+          exit 1
+
+  fit-evaluate-publish:
+    needs: resolve-panels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_first
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-reachable-scenario-fusion-v3-*
+          path: artifacts/ml-first-mechanism-survival-v9/v3
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ needs.resolve-panels.outputs.v3 }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-integrated-reachable-router-v6-*
+          path: artifacts/ml-first-mechanism-survival-v9/v6
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ needs.resolve-panels.outputs.v6 }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-ordered-reachability-v7-*
+          path: artifacts/ml-first-mechanism-survival-v9/v7
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ needs.resolve-panels.outputs.v7 }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ml-first-frozen-ordered-v8-*
+          path: artifacts/ml-first-mechanism-survival-v9/v8
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ needs.resolve-panels.outputs.v8 }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble first twenty-four development windows and fourth-panel evaluation
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('artifacts/ml-first-mechanism-survival-v9')
+          sources={
+              'original-eight': next(root.joinpath('v3').rglob('aggregates')),
+              'second-eight': next(root.joinpath('v6').rglob('holdout-aggregates')),
+              'third-eight': next(root.joinpath('v7').rglob('third-aggregates')),
+              'fourth-eight': next(root.joinpath('v8').rglob('fourth-aggregates')),
+          }
+          combined=root/'combined-plans'
+          shutil.rmtree(combined,ignore_errors=True)
+          for tag in ('f120','f180','f250','f330','f500'):
+              for label,source in sources.items():
+                  target=combined/tag/label
+                  target.mkdir(parents=True,exist_ok=True)
+                  shutil.copy2(source/tag/'all_candidate_plans.csv.gz',target/'all_candidate_plans.csv.gz')
+          PY
+      - name: Fit mechanism-conditioned ordered survival and evaluate fourth panel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install numpy==2.3.2 pandas==2.3.2 scikit-learn==1.9.0 joblib
+          python -m py_compile \
+            research/candidate-ml-first-reachable-control-v4/reachable_control_policy.py \
+            research/candidate-ml-first-ordered-reachability-v7/ordered_reachability_policy.py \
+            research/candidate-ml-first-mechanism-survival-v9/mechanism_survival_policy.py
+          ROOT=artifacts/ml-first-mechanism-survival-v9
+          OUT="$ROOT/policy"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          python research/candidate-ml-first-mechanism-survival-v9/mechanism_survival_policy.py \
+            --root "$ROOT/combined-plans" --output "$OUT"
+          git rev-parse HEAD > "$OUT/source_sha.txt"
+          printf '%s\n' research_candidate_ML_first > "$OUT/source_branch.txt"
+          printf '%s\n' '${{ needs.resolve-panels.outputs.v3 }}' > "$OUT/source_v3_run_id.txt"
+          printf '%s\n' '${{ needs.resolve-panels.outputs.v6 }}' > "$OUT/source_v6_run_id.txt"
+          printf '%s\n' '${{ needs.resolve-panels.outputs.v7 }}' > "$OUT/source_v7_run_id.txt"
+          printf '%s\n' '${{ needs.resolve-panels.outputs.v8 }}' > "$OUT/source_v8_run_id.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ml-first-mechanism-survival-v9-${{ github.sha }}
+          path: artifacts/ml-first-mechanism-survival-v9/policy/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit mechanism-conditioned system and evaluation
+        run: |
+          set -euo pipefail
+          SRC=artifacts/ml-first-mechanism-survival-v9/policy
+          DEST=research_results/candidate_ml_first/mechanism_survival_v9/latest
+          rm -rf "$DEST"; mkdir -p "$DEST"
+          cp "$SRC/summary.json" "$DEST/"
+          cp "$SRC/completed_trades.csv" "$DEST/"
+          cp "$SRC/variant_metrics.csv" "$DEST/"
+          cp "$SRC/component_catalog.csv" "$DEST/"
+          cp "$SRC/period_metrics.csv" "$DEST/"
+          cp "$SRC/fill_calibration.csv" "$DEST/"
+          cp "$SRC/reach_calibration.csv" "$DEST/"
+          cp "$SRC/model_bundle.joblib" "$DEST/"
+          cp "$SRC"/source_*.txt "$DEST/"
+          digest=$(python - "$DEST/summary.json" <<'PY'
+          import json,sys
+          s=json.load(open(sys.argv[1]));d=s['development'];f=s['fresh']
+          print(f"dev_nav={d['ending_nav_multiplier']:.3f} eval_nav={f['ending_nav_multiplier']:.3f} eval_n={f['completed_trades']} eval_meanR={f['mean_net_r']:.3f} eval_mdd={f['maximum_drawdown']:.3f} eval_tpd={f['trades_per_day']:.3f} eval_pos={f['positive_periods']}")
+          PY
+          )
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          git commit -m "Record mechanism survival v9 ${GITHUB_RUN_ID}: ${digest}"
+          git pull --rebase origin research_candidate_ML_first
+          git push origin HEAD:research_candidate_ML_first
