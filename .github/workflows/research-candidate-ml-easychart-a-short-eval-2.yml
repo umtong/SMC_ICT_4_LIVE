@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research_candidate_ML_easychart_a
+          ref: ${{ github.sha }}
           fetch-depth: 1
       - run: |
           set -euo pipefail
@@ -53,7 +53,7 @@ jobs:
       max-parallel: 8
       matrix:
         period:
-          - {name: eval2-2023-jun, start: '2023-06-12', end: '2023-06-17'}
+          - {name: eval2-2024-jan, start: '2024-01-15', end: '2024-01-20'}
           - {name: eval2-2024-dec, start: '2024-12-09', end: '2024-12-14'}
           - {name: eval2-2025-mar, start: '2025-03-10', end: '2025-03-15'}
           - {name: eval2-2026-may, start: '2026-05-11', end: '2026-05-16'}
@@ -74,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research_candidate_ML_easychart_a
+          ref: ${{ github.sha }}
           fetch-depth: 1
       - run: |
           set -euo pipefail
@@ -108,7 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research_candidate_ML_easychart_a
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
@@ -126,7 +126,7 @@ jobs:
           downloaded = Path('artifacts/candidate_ml_easychart_a_2/downloaded')
           root = Path('artifacts/candidate_ml_easychart_a_2/all_periods')
           prefix = 'easychart-a-2-'
-          periods = {'eval2-2023-jun','eval2-2024-dec','eval2-2025-mar','eval2-2026-may'}
+          periods = {'eval2-2024-jan','eval2-2024-dec','eval2-2025-mar','eval2-2026-may'}
           symbols = {'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'}
           expected = {(period, symbol) for period in periods for symbol in symbols}
           found = set()
@@ -171,7 +171,7 @@ jobs:
               'calendar_days': 20,
               'completed_trades_per_calendar_day': overall['closed_trades'] / 20.0,
               'overall_continuous_account': overall,
-              'by_period_standalone': summary.get('by_period_standalone', {}),
+              'by_period_standalone': summary.get('by_period_standalone', summary.get('by_period', {})),
               'by_scenario_family': summary.get('by_scenario_family', {}),
               'by_symbol': summary.get('by_symbol', {}),
           }
