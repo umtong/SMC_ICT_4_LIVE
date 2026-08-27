@@ -98,7 +98,7 @@ def frozen_probability(frame: pd.DataFrame, spec: dict[str, Any]) -> np.ndarray:
         spec["numeric_scales"],
         strict=True,
     ):
-        values = n(frame, column).to_numpy(dtype=float)
+        values = n(frame, column).to_numpy(dtype=float, copy=True)
         values[~np.isfinite(values)] = float(median)
         divisor = float(scale) if abs(float(scale)) > 1e-15 else 1.0
         numeric_parts.append((values - float(mean)) / divisor)
