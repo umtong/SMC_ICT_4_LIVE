@@ -1,0 +1,219 @@
+name: easychart-c-causal-response
+
+on:
+  push:
+    branches: ["research_candidate_ML_easychart_c"]
+    paths:
+      - "research/candidate-ml-easychart-c/**"
+      - ".github/workflows/easychart-c-causal-response.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: easychart-c-causal-response-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONPATH: research/candidate-ml-easychart-c:research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute shared-policy tests
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-easychart-c/easychart_c/*.py
+          python -m unittest discover -s research/candidate-ml-easychart-c/tests -v
+          python research/candidate-easychart-ml-system/self_check_ml_system.py
+
+  harvest-development:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: 2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: 2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: 2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: 2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: 2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: 2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: 2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: 2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c/development/${{ matrix.period }}
+      OUT: artifacts/development/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      WARMUP_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate complete causal plans and first-response labels
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
+            --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          from counterfactual_harvest_ml_system import HarvestConfig, harvest_counterfactual_plans
+
+          start = date.fromisoformat(os.environ["START"])
+          summary = harvest_counterfactual_plans(
+              HarvestConfig(
+                  start=start,
+                  end=date.fromisoformat(os.environ["END"]),
+                  load_start=start - timedelta(days=int(os.environ["WARMUP_DAYS"])),
+                  symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+                  cache=Path(os.environ["CACHE"]),
+                  output=Path(os.environ["OUT"]),
+                  fee_profile="usd_m_vip0",
+                  entry_slippage_ticks=2,
+                  stop_slippage_ticks=2,
+              )
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          python research/candidate-easychart-ml-system/augment_causal_state.py \
+            --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          test -s "$OUT/counterfactual_plans.csv"
+          test -s "$OUT/metrics.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-development-${{ matrix.period }}
+          path: artifacts/development/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 7
+
+  train:
+    needs: harvest-development
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-development-*
+          path: artifacts/downloaded-development
+      - name: Train one causal first-response router
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/model
+          python research/candidate-ml-easychart-c/easychart_c/train.py \
+            --input-root artifacts/downloaded-development \
+            --model-output artifacts/model/router.cbm \
+            --metadata-output artifacts/model/router.json \
+            --summary-output artifacts/model/development_oof.json \
+            --seed 20260828
+          test -s artifacts/model/router.cbm
+          test -s artifacts/model/router.json
+          test -s artifacts/model/development_oof.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-model
+          path: artifacts/model/**
+          if-no-files-found: error
+          retention-days: 7
+
+  evaluate:
+    needs: train
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {period: 2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: 2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: 2026-summer, start: 2026-07-01, end: 2026-07-10}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c/evaluation/${{ matrix.period }}
+      OUT: artifacts/evaluation/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: easychart-c-model
+          path: artifacts/model
+      - name: Evaluate one four-symbol continuous account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-ml-easychart-c/easychart_c/run_backtest.py \
+            --model artifacts/model/router.cbm \
+            --metadata artifacts/model/router.json \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --warmup-days 7 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 --stop-slippage-ticks 2
+          test -s "$OUT/metrics.json"
+          test -f "$OUT/trade_audit.csv"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easychart-c-eval-${{ matrix.period }}
+          path: artifacts/evaluation/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 7
+
+  summarize:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-eval-*
+          path: artifacts/downloaded-evaluation
+      - name: Compound all independent windows in chronological R order
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-easychart-c/easychart_c/summarize.py \
+            --evaluation-root artifacts/downloaded-evaluation \
+            --output artifacts/final_observation.json
+          test -s artifacts/final_observation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-final-observation
+          path: artifacts/final_observation.json
+          if-no-files-found: error
+          retention-days: 7
