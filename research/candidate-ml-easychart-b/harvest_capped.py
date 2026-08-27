@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Candidate-1k exact-route harvester with an immutable 1.5 net-R realization barrier.
+"""Candidate-1k exact-route harvester with an immutable 1.1 net-R realization barrier.
 
 The inherited generator discovers direction, causal liquidity episode, source, entry
-origin, structural invalidation and the first still-live opposing obstacle.  This wrapper
+origin, structural invalidation and the first still-live opposing obstacle. This wrapper
 changes only the whole-position realization target when that obstacle lies beyond the
-day-trading horizon.  The capped price is solved through the source cost model and fixed
+day-trading horizon. The capped price is solved through the source cost model and fixed
 before future bars label the already-immutable order.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 import candidate_1k_harvest as source
 
 MIN_TARGET_NET_R = 1.0
-MAX_REALIZED_TARGET_NET_R = 1.5
+MAX_REALIZED_TARGET_NET_R = 1.1
 ORIGINAL_TARGET_PLAN = source._target_plan
 
 
@@ -120,7 +120,7 @@ def target_plan(
 source._target_plan = target_plan
 source.core.POLICY = (
     "ML_EASYCHART_B_CAUSAL_LIQUIDITY_CONTROL_"
-    "EXACT_ROUTE_IMMUTABLE_1P5_NET_R_REALIZATION"
+    "EXACT_ROUTE_IMMUTABLE_1P1_NET_R_REALIZATION"
 )
 
 
