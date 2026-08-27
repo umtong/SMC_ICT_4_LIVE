@@ -1,0 +1,209 @@
+name: research-candidate-ml-easychart-a-short-eval-2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research_candidate_ML_easychart_a]
+    paths:
+      - '.github/workflows/research-candidate-ml-easychart-a-short-eval-2.yml'
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: research-candidate-ml-easychart-a-short-eval-2
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  EPISODE: research/candidate-liquidity-episode-policy-v1
+  POLICY: research/candidate-ml-easychart-a/easychart_a_policy.py
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_easychart_a
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt" pytest
+          python -m py_compile "$POLICY"
+          python -m pytest -q \
+            research/candidate-ml-easychart-a/test_easychart_a_policy.py \
+            research/candidate-ml-k-control-transfer-v3/test_control_transfer_router_v3.py
+          python "$EPISODE/reproduce.py" verify --output /tmp/easychart-a-verify-2
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        period:
+          - {name: eval2-2023-jun, start: '2023-06-12', end: '2023-06-17'}
+          - {name: eval2-2024-dec, start: '2024-12-09', end: '2024-12-14'}
+          - {name: eval2-2025-mar, start: '2025-03-10', end: '2025-03-15'}
+          - {name: eval2-2026-may, start: '2026-05-11', end: '2026-05-16'}
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      PERIOD: ${{ matrix.period.name }}
+      START: ${{ matrix.period.start }}
+      END: ${{ matrix.period.end }}
+      SYMBOL: ${{ matrix.symbol }}
+      CACHE: .cache/candidate_ml_easychart_a_2/${{ matrix.period.name }}/${{ matrix.symbol }}
+      OUT: artifacts/candidate_ml_easychart_a_2/${{ matrix.period.name }}/${{ matrix.symbol }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_easychart_a
+          fetch-depth: 1
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          python "$EPISODE/reproduce.py" harvest \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --period "$PERIOD" \
+            --symbols "$SYMBOL" \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-a-2-${{ matrix.period.name }}-${{ matrix.symbol }}
+          path: artifacts/candidate_ml_easychart_a_2/${{ matrix.period.name }}/${{ matrix.symbol }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+    env:
+      DOWNLOADED: artifacts/candidate_ml_easychart_a_2/downloaded
+      ROOT: artifacts/candidate_ml_easychart_a_2/all_periods
+      RESULT: artifacts/candidate_ml_easychart_a_2/result
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_easychart_a
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-a-2-eval2-*
+          path: artifacts/candidate_ml_easychart_a_2/downloaded
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python \
+            -r "$EPISODE/runtime-requirements.txt"
+          mkdir -p "$ROOT" "$RESULT"
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          downloaded = Path('artifacts/candidate_ml_easychart_a_2/downloaded')
+          root = Path('artifacts/candidate_ml_easychart_a_2/all_periods')
+          prefix = 'easychart-a-2-'
+          periods = {'eval2-2023-jun','eval2-2024-dec','eval2-2025-mar','eval2-2026-may'}
+          symbols = {'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'}
+          expected = {(period, symbol) for period in periods for symbol in symbols}
+          found = set()
+          frames = {period: [] for period in periods}
+
+          for directory in sorted(p for p in downloaded.iterdir() if p.is_dir()):
+              suffix = directory.name.removeprefix(prefix)
+              period, symbol = suffix.rsplit('-', 1)
+              key = (period, symbol)
+              files = list(directory.rglob('departure_actions.csv.gz'))
+              if key not in expected or len(files) != 1:
+                  raise RuntimeError(f'{directory}: unexpected key/files {key} {files}')
+              frame = pd.read_csv(files[0])
+              if not frame.empty and set(frame['symbol'].astype(str).unique()) != {symbol}:
+                  raise RuntimeError(f'{directory}: symbol mismatch')
+              frames[period].append(frame)
+              found.add(key)
+
+          if found != expected:
+              raise RuntimeError(f'combination mismatch: missing={sorted(expected-found)} extra={sorted(found-expected)}')
+
+          for period in sorted(periods):
+              merged = pd.concat(frames[period], ignore_index=True, sort=False)
+              sort_cols = [c for c in ['order_time_ns','symbol','state_id','action_id'] if c in merged]
+              if sort_cols:
+                  merged = merged.sort_values(sort_cols, kind='mergesort').reset_index(drop=True)
+              out = root / period
+              out.mkdir(parents=True, exist_ok=True)
+              merged.to_csv(out / 'departure_actions.csv.gz', index=False, compression='gzip')
+          PY
+          python "$POLICY" --root "$ROOT" --output "$RESULT"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          result = Path('artifacts/candidate_ml_easychart_a_2/result')
+          summary = json.loads((result / 'summary.json').read_text())
+          overall = summary['overall_continuous_account']
+          direct = {
+              'policy': summary['policy'],
+              'source_sha': '${{ github.sha }}',
+              'calendar_days': 20,
+              'completed_trades_per_calendar_day': overall['closed_trades'] / 20.0,
+              'overall_continuous_account': overall,
+              'by_period_standalone': summary.get('by_period_standalone', {}),
+              'by_scenario_family': summary.get('by_scenario_family', {}),
+              'by_symbol': summary.get('by_symbol', {}),
+          }
+          (result / 'direct_result.json').write_text(
+              json.dumps(direct, indent=2, sort_keys=True, default=str) + '\n'
+          )
+          (result / 'source_sha.txt').write_text('${{ github.sha }}\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-a-short-result-2-${{ github.sha }}
+          path: artifacts/candidate_ml_easychart_a_2/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - name: Commit compact result
+        run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_easychart_a/short_eval_2
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$RESULT/summary.json" "$DEST/"
+          cp "$RESULT/direct_result.json" "$DEST/"
+          cp "$RESULT/source_sha.txt" "$DEST/"
+          cp "$RESULT/selected_orders.csv" "$DEST/"
+          cp "$RESULT/closed_trades.csv" "$DEST/"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git pull --rebase origin research_candidate_ML_easychart_a
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m 'results(easychart-a): record second multi-window short evaluation [skip ci]'
+            git push origin HEAD:research_candidate_ML_easychart_a
+          fi
