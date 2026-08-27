@@ -1,0 +1,113 @@
+name: Research candidate ML-MN untouched causal-liquidity windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_ML_MN"]
+    paths:
+      - ".github/workflows/research-candidate-ml-mn-untouched.yml"
+      - "research/candidate-ml-mn-liquidity-control-v1/**"
+
+concurrency:
+  group: research-candidate-ml-mn-untouched
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: u2023-jul, start: 2023-07-01, end: 2023-07-08}
+          - {period: u2024-oct, start: 2024-10-01, end: 2024-10-08}
+          - {period: u2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: u2026-jun, start: 2026-06-01, end: 2026-06-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: source/research/candidate-1k-auction-system:source/research/candidate-auction-episode-system:source/research/candidate-liquidity-auction-v6:source/research/candidate-liquidity-auction-v5:source/research/candidate-coherent-auction-system-v4:source/research/candidate-coherent-auction-system-v3:source/research/candidate-coherent-liquidity-policy-v2:source/research/candidate-coherent-liquidity-policy-v1:source/research/candidate-hierarchical-liquidity-bpr-v2:source/research/candidate-hierarchical-liquidity-bpr-v1:source/research/candidate-liquidity-displacement-v1:source/research/candidate-auction-dislocation-confluence-v1:source/research/candidate-derivatives-dislocation-v1:source/research/candidate-auction-episode-policy:source/research/candidate-auction-event-v2:source/research/candidate-direct-auction-policy:source/research/candidate-easychart_re1:source/research/candidate-easychart-v5:source/research/candidate-easychart-v3
+      CACHE: .cache/candidate-ml-mn/${{ matrix.period }}
+      OUT: artifacts/candidate-ml-mn/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 1664920c3fb71ae1586e32b77082b465e8aab16b
+          path: source
+      - run: |
+          set -euo pipefail
+          python -m py_compile \
+            source/research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            research/candidate-ml-mn-liquidity-control-v1/harvest_capped.py \
+            research/candidate-ml-mn-liquidity-control-v1/liquidity_control.py
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-ml-mn-liquidity-control-v1/harvest_capped.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlmn-untouched-${{ matrix.period }}
+          path: artifacts/candidate-ml-mn/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mlmn-untouched-*
+          path: artifacts/candidate-ml-mn/untouched
+          merge-multiple: false
+      - run: |
+          set -euo pipefail
+          RESULT=artifacts/candidate-ml-mn/result
+          rm -rf "$RESULT"
+          python research/candidate-ml-mn-liquidity-control-v1/liquidity_control.py \
+            --root artifacts/candidate-ml-mn/untouched \
+            --period-bounds research/candidate-ml-mn-liquidity-control-v1/untouched_periods.json \
+            --output "$RESULT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlmn-untouched-integrated-result
+          path: artifacts/candidate-ml-mn/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_mn/untouched_v1
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp artifacts/candidate-ml-mn/result/summary.json "$DEST/"
+          cp artifacts/candidate-ml-mn/result/closed_trades.csv "$DEST/"
+          cp artifacts/candidate-ml-mn/result/selected_orders.csv "$DEST/"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "results(ML-MN): publish untouched integrated account [skip ci]"
+            git push origin HEAD:research_candidate_ML_MN
+          fi
