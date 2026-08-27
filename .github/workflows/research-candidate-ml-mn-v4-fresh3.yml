@@ -1,0 +1,120 @@
+name: Research candidate ML-MN V4 adverse-sweep reacceptance fresh3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_ML_MN"]
+    paths:
+      - ".github/workflows/research-candidate-ml-mn-v4-fresh3.yml"
+      - "research/candidate-ml-mn-adverse-sweep-reacceptance-v4/**"
+
+concurrency:
+  group: research-candidate-ml-mn-v4-fresh3
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: fresh3-2024-jun, start: 2024-06-02, end: 2024-06-09}
+          - {period: fresh3-2024-dec, start: 2024-12-08, end: 2024-12-15}
+          - {period: fresh3-2025-sep, start: 2025-09-07, end: 2025-09-14}
+          - {period: fresh3-2026-feb, start: 2026-02-08, end: 2026-02-15}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: source/research/candidate-1k-auction-system:source/research/candidate-auction-episode-system:source/research/candidate-liquidity-auction-v6:source/research/candidate-liquidity-auction-v5:source/research/candidate-coherent-auction-system-v4:source/research/candidate-coherent-auction-system-v3:source/research/candidate-coherent-liquidity-policy-v2:source/research/candidate-coherent-liquidity-policy-v1:source/research/candidate-hierarchical-liquidity-bpr-v2:source/research/candidate-hierarchical-liquidity-bpr-v1:source/research/candidate-liquidity-displacement-v1:source/research/candidate-auction-dislocation-confluence-v1:source/research/candidate-derivatives-dislocation-v1:source/research/candidate-auction-episode-policy:source/research/candidate-auction-event-v2:source/research/candidate-direct-auction-policy:source/research/candidate-easychart_re1:source/research/candidate-easychart-v5:source/research/candidate-easychart-v3:research/candidate-ml-mn-first-response-v2:research/candidate-ml-mn-adverse-sweep-reacceptance-v4
+      CACHE: .cache/candidate-ml-mn-v4/${{ matrix.period }}
+      OUT: artifacts/candidate-ml-mn-v4/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 1664920c3fb71ae1586e32b77082b465e8aab16b
+          path: source
+      - run: |
+          set -euo pipefail
+          python -m py_compile \
+            source/research/candidate-1k-auction-system/candidate_1k_harvest.py \
+            research/candidate-ml-mn-liquidity-control-v1/harvest_capped.py \
+            research/candidate-ml-mn-first-response-v2/liquidity_control_v2.py \
+            research/candidate-ml-mn-adverse-sweep-reacceptance-v4/liquidity_control_v4.py \
+            research/candidate-ml-mn-adverse-sweep-reacceptance-v4/test_liquidity_control_v4.py
+          python research/candidate-ml-mn-adverse-sweep-reacceptance-v4/test_liquidity_control_v4.py
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-ml-mn-liquidity-control-v1/harvest_capped.py \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlmn-v4-fresh3-${{ matrix.period }}
+          path: artifacts/candidate-ml-mn-v4/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-ml-mn-first-response-v2:research/candidate-ml-mn-adverse-sweep-reacceptance-v4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mlmn-v4-fresh3-*
+          path: artifacts/candidate-ml-mn-v4/fresh3
+          merge-multiple: false
+      - run: |
+          set -euo pipefail
+          RESULT=artifacts/candidate-ml-mn-v4/result
+          rm -rf "$RESULT"
+          python research/candidate-ml-mn-adverse-sweep-reacceptance-v4/liquidity_control_v4.py \
+            --root artifacts/candidate-ml-mn-v4/fresh3 \
+            --period-bounds research/candidate-ml-mn-adverse-sweep-reacceptance-v4/fresh3_periods.json \
+            --output "$RESULT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlmn-v4-fresh3-integrated-result
+          path: artifacts/candidate-ml-mn-v4/result/**
+          if-no-files-found: error
+          retention-days: 30
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_mn/adverse_sweep_reacceptance_v4_fresh3
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp artifacts/candidate-ml-mn-v4/result/summary.json "$DEST/"
+          cp artifacts/candidate-ml-mn-v4/result/closed_trades.csv "$DEST/"
+          cp artifacts/candidate-ml-mn-v4/result/selected_orders.csv "$DEST/"
+          cp artifacts/candidate-ml-mn-v4/result/candidate_plans.csv "$DEST/"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "results(ML-MN): publish V4 adverse-sweep fresh3 account [skip ci]"
+            git pull --rebase origin research_candidate_ML_MN
+            git push origin HEAD:research_candidate_ML_MN
+          fi
