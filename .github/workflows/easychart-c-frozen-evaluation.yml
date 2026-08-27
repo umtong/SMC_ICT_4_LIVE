@@ -1,0 +1,140 @@
+name: easychart-c-frozen-evaluation
+
+on:
+  push:
+    branches: ["research_candidate_ML_easychart_c"]
+    paths:
+      - ".github/workflows/easychart-c-frozen-evaluation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: easychart-c-frozen-evaluation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONPATH: research/candidate-ml-easychart-c:research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  train-frozen-router:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test shared research/live policy
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-ml-easychart-c/easychart_c/*.py
+          python -m unittest discover -s research/candidate-ml-easychart-c/tests -v
+      - name: Reuse the eight completed causal-plan harvests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-baseline-harvest-*
+          path: artifacts/downloaded-development
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 33109326947
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deterministically train the frozen router
+        run: |
+          set -euo pipefail
+          test "$(find artifacts/downloaded-development -name counterfactual_plans.csv -type f | wc -l)" -eq 8
+          mkdir -p artifacts/model
+          python research/candidate-ml-easychart-c/easychart_c/train.py \
+            --input-root artifacts/downloaded-development \
+            --model-output artifacts/model/router.cbm \
+            --metadata-output artifacts/model/router.json \
+            --summary-output artifacts/model/development_oof.json \
+            --seed 20260828
+          cmp artifacts/model/router.json research/candidate-ml-easychart-c/configs/router.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-frozen-model
+          path: artifacts/model/**
+          if-no-files-found: error
+          retention-days: 7
+
+  evaluate:
+    needs: train-frozen-router
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {period: 2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: 2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: 2026-summer, start: 2026-07-01, end: 2026-07-10}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c/frozen-evaluation/${{ matrix.period }}
+      OUT: artifacts/evaluation/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: easychart-c-frozen-model
+          path: artifacts/model
+      - name: Run one four-symbol continuous Nautilus account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-ml-easychart-c/easychart_c/run_backtest.py \
+            --model artifacts/model/router.cbm \
+            --metadata artifacts/model/router.json \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --warmup-days 7 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0 \
+            --entry-slippage-ticks 2 --stop-slippage-ticks 2
+          test -s "$OUT/metrics.json"
+          test -f "$OUT/trade_audit.csv"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easychart-c-frozen-eval-${{ matrix.period }}
+          path: artifacts/evaluation/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 7
+
+  summarize:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-frozen-eval-*
+          path: artifacts/downloaded-evaluation
+      - name: Compound the three independent observations chronologically
+        run: |
+          set -euo pipefail
+          python research/candidate-ml-easychart-c/easychart_c/summarize.py \
+            --evaluation-root artifacts/downloaded-evaluation \
+            --output artifacts/final_observation.json
+          test -s artifacts/final_observation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-final-observation
+          path: artifacts/final_observation.json
+          if-no-files-found: error
+          retention-days: 7
