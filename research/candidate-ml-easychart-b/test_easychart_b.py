@@ -17,11 +17,12 @@ def base_row(**updates):
         "departure_impact_per_activity": 1.0,
         "source_defense_count": 1,
         "sequence_block_0_return_bps_signed": 0.0,
+        "sequence_block_2_return_bps_signed": 0.0,
         "sequence_block_5_delta_share_signed": 0.0,
         "zone_width_bps": 10.0,
         "approach_delta_share_12m_toward": 1.0,
         "departure_residual_return_5m_signed": 0.0,
-        "planned_target_net_r": 1.4,
+        "planned_target_net_r": 1.1,
         "entry_geometry": "ZONE_PROXIMAL_LIMIT",
         "state_id": "s1",
         "episode_id": "e1",
@@ -43,13 +44,20 @@ def test_relative_control_selection_ignores_symbol_and_outcome():
     changed = original.copy()
     changed.loc[0, "symbol"] = "XRPUSDT"
     changed.loc[0, "outcome"] = "TARGET_FIRST"
-    changed.loc[0, "net_r"] = 1.4
+    changed.loc[0, "net_r"] = 1.1
     left = policy.select_plans(original)
     right = policy.select_plans(changed)
     assert left[["state_id", "action_id", "scenario_family"]].to_dict("records") == right[
         ["state_id", "action_id", "scenario_family"]
     ].to_dict("records")
     assert left.iloc[0]["scenario_family"] == "RELATIVE_CONTROL_TRANSFER"
+
+
+def test_pre_departure_directional_chase_is_rejected():
+    contracted = pd.DataFrame([base_row(sequence_block_2_return_bps_signed=5.0)])
+    chased = pd.DataFrame([base_row(sequence_block_2_return_bps_signed=5.01)])
+    assert len(policy.select_plans(contracted)) == 1
+    assert policy.select_plans(chased).empty
 
 
 def test_late_retest_does_not_replace_failed_relative_transfer():
@@ -97,7 +105,7 @@ def test_one_episode_and_one_global_slot():
             order_time_ns=1_000,
             action_id="a1",
             outcome="TARGET_FIRST",
-            net_r=1.4,
+            net_r=1.1,
             resolution_time_ns=3_000,
         ),
         base_row(
@@ -106,7 +114,7 @@ def test_one_episode_and_one_global_slot():
             order_time_ns=1_500,
             action_id="a2",
             outcome="TARGET_FIRST",
-            net_r=1.4,
+            net_r=1.1,
             resolution_time_ns=2_500,
         ),
         base_row(
@@ -115,7 +123,7 @@ def test_one_episode_and_one_global_slot():
             order_time_ns=2_000,
             action_id="a3",
             outcome="TARGET_FIRST",
-            net_r=1.4,
+            net_r=1.1,
             resolution_time_ns=4_000,
         ),
         base_row(
@@ -124,7 +132,7 @@ def test_one_episode_and_one_global_slot():
             order_time_ns=4_000,
             action_id="a4",
             outcome="TARGET_FIRST",
-            net_r=1.4,
+            net_r=1.1,
             resolution_time_ns=5_000,
         ),
     ]

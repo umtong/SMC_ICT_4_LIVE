@@ -31,8 +31,9 @@ import pandas as pd
 
 RISK_FRACTION = 0.03
 MIN_TARGET_NET_R = 1.0
-MAX_TARGET_NET_R = 1.500001
+MAX_TARGET_NET_R = 1.100001
 PREFERRED_GEOMETRY = "ZONE_PROXIMAL_LIMIT"
+PRE_DEPARTURE_SWEEP_MAX_RETURN_BPS = 5.0
 
 # Stable causal scales inherited from the auction/episode line.  They describe market
 # mechanisms and are shared by all four symbols; no symbol identity enters selection.
@@ -70,6 +71,7 @@ DECISION_COLUMNS = {
     "departure_impact_per_activity",
     "source_defense_count",
     "sequence_block_0_return_bps_signed",
+    "sequence_block_2_return_bps_signed",
     "sequence_block_5_delta_share_signed",
     "zone_width_bps",
     "approach_delta_share_12m_toward",
@@ -170,7 +172,13 @@ def scenario_masks(frame: pd.DataFrame) -> dict[str, pd.Series]:
 def select_plans(frame: pd.DataFrame) -> pd.DataFrame:
     masks = scenario_masks(frame)
     eligible = pd.concat(masks, axis=1).any(axis=1)
-    selected = frame.loc[eligible].copy()
+    # A skilled confirmation trade is not a chase. During the 10–15 minutes
+    # before departure, price must have contracted or moved against the planned
+    # side; the accepted departure is therefore a sweep/release, not late FOMO.
+    pre_departure_sweep = numeric(frame, "sequence_block_2_return_bps_signed").le(
+        PRE_DEPARTURE_SWEEP_MAX_RETURN_BPS
+    )
+    selected = frame.loc[eligible & pre_departure_sweep].copy()
     if selected.empty:
         return selected
 
@@ -370,7 +378,7 @@ def build_summary(
         )
 
     return {
-        "policy": "ML_EASYCHART_B_CAUSAL_LIQUIDITY_CONTROL_V1",
+        "policy": "ML_EASYCHART_B_CAUSAL_LIQUIDITY_CONTROL_V2_1P1R",
         "decision_uses_symbol_identity": False,
         "decision_uses_outcome_fields": False,
         "decision_columns": sorted(DECISION_COLUMNS),
@@ -383,7 +391,7 @@ def build_summary(
             "daily_loss_or_trade_cap": False,
             "entry_stop_target_immutable_before_fill": True,
             "minimum_planned_target_net_r": MIN_TARGET_NET_R,
-            "maximum_planned_target_net_r": 1.5,
+            "maximum_planned_target_net_r": 1.1,
             "preferred_entry_geometry": PREFERRED_GEOMETRY,
         },
         "overall_continuous_account": overall,
