@@ -1,0 +1,189 @@
+name: easychart-c-baseline
+
+on:
+  push:
+    branches: ["research_candidate_ML_easychart_c"]
+    paths:
+      - ".github/workflows/easychart-c-baseline.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: easychart-c-baseline
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  core-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and self-check
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-easychart-ml-system/*.py
+          python research/candidate-easychart-ml-system/self_check_ml_system.py
+
+  harvest:
+    needs: core-check
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {period: dev-2024-feb, start: 2024-02-01, end: 2024-02-08}
+          - {period: dev-2024-may, start: 2024-05-01, end: 2024-05-08}
+          - {period: dev-2024-aug, start: 2024-08-01, end: 2024-08-08}
+          - {period: dev-2024-nov, start: 2024-11-01, end: 2024-11-08}
+          - {period: dev-2025-feb, start: 2025-02-01, end: 2025-02-08}
+          - {period: dev-2025-may, start: 2025-05-01, end: 2025-05-08}
+          - {period: dev-2025-aug, start: 2025-08-01, end: 2025-08-08}
+          - {period: dev-2025-nov, start: 2025-11-01, end: 2025-11-08}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c-baseline/${{ matrix.period }}
+      OUT: artifacts/easychart-c-baseline/harvest/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      WARMUP_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and label complete pre-entry plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json, os
+          from pathlib import Path
+          from counterfactual_harvest_ml_system import HarvestConfig, harvest_counterfactual_plans
+          start = date.fromisoformat(os.environ["START"])
+          summary = harvest_counterfactual_plans(HarvestConfig(start=start, end=date.fromisoformat(os.environ["END"]), load_start=start-timedelta(days=int(os.environ["WARMUP_DAYS"])), symbols=("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"), cache=Path(os.environ["CACHE"]), output=Path(os.environ["OUT"]), fee_profile="usd_m_v0" if False else "usd_m_vip0", entry_slippage_ticks=2, stop_slippage_ticks=2))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          python research/candidate-easychart-ml-system/augment_causal_state.py --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easychart-c-baseline-harvest-${{ matrix.period }}
+          path: artifacts/easychart-c-baseline/harvest/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  train:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-baseline-harvest-*
+          path: artifacts/downloaded-harvest
+      - name: Train robust router
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/model
+          ARGS=()
+          while IFS= read -r file; do parent="$(basename "$(dirname "$file")")"; environment="${parent#easychart-c-baseline-harvest-}"; ARGS+=(--input "${environment}=${file}"); done < <(find artifacts/downloaded-harvest -name counterfactual_plans.csv -type f | sort)
+          test "$((${#ARGS[@]} / 2))" -eq 8
+          python research/candidate-easychart-ml-system/train_robust_router.py "${ARGS[@]}" --output artifacts/model/model.json --summary-output artifacts/model/training_summary.json --trees 44 --depth 2 --feature-subsample 56 --seed 20260817
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-baseline-model
+          path: artifacts/model/**
+          retention-days: 7
+
+  evaluate:
+    needs: train
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {period: eval-2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: eval-2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: eval-2026-summer, start: 2026-07-01, end: 2026-07-10}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c-baseline/eval/${{ matrix.period }}
+      OUT: artifacts/easychart-c-baseline/eval/${{ matrix.period }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: easychart-c-baseline-model
+          path: artifacts/model
+      - name: Run one continuous four-symbol account
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_system.py --ml-model artifacts/model/model.json --start "${{ matrix.start }}" --end "${{ matrix.end }}" --warmup-days 7 --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easychart-c-baseline-eval-${{ matrix.period }}
+          path: artifacts/easychart-c-baseline/eval/${{ matrix.period }}/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  summarize:
+    if: always() && needs.evaluate.result != 'skipped'
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-c-baseline-eval-*
+          path: artifacts/evaluation
+      - name: Summarize continuous account results
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          out = {}
+          for p in sorted(Path("artifacts/evaluation").glob("*/metrics.json")):
+              period = p.parent.name.removeprefix("easychart-c-baseline-eval-")
+              m = json.loads(p.read_text())
+              a = pd.read_csv(p.parent/"trade_audit.csv") if (p.parent/"trade_audit.csv").exists() else pd.DataFrame()
+              out[period] = {"metrics": m, "trades": int(len(a)), "wins": int((pd.to_numeric(a.get("realized_pnl"), errors="coerce")>0).sum()) if not a.empty and "realized_pnl" in a else None}
+          Path("artifacts/easychart_c_baseline_summary.json").write_text(json.dumps(out, indent=2, sort_keys=True)+"\n")
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-baseline-summary
+          path: artifacts/easychart_c_baseline_summary.json
+          retention-days: 7
