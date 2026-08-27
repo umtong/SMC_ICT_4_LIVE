@@ -1,0 +1,31 @@
+name: Export easychart C source
+
+on:
+  push:
+    branches:
+      - research_candidate_ML_easychart_c
+    paths:
+      - .github/workflows/export-easychart-c-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_easychart_c
+          fetch-depth: 1
+      - name: Package repository source
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude='*.parquet' --exclude='*.zip' --exclude='*.tar*' -czf /tmp/easychart-c-source.tar.gz .
+          ls -lh /tmp/easychart-c-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-c-source
+          path: /tmp/easychart-c-source.tar.gz
+          retention-days: 1
