@@ -1,0 +1,175 @@
+name: research-candidate-ml-easychart-b-v3-dev
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_ML_easychart_b"]
+    paths:
+      - ".github/workflows/research-candidate-ml-easychart-b-v3-dev.yml"
+      - "research/candidate-ml-easychart-b/harvest_structural.py"
+      - "research/candidate-ml-easychart-b/easychart_b_v3.py"
+      - "research/candidate-ml-easychart-b/test_easychart_b_v3.py"
+      - "research/candidate-ml-easychart-b/v3_dev_periods.json"
+      - "research/candidate-ml-easychart-b/v3_payload.tar.gz.b64"
+
+concurrency:
+  group: research-candidate-ml-easychart-b-v3-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-ml-easychart-b
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: source/research/candidate-1k-auction-system:source/research/candidate-auction-episode-system:source/research/candidate-liquidity-auction-v6:source/research/candidate-liquidity-auction-v5:source/research/candidate-coherent-auction-system-v4:source/research/candidate-coherent-auction-system-v3:source/research/candidate-coherent-liquidity-policy-v2:source/research/candidate-coherent-liquidity-policy-v1:source/research/candidate-hierarchical-liquidity-bpr-v2:source/research/candidate-hierarchical-liquidity-bpr-v1:source/research/candidate-liquidity-displacement-v1:source/research/candidate-auction-dislocation-confluence-v1:source/research/candidate-derivatives-dislocation-v1:source/research/candidate-auction-episode-policy:source/research/candidate-auction-event-v2:source/research/candidate-direct-auction-policy:source/research/candidate-easychart_re1:source/research/candidate-easychart-v5:source/research/candidate-easychart-v3:research/candidate-ml-easychart-b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 1664920c3fb71ae1586e32b77082b465e8aab16b
+          path: source
+      - name: Materialize V3 source
+        run: |
+          set -euo pipefail
+          if [[ -f "$CANDIDATE/v3_payload.tar.gz.b64" ]]; then
+            base64 -d "$CANDIDATE/v3_payload.tar.gz.b64" > /tmp/easychart-b-v3.tar.gz
+            tar -xzf /tmp/easychart-b-v3.tar.gz
+          fi
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python pytest
+          python -m py_compile \
+            "$CANDIDATE/harvest_structural.py" \
+            "$CANDIDATE/easychart_b_v3.py" \
+            "$CANDIDATE/test_easychart_b_v3.py"
+          python -m pytest -q "$CANDIDATE/test_easychart_b_v3.py"
+
+  harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: dev-2023-jul, start: 2023-07-01, end: 2023-07-08}
+          - {period: dev-2024-jun, start: 2024-06-12, end: 2024-06-19}
+          - {period: dev-2024-oct, start: 2024-10-01, end: 2024-10-08}
+          - {period: dev-2024-dec, start: 2024-12-02, end: 2024-12-09}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: source/research/candidate-1k-auction-system:source/research/candidate-auction-episode-system:source/research/candidate-liquidity-auction-v6:source/research/candidate-liquidity-auction-v5:source/research/candidate-coherent-auction-system-v4:source/research/candidate-coherent-auction-system-v3:source/research/candidate-coherent-liquidity-policy-v2:source/research/candidate-coherent-liquidity-policy-v1:source/research/candidate-hierarchical-liquidity-bpr-v2:source/research/candidate-hierarchical-liquidity-bpr-v1:source/research/candidate-liquidity-displacement-v1:source/research/candidate-auction-dislocation-confluence-v1:source/research/candidate-derivatives-dislocation-v1:source/research/candidate-auction-episode-policy:source/research/candidate-auction-event-v2:source/research/candidate-direct-auction-policy:source/research/candidate-easychart_re1:source/research/candidate-easychart-v5:source/research/candidate-easychart-v3
+      CACHE: .cache/candidate-ml-easychart-b/v3-dev/${{ matrix.period }}
+      OUT: artifacts/candidate-ml-easychart-b/v3-dev/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 1664920c3fb71ae1586e32b77082b465e8aab16b
+          path: source
+      - name: Materialize V3 source
+        run: |
+          set -euo pipefail
+          if [[ -f "$CANDIDATE/v3_payload.tar.gz.b64" ]]; then
+            base64 -d "$CANDIDATE/v3_payload.tar.gz.b64" > /tmp/easychart-b-v3.tar.gz
+            tar -xzf /tmp/easychart-b-v3.tar.gz
+          fi
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "$CANDIDATE/harvest_structural.py" \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v3-${{ matrix.period }}
+          path: artifacts/candidate-ml-easychart-b/v3-dev/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  route-and-publish:
+    needs: harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-ml-easychart-b/v3-dev/downloaded
+      RESULT: artifacts/candidate-ml-easychart-b/v3-dev/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize V3 source
+        run: |
+          set -euo pipefail
+          if [[ -f "$CANDIDATE/v3_payload.tar.gz.b64" ]]; then
+            base64 -d "$CANDIDATE/v3_payload.tar.gz.b64" > /tmp/easychart-b-v3.tar.gz
+            tar -xzf /tmp/easychart-b-v3.tar.gz
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-b-v3-dev-*
+          path: artifacts/candidate-ml-easychart-b/v3-dev/downloaded
+          merge-multiple: false
+      - run: |
+          set -euo pipefail
+          rm -rf "$RESULT"
+          python "$CANDIDATE/easychart_b_v3.py" \
+            --root "$ROOT" \
+            --period-bounds "$CANDIDATE/v3_dev_periods.json" \
+            --output "$RESULT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v3-dev-integrated-result
+          path: artifacts/candidate-ml-easychart-b/v3-dev/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - run: |
+          set -euo pipefail
+          DEST=research_results/candidate_ml_easychart_b/v3_dev
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp "$RESULT/summary.json" "$DEST/"
+          cp "$RESULT/closed_trades.csv" "$DEST/"
+          cp "$RESULT/selected_orders.csv" "$DEST/"
+          cp "$RESULT/eligible_plans.csv" "$DEST/"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f "$CANDIDATE/v3_payload.tar.gz.b64"
+          git add "$DEST" \
+            "$CANDIDATE/harvest_structural.py" \
+            "$CANDIDATE/easychart_b_v3.py" \
+            "$CANDIDATE/test_easychart_b_v3.py" \
+            "$CANDIDATE/v3_dev_periods.json" \
+            "$CANDIDATE/v3_payload.tar.gz.b64"
+          if ! git diff --cached --quiet; then
+            git commit -m "results(easychart-b): publish V3 structural dev account [skip ci]"
+            git push origin HEAD:research_candidate_ML_easychart_b
+          fi
