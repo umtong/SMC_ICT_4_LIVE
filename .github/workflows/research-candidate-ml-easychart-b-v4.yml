@@ -1,0 +1,243 @@
+name: research-candidate-ml-easychart-b-v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research_candidate_ML_easychart_b"]
+    paths:
+      - ".github/workflows/research-candidate-ml-easychart-b-v4.yml"
+      - "research/candidate-ml-easychart-b/harvest_structural_v4.py"
+      - "research/candidate-ml-easychart-b/easychart_b_v4.py"
+      - "research/candidate-ml-easychart-b/fit_trigger_v4.py"
+      - "research/candidate-ml-easychart-b/test_easychart_b_v4.py"
+      - "research/candidate-ml-easychart-b/v4_dev_periods.json"
+      - "research/candidate-ml-easychart-b/v4_fresh_periods.json"
+
+concurrency:
+  group: research-candidate-ml-easychart-b-v4
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CANDIDATE: research/candidate-ml-easychart-b
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  SOURCE_COMMIT: 1664920c3fb71ae1586e32b77082b465e8aab16b
+  RESEARCH_PYTHONPATH: source/research/candidate-1k-auction-system:source/research/candidate-auction-episode-system:source/research/candidate-liquidity-auction-v6:source/research/candidate-liquidity-auction-v5:source/research/candidate-coherent-auction-system-v4:source/research/candidate-coherent-auction-system-v3:source/research/candidate-coherent-liquidity-policy-v2:source/research/candidate-coherent-liquidity-policy-v1:source/research/candidate-hierarchical-liquidity-bpr-v2:source/research/candidate-hierarchical-liquidity-bpr-v1:source/research/candidate-liquidity-displacement-v1:source/research/candidate-auction-dislocation-confluence-v1:source/research/candidate-derivatives-dislocation-v1:source/research/candidate-auction-episode-policy:source/research/candidate-auction-event-v2:source/research/candidate-direct-auction-policy:source/research/candidate-easychart_re1:source/research/candidate-easychart-v5:source/research/candidate-easychart-v3
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          uv pip install --python /opt/smc4/.venv/bin/python pytest
+          python -m py_compile \
+            "$CANDIDATE/harvest_structural_v4.py" \
+            "$CANDIDATE/easychart_b_v4.py" \
+            "$CANDIDATE/fit_trigger_v4.py"
+          PYTHONPATH="$CANDIDATE" python -m pytest -q \
+            "$CANDIDATE/test_easychart_b_v4.py"
+
+  dev-harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: v4-dev-2023-jul, start: 2023-07-01, end: 2023-07-08}
+          - {period: v4-dev-2024-jun, start: 2024-06-12, end: 2024-06-19}
+          - {period: v4-dev-2024-oct, start: 2024-10-01, end: 2024-10-08}
+          - {period: v4-dev-2024-dec, start: 2024-12-02, end: 2024-12-09}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-ml-easychart-b:${{ env.RESEARCH_PYTHONPATH }}
+      CACHE: .cache/candidate-ml-easychart-b/v4/dev/${{ matrix.period }}
+      OUT: artifacts/candidate-ml-easychart-b/v4/dev/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "$CANDIDATE/harvest_structural_v4.py" \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v4-dev-${{ matrix.period }}
+          path: artifacts/candidate-ml-easychart-b/v4/dev/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  fresh-harvest:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {period: v4-fresh-2024-feb, start: 2024-02-10, end: 2024-02-17}
+          - {period: v4-fresh-2024-aug, start: 2024-08-10, end: 2024-08-17}
+          - {period: v4-fresh-2025-feb, start: 2025-02-10, end: 2025-02-17}
+          - {period: v4-fresh-2026-feb, start: 2026-02-10, end: 2026-02-17}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-ml-easychart-b:${{ env.RESEARCH_PYTHONPATH }}
+      CACHE: .cache/candidate-ml-easychart-b/v4/fresh/${{ matrix.period }}
+      OUT: artifacts/candidate-ml-easychart-b/v4/fresh/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+      - run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python "$CANDIDATE/harvest_structural_v4.py" \
+            --start "$START" --end "$END" --warmup-days 45 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v4-fresh-${{ matrix.period }}
+          path: artifacts/candidate-ml-easychart-b/v4/fresh/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  fit-trigger:
+    needs: dev-harvest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-ml-easychart-b
+      ROOT: artifacts/candidate-ml-easychart-b/v4/dev/downloaded
+      RESULT: artifacts/candidate-ml-easychart-b/v4/dev/result
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-b-v4-dev-*
+          path: artifacts/candidate-ml-easychart-b/v4/dev/downloaded
+          merge-multiple: false
+      - run: |
+          set -euo pipefail
+          rm -rf "$RESULT"
+          python "$CANDIDATE/fit_trigger_v4.py" \
+            --root "$ROOT" \
+            --period-bounds "$CANDIDATE/v4_dev_periods.json" \
+            --output "$RESULT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v4-fitted-policy
+          path: artifacts/candidate-ml-easychart-b/v4/dev/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  evaluate-and-publish:
+    needs: [fit-trigger, fresh-harvest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-ml-easychart-b
+      ROOT: artifacts/candidate-ml-easychart-b/v4/fresh/downloaded
+      POLICY_RESULT: artifacts/candidate-ml-easychart-b/v4/policy
+      FRESH_RESULT: artifacts/candidate-ml-easychart-b/v4/fresh/result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: easychart-b-v4-fresh-*
+          path: artifacts/candidate-ml-easychart-b/v4/fresh/downloaded
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: easychart-b-v4-fitted-policy
+          path: artifacts/candidate-ml-easychart-b/v4/policy
+      - run: |
+          set -euo pipefail
+          rm -rf "$FRESH_RESULT"
+          python "$CANDIDATE/easychart_b_v4.py" \
+            --root "$ROOT" \
+            --period-bounds "$CANDIDATE/v4_fresh_periods.json" \
+            --policy "$POLICY_RESULT/policy.json" \
+            --output "$FRESH_RESULT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-b-v4-fresh-integrated-result
+          path: artifacts/candidate-ml-easychart-b/v4/fresh/result/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+      - run: |
+          set -euo pipefail
+          DEV_DEST=research_results/candidate_ml_easychart_b/v4_dev_oof
+          FRESH_DEST=research_results/candidate_ml_easychart_b/v4_fresh
+          rm -rf "$DEV_DEST" "$FRESH_DEST"
+          mkdir -p "$DEV_DEST" "$FRESH_DEST"
+          cp "$POLICY_RESULT/policy.json" "$CANDIDATE/v4_policy.json"
+          cp "$POLICY_RESULT/summary.json" "$DEV_DEST/"
+          cp "$POLICY_RESULT/eligible_plans.csv" "$DEV_DEST/"
+          cp "$POLICY_RESULT/selected_orders.csv" "$DEV_DEST/"
+          cp "$POLICY_RESULT/closed_trades.csv" "$DEV_DEST/"
+          cp "$POLICY_RESULT/top_search.csv" "$DEV_DEST/"
+          cp "$FRESH_RESULT/summary.json" "$FRESH_DEST/"
+          cp "$FRESH_RESULT/eligible_plans.csv" "$FRESH_DEST/"
+          cp "$FRESH_RESULT/selected_orders.csv" "$FRESH_DEST/"
+          cp "$FRESH_RESULT/closed_trades.csv" "$FRESH_DEST/"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            "$CANDIDATE/v4_policy.json" \
+            "$DEV_DEST" \
+            "$FRESH_DEST"
+          if ! git diff --cached --quiet; then
+            git commit -m "results(easychart-b): publish V4 structural trigger evaluations [skip ci]"
+            git push origin HEAD:research_candidate_ML_easychart_b
+          fi
