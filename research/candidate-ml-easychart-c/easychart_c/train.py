@@ -79,13 +79,15 @@ def required_columns() -> set[str]:
 
 
 def environment_from(path: Path) -> str:
+    """Return a stable environment label independent of artifact folder prefixes."""
+
     for part in reversed(path.parts):
         marker = "harvest-"
         if marker in part:
-            return part.split(marker, 1)[1]
+            return part.split(marker, 1)[1].removeprefix("dev-")
         if part.startswith("easychart-c-dev-"):
             return part.removeprefix("easychart-c-dev-")
-    return path.parent.name
+    return path.parent.name.removeprefix("dev-")
 
 
 def read_inputs(root: Path) -> pd.DataFrame:
