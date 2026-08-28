@@ -5,6 +5,7 @@ on:
     branches: ["research_candidate_ML_easychart_c"]
     paths:
       - ".github/workflows/easychart-c-frozen-evaluation.yml"
+      - "research/candidate-ml-easychart-c/**"
   workflow_dispatch:
 
 concurrency:
@@ -28,12 +29,14 @@ env:
 jobs:
   train-frozen-router:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     steps:
       - uses: actions/checkout@v4
+      - name: Install the frozen router runtime
+        run: python -m pip install --no-cache-dir catboost==1.2.8
       - name: Compile and test shared research/live policy
         run: |
           set -euo pipefail
@@ -86,6 +89,8 @@ jobs:
       OUT: artifacts/evaluation/${{ matrix.period }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install the frozen router runtime
+        run: python -m pip install --no-cache-dir catboost==1.2.8
       - uses: actions/download-artifact@v4
         with:
           name: easychart-c-frozen-model
