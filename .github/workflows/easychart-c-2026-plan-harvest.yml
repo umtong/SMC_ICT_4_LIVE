@@ -1,0 +1,92 @@
+name: easychart-c-2026-plan-harvest
+
+on:
+  push:
+    branches: ["research_candidate_ML_easychart_c"]
+    paths:
+      - ".github/workflows/easychart-c-2026-plan-harvest.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: easychart-c-2026-plan-harvest-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONPATH: research/candidate-easychart-ml-system:research/candidate-easychart_re1:research/candidate-easychart-v5:research/candidate-easychart-v3
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  harvest:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {period: diagnostic-2026-winter, start: 2026-01-01, end: 2026-01-10}
+          - {period: diagnostic-2026-spring, start: 2026-04-01, end: 2026-04-10}
+          - {period: diagnostic-2026-summer, start: 2026-07-01, end: 2026-07-10}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: .cache/easychart-c/diagnostic/${{ matrix.period }}
+      OUT: artifacts/easychart-c/diagnostic/${{ matrix.period }}
+      START: ${{ matrix.start }}
+      END: ${{ matrix.end }}
+      WARMUP_DAYS: "7"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and label all complete pre-entry plans
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$OUT"
+          python research/candidate-easychart-ml-system/run_mtf_backtest_ml_universe.py \
+            --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT" --fee-profile usd_m_vip0
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          from counterfactual_harvest_ml_system import HarvestConfig, harvest_counterfactual_plans
+
+          start = date.fromisoformat(os.environ["START"])
+          summary = harvest_counterfactual_plans(
+              HarvestConfig(
+                  start=start,
+                  end=date.fromisoformat(os.environ["END"]),
+                  load_start=start - timedelta(days=int(os.environ["WARMUP_DAYS"])),
+                  symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+                  cache=Path(os.environ["CACHE"]),
+                  output=Path(os.environ["OUT"]),
+                  fee_profile="usd_m_vip0",
+                  entry_slippage_ticks=2,
+                  stop_slippage_ticks=2,
+              )
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          python research/candidate-easychart-ml-system/augment_causal_state.py \
+            --start "$START" --end "$END" --warmup-days "$WARMUP_DAYS" \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache "$CACHE" --output "$OUT"
+          test -s "$OUT/counterfactual_plans.csv"
+          test -s "$OUT/metrics.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: easychart-c-2026-plan-harvest-${{ matrix.period }}
+          path: artifacts/easychart-c/diagnostic/${{ matrix.period }}/**
+          if-no-files-found: error
+          retention-days: 7
