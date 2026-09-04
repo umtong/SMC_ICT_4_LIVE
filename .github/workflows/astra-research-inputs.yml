@@ -1,0 +1,86 @@
+name: Astra research inputs
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-research-inputs.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reuse existing research and exchange archives
+        run: |
+          mkdir -p bundle/wheels bundle/market bundle/branches
+          python -m pip download --only-binary=:all: --dest bundle/wheels nautilus_trader==1.230.0 'numpy==2.3.5' 'pandas==2.2.3'
+          python - <<'PY'
+          import concurrent.futures, datetime, hashlib, json, pathlib, subprocess, urllib.request
+          root=pathlib.Path('bundle')
+          refs=['research_candidate_ML_easychart_a','research_candidate_ML_easychart_b','research_candidate_ML_easychart_c','research_candidate_ML_MN','research_candidate_ML_k_causal_alpha_v3','research_candidate_4_causal_inventory_transfer','research_candidate_3b','research_liquidity_auction_v7','research_skilled_auction_control_easychart_base','research_ML1','research_ML2','research_ML3']
+          manifest={}
+          for ref in refs:
+              r=subprocess.run(['git','fetch','--depth=1','origin',ref],capture_output=True,text=True)
+              if r.returncode:
+                  manifest[ref]={'error':r.stderr};continue
+              sha=subprocess.check_output(['git','rev-parse','FETCH_HEAD'],text=True).strip()
+              entries=subprocess.check_output(['git','ls-tree','-r','-l',sha],text=True).splitlines()
+              paths=[]
+              for entry in entries:
+                  meta,path=entry.split('\t',1);fields=meta.split()
+                  if fields[1]!='blob' or int(fields[3])>1500000:continue
+                  p=pathlib.PurePosixPath(path)
+                  if p.suffix not in ['.py','.md','.json','.toml','.yaml','.yml','.csv','.txt']:continue
+                  if any(x in path for x in ['uv.lock','positions.csv','orders.csv','fills.csv','equity.csv','nav.csv','candidates.csv','opportunities.csv','features.csv']):continue
+                  paths.append(path)
+              target=root/'branches'/ref
+              target.mkdir(parents=True,exist_ok=True)
+              # One archive read avoids thousands of individual Git subprocesses.
+              import io,tarfile
+              if paths:
+                  blob=subprocess.check_output(['git','archive',sha,'--']+paths)
+                  with tarfile.open(fileobj=io.BytesIO(blob)) as ar:ar.extractall(target,filter='data')
+              manifest[ref]={'sha':sha,'files':len(paths)}
+              print(ref,sha,len(paths),flush=True)
+          months=['2024-03','2024-08','2025-02','2025-08','2025-11','2026-01','2026-04','2026-07']
+          symbols=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
+          jobs=[]
+          for symbol in symbols:
+              for month in months:
+                  for typ in ['klines','markPriceKlines','fundingRate']:
+                      extra='/1m' if typ!='fundingRate' else ''
+                      name=f'{symbol}-{typ}-{month}.zip' if typ=='fundingRate' else f'{symbol}-1m-{month}.zip'
+                      # funding filenames use fundingRate; mark and ordinary bars have the same basename.
+                      url=f'https://data.binance.vision/data/futures/um/monthly/{typ}/{symbol}{extra}/{name}'
+                      dest=root/'market'/typ/symbol/name
+                      jobs.append((url,dest))
+          def download(job):
+              import time
+              url,dest=job;dest.parent.mkdir(parents=True,exist_ok=True)
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(url,timeout=90) as r:content=r.read()
+                      dest.write_bytes(content)
+                      return {'url':url,'path':str(dest.relative_to(root)),'bytes':len(content),'sha256':hashlib.sha256(content).hexdigest()}
+                  except Exception as e:
+                      if attempt==2:return {'url':url,'error':str(e)}
+                      time.sleep(1+attempt)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              results=list(ex.map(download,jobs))
+          (root/'inputs.json').write_text(json.dumps({'branches':manifest,'market':results},indent=2))
+          print('market downloads',sum('error' not in x for x in results),'of',len(results),flush=True)
+          for x in results:
+              if 'error' in x:print(x)
+          PY
+          tar -czf astra-inputs.tar.gz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-inputs
+          path: astra-inputs.tar.gz
+          compression-level: 0
+          retention-days: 7
