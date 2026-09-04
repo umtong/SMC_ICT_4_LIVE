@@ -16,7 +16,7 @@ for p in (ROOT/'candidate-easychart-v3',ROOT/'candidate-easychart-v5',ROOT/'cand
     sys.path.insert(0,str(p))
 from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
-from hierarchy_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
+from auction_reuse_policy import LiquidityPolicy,Observation,FEATURES as AUCTION_FEATURES
 from extended_inputs import ExtraObservations,EXTRA_FEATURES
 from executed_flow import ExecutedFlow,MICRO_FEATURES
 FEATURES=AUCTION_FEATURES+EXTRA_FEATURES+MICRO_FEATURES
@@ -71,18 +71,18 @@ class Tape:
             attached.append(replace(p,features=f))
         return attached,stats
     def plans(self):
-        source=b''.join((HERE/f).read_bytes() for f in ('policy.py','hierarchy_policy.py'))
+        source=b''.join((HERE/f).read_bytes() for f in ('policy.py','auction_reuse_policy.py'))
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
         if path.exists():return self.with_participation(pickle.loads(path.read_bytes()))
         policy=LiquidityPolicy(self.ticks,self.feature_mark_at,self.micro)
-        arrays={s:d[['ts','open','high','low','close','volume','taker_buy_volume','quote_volume','count']].to_numpy() for s,d in self.raw.items()}
+        arrays={s:d[['ts','open','high','low','close','volume','taker_buy_volume','quote_volume','count','taker_buy_quote_volume']].to_numpy() for s,d in self.raw.items()}
         plans=[]
         for i in range(len(next(iter(arrays.values())))):
             bars={}
             for s,a in arrays.items():
-                t,o,h,l,c,v,b,q,n=a[i]
-                bars[s]=Observation(int(t),float(o),float(h),float(l),float(c),float(v),float(b),float(q),int(n))
+                t,o,h,l,c,v,b,q,n,bq=a[i]
+                bars[s]=Observation(int(t),float(o),float(h),float(l),float(c),float(v),float(b),float(q),int(n),float(bq))
             plans.extend(policy.observe(bars))
         value=(plans,{s:dict(m.stats) for s,m in policy.markets.items()})
         path.write_bytes(pickle.dumps(value));print('CANDIDATES',self.month,len(plans),flush=True)

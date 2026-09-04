@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'auction_reuse_policy.py').write_text('''"""Two outcomes of a public liquidity auction, one account-level decision policy.
+"""Two outcomes of a public liquidity auction, one account-level decision policy.
 
 Reuse existing causal engineering for: (1) a completed H4 extreme rejected,
 (2) a 15m accepted direction and the first held 5m pullback. Neither the C-branch
@@ -67,6 +64,7 @@ class AuctionMarket(GeometryMarket):
                         sum(v.volume for v in region),sum(v.buy for v in region),
                         max(np.mean([v.volume for v in self.history[-61:-1]]),1e-12),self.unit(),p.target)
             f=self._features(c,b,side,p.stop,p.target,market)
+            f['source_strength']=p.higher_strength_ratio
             f.update(auction_rejection=float(owner=='REJECTION'),higher_strength=p.higher_strength_ratio,
                 lower_strength=p.lower_strength_ratio,trigger_strength=p.trigger_strength_ratio,
                 setup_age=math.log1p(max(0.,(b.ts-p.setup_observed_time_ns)/MINUTE)),
@@ -102,28 +100,3 @@ class LiquidityPolicy:
                      peer_flow=float(np.median([side*sum(b.delta for b in m.history[-15:])/max(sum(b.volume for b in m.history[-15:]),1e-12) for m in peers])))
             out.append(replace(p,features=f))
         return out
-''')
-p=here/'research.py';s=p.read_text()
-s=s.replace('from hierarchy_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES',
-            'from auction_reuse_policy import LiquidityPolicy,Observation,FEATURES as AUCTION_FEATURES')
-s=s.replace("('policy.py','hierarchy_policy.py')","('policy.py','auction_reuse_policy.py')")
-s=s.replace("'taker_buy_volume','quote_volume','count']","'taker_buy_volume','quote_volume','count','taker_buy_quote_volume']")
-s=s.replace('t,o,h,l,c,v,b,q,n=a[i]','t,o,h,l,c,v,b,q,n,bq=a[i]')
-s=s.replace('float(v),float(b),float(q),int(n))','float(v),float(b),float(q),int(n),float(bq))')
-p.write_text(s)
-features=['move_3','move_15','move_60','move_240','flow_3','flow_15','flow_60','efficiency_15','efficiency_60','location_60',
-          'body','wick','range_expansion','context_15','context_60','cost_r','planned_rr','risk_bps',
-          'source_scale','source_strength','event_age','entry_distance','penetration','event_flow','event_activity',
-          'market_15','market_60','relative_15','auction_rejection','higher_strength','lower_strength','trigger_strength',
-          'setup_age','trigger_age','overlap_width','peer_progress','peer_flow',
-          'x_spot_flow_15','x_spot_flow_60','x_relative_move_15','x_oi_change_15','x_premium']
-# source_strength is not a BASE_FEATURE until a context-dependent policy adds it.
-# Source strength belongs explicitly to this reused event's published geometry.
-p=here/'auction_reuse_policy.py';s=p.read_text()
-s=s.replace("f.update(auction_rejection=", "f['source_strength']=p.higher_strength_ratio\n            f.update(auction_rejection=")
-p.write_text(s)
-r={'months':['2024-03','2024-08'],'train_end':'2024-08-11','calibration_end':'2024-08-15','features':features,
-   'experiments':[{'name':'v12_auction_raw_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24','raw':True},
-                  {'name':'v12_auction_learned_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24'}]}
-(here/'request.json').write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()
