@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-code='''"""Liquidity control, not independent OB/FVG trading strategies.
+"""Liquidity control, not independent OB/FVG trading strategies.
 
 EasyChart translation: a previously known structure is challenged; an OB/FVG
 impulse shows whether that challenge gained acceptance or was rejected. Only
@@ -169,13 +166,3 @@ class LiquidityPolicy:
                     for s,b in bars.items() if len(self.markets[s].history)>=n]
             market[n]=float(np.median(values)) if values else 0.
         return [p for s in sorted(bars) for p in self.markets[s].observe(bars[s],market)]
-'''
-(here/'auction_policy.py').write_text(code)
-p=here/'research.py';s=p.read_text()
-s=s.replace('from policy import LiquidityPolicy,FEATURES','from auction_policy import LiquidityPolicy,FEATURES')
-s=s.replace("source=(HERE/'policy.py').read_bytes()","source=(HERE/'policy.py').read_bytes()+(HERE/'auction_policy.py').read_bytes()")
-p.write_text(s)
-p=here/'request.json';r=json.loads(p.read_text())
-for job in r['experiments']:job['name']=job['name'].replace('v4_control_','v5_auction_')
-p.write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()

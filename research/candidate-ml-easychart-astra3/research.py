@@ -16,7 +16,7 @@ for p in (ROOT/'candidate-easychart-v3',ROOT/'candidate-easychart-v5',ROOT/'cand
     sys.path.insert(0,str(p))
 from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
-from policy import LiquidityPolicy,FEATURES
+from auction_policy import LiquidityPolicy,FEATURES
 from execution import AstraStrategy,ExecutionLiquidity,FundingCashflows,make_engine,EasyChartMTFConfig,VENUE,USDT
 from fee_profiles_v5 import make_instrument_with_fee_profile,FEE_PROFILES
 from nautilus_trader.adapters.binance.common.types import BinanceBar
@@ -54,7 +54,7 @@ class Tape:
         i=np.searchsorted(stamps,t,side='right')-1
         return float(prices[i]) if i>=0 and t-stamps[i]<=MINUTE else float('nan')
     def plans(self):
-        source=(HERE/'policy.py').read_bytes()
+        source=(HERE/'policy.py').read_bytes()+(HERE/'auction_policy.py').read_bytes()
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
         if path.exists():return pickle.loads(path.read_bytes())
