@@ -15,7 +15,8 @@ from nautilus_trader.backtest.modules import SimulationModule
 from nautilus_trader.backtest.config import SimulationModuleConfig
 from nautilus_trader.config import BacktestEngineConfig,LoggingConfig,RiskEngineConfig
 from nautilus_trader.model.enums import AccountType,OmsType,BookType,OrderSide,OrderType
-from nautilus_trader.model.book import OrderBook,BookOrder
+from nautilus_trader.model.book import OrderBook
+from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.identifiers import Venue,TraderId
 from nautilus_trader.model.objects import Currency,Money
 from execution_re1 import EasyChartRE1Strategy,EasyChartMTFConfig
@@ -82,7 +83,7 @@ class AstraStrategy(EasyChartRE1Strategy):
         super().__init__(config)
         self.policy=policy;self.liquidity=liquidity;self.mark_at=mark_at;self.router=router
         self.bucket={};self.all_plans=[];self.decisions=[];self.nav_path=[];self.open_context={};self.closed=[]
-        self.used_intervals=[];self.start_seen=False
+        self.used_intervals=[];self.stopping_at_boundary=False
     def on_start(self):
         for iid,bt in zip(self.config.instrument_ids,self.config.execution_bar_types,strict=True):
             self.instruments[iid]=self.cache.instrument(iid)
@@ -109,7 +110,7 @@ class AstraStrategy(EasyChartRE1Strategy):
         for p in self.cache.positions_open():
             inst=self.instruments[p.instrument_id]
             price=inst.make_price(self.mark_at(inst.raw_symbol.value,ts))
-            nav+=float(p.unrealized_pnl(price))
+            nav+=p.unrealized_pnl(price).as_double()
         return nav
     def on_bar(self,bar):
         iid=bar.bar_type.instrument_id
@@ -152,13 +153,17 @@ class AstraStrategy(EasyChartRE1Strategy):
             row=p.record();row.update(ctx)
             row.update({'position_id':str(event.position_id),'opened':int(event.ts_opened),'closed':int(event.ts_closed),
                         'entry_fill':float(event.avg_px_open),'exit_fill':float(event.avg_px_close),
-                        'quantity':float(event.peak_qty),'pnl_ex_funding':float(event.realized_pnl),
-                        'holding_minutes':(event.ts_closed-event.ts_opened)/MINUTE})
+                        'quantity':float(event.peak_qty),'pnl_ex_funding':event.realized_pnl.as_double(),
+                        'holding_minutes':(event.ts_closed-event.ts_opened)/MINUTE,
+                        'evaluation_censored':self.stopping_at_boundary})
             self.closed.append(row)
+            for j,(a,z,side) in enumerate(self.used_intervals):
+                if a==p.interaction_time_ns and side==p.side.value:
+                    self.used_intervals[j]=(a,max(z,int(event.ts_closed)),side)
         super().on_position_closed(event)
     def on_stop(self):
-        # Evaluation boundary is not a strategy time stop. Expose any residual
-        # position separately rather than calling it a target/stop trade.
+        # Evaluation boundary is not a strategy time stop.
+        self.stopping_at_boundary=True
         for iid,bt in zip(self.config.instrument_ids,self.config.execution_bar_types,strict=True):
             self.cancel_all_orders(iid)
             if not self.portfolio.is_flat(iid):self.close_all_positions(iid)
