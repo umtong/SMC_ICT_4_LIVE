@@ -1,0 +1,43 @@
+name: Astra positioning inputs
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-inventory-inputs.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          python -m pip install 'pandas==2.3.3' 'numpy==2.3.5'
+          python - <<'PY'
+          import concurrent.futures,calendar,datetime,json,pathlib,sys
+          sys.path[:0]=['research/candidate-easychart_re1','research/candidate-easychart-v3']
+          from data_re1_derivatives import load_day_metrics
+          root=pathlib.Path('inventory-context');jobs=[]
+          for month in ['2024-03','2024-08','2025-02','2025-08','2025-11','2026-01','2026-04','2026-07']:
+            y,m=map(int,month.split('-'))
+            for s in ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']:
+              for d in range(1,calendar.monthrange(y,m)[1]+1):jobs.append((s,datetime.date(y,m,d)))
+          def get(j):
+            s,d=j
+            try:return dict(symbol=s,date=str(d),rows=len(load_day_metrics(s,d,root)))
+            except Exception as e:return dict(symbol=s,date=str(d),error=str(e))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:result=list(ex.map(get,jobs))
+          (root/'inputs.json').write_text(json.dumps(result,indent=2));print('Downloaded',sum('error' not in x for x in result),'/',len(result))
+          for x in result:
+            if 'error' in x:print(x)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-inventory-context
+          path: inventory-context
+          compression-level: 0
+          retention-days: 7
