@@ -46,12 +46,18 @@ class Tape:
         stamps,prices=self.mark_arrays[s];i=np.searchsorted(stamps,t,side='right')-1
         if i<0 or t-stamps[i]>MINUTE:raise ValueError(f'missing observed mark: {s} {t}')
         return float(prices[i])
+    def feature_mark_at(self,s,t):
+        # Missing explanatory data stays missing. The learner supports NaN.
+        # NAV/funding retain mark_at's strict actual-observation requirement.
+        stamps,prices=self.mark_arrays[s]
+        i=np.searchsorted(stamps,t,side='right')-1
+        return float(prices[i]) if i>=0 and t-stamps[i]<=MINUTE else float('nan')
     def plans(self):
         source=(HERE/'policy.py').read_bytes()
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
         if path.exists():return pickle.loads(path.read_bytes())
-        policy=LiquidityPolicy(self.ticks,self.mark_at)
+        policy=LiquidityPolicy(self.ticks,self.feature_mark_at)
         arrays={s:d[['ts','open','high','low','close','volume','taker_buy_volume','quote_volume','count']].to_numpy() for s,d in self.raw.items()}
         plans=[]
         for i in range(len(next(iter(arrays.values())))):
