@@ -1,0 +1,52 @@
+name: Astra observed tape sequence
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-tape-inputs.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          python -m pip install 'numpy==2.3.5' 'pandas==2.3.3' pyarrow
+          python - <<'PY'
+          import datetime, pathlib, sys, zipfile, json
+          import numpy as np, pandas as pd
+          sys.path.insert(0,'research/candidate-easychart_re1')
+          from aggtrade_absorption_event_study import archive_path, sha256_file, ARCHIVE_COLUMNS
+          root=pathlib.Path('tape-context');root.mkdir(exist_ok=True);records=[]
+          for start in ('2024-03-04','2024-08-04'):
+            for offset in range(7):
+              day=datetime.datetime.fromisoformat(start).replace(tzinfo=datetime.timezone.utc)+datetime.timedelta(days=offset)
+              symbol='BTCUSDT';path=archive_path(symbol,day,pathlib.Path('tape-cache'));profile=[];bars=[]
+              with zipfile.ZipFile(path) as z:
+                with z.open(z.namelist()[0]) as f:
+                  chunks=pd.read_csv(f,header=0,names=ARCHIVE_COLUMNS,usecols=list(ARCHIVE_COLUMNS),chunksize=500000)
+                  for x in chunks:
+                    for col in ('price','quantity','timestamp','first_trade_id','last_trade_id'):x[col]=pd.to_numeric(x[col],errors='raise')
+                    x['bucket']=(x.timestamp.astype('int64')//5000+1)*5000
+                    maker=x.buyer_is_maker.astype(str).str.lower().eq('true')
+                    x['quote']=x.price*x.quantity;x['buy_volume']=x.quantity.where(~maker,0.);x['buy_quote']=x.quote.where(~maker,0.);x['trades']=x.last_trade_id-x.first_trade_id+1
+                    x['price_bin']=np.floor(np.log(x.price.to_numpy())*10000).astype('int64')
+                    bars.append(x.groupby('bucket',sort=True).agg(open=('price','first'),high=('price','max'),low=('price','min'),close=('price','last'),volume=('quantity','sum'),quote_volume=('quote','sum'),buy_volume=('buy_volume','sum'),buy_quote=('buy_quote','sum'),trades=('trades','sum'),max_print_quote=('quote','max')))
+                    profile.append(x.groupby(['bucket','price_bin'],sort=True).agg(volume=('quantity','sum'),quote_volume=('quote','sum'),buy_volume=('buy_volume','sum'),buy_quote=('buy_quote','sum'),trades=('trades','sum'),max_print_quote=('quote','max')))
+              b=pd.concat(bars).groupby(level=0,sort=True).agg(dict(open='first',high='max',low='min',close='last',volume='sum',quote_volume='sum',buy_volume='sum',buy_quote='sum',trades='sum',max_print_quote='max'))
+              p=pd.concat(profile).groupby(level=[0,1],sort=True).agg(dict(volume='sum',quote_volume='sum',buy_volume='sum',buy_quote='sum',trades='sum',max_print_quote='max'))
+              stamp=day.strftime('%Y-%m-%d');b.to_parquet(root/f'{symbol}-{stamp}-5s.parquet');p.to_parquet(root/f'{symbol}-{stamp}-footprint.parquet')
+              records.append(dict(symbol=symbol,date=stamp,archive_sha256=sha256_file(path),bars=len(b),profile_rows=len(p)))
+              print(records[-1],flush=True);path.unlink();del b,p,bars,profile,x
+          (root/'inputs.json').write_text(json.dumps(records,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-tape-context
+          path: tape-context
+          retention-days: 7
