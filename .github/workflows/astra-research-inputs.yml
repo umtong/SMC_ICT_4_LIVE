@@ -18,7 +18,7 @@ jobs:
       - name: Reuse existing research and exchange archives
         run: |
           mkdir -p bundle/wheels bundle/market bundle/branches
-          python -m pip download --only-binary=:all: --dest bundle/wheels nautilus_trader==1.230.0 'numpy==2.3.5' 'pandas==2.2.3'
+          python -m pip download --only-binary=:all: --dest bundle/wheels nautilus_trader==1.230.0 'numpy==2.3.5' 'pandas==2.3.3'
           python - <<'PY'
           import concurrent.futures, datetime, hashlib, json, pathlib, subprocess, urllib.request
           root=pathlib.Path('bundle')
@@ -40,7 +40,6 @@ jobs:
                   paths.append(path)
               target=root/'branches'/ref
               target.mkdir(parents=True,exist_ok=True)
-              # One archive read avoids thousands of individual Git subprocesses.
               import io,tarfile
               if paths:
                   blob=subprocess.check_output(['git','archive',sha,'--']+paths)
@@ -55,7 +54,6 @@ jobs:
                   for typ in ['klines','markPriceKlines','fundingRate']:
                       extra='/1m' if typ!='fundingRate' else ''
                       name=f'{symbol}-{typ}-{month}.zip' if typ=='fundingRate' else f'{symbol}-1m-{month}.zip'
-                      # funding filenames use fundingRate; mark and ordinary bars have the same basename.
                       url=f'https://data.binance.vision/data/futures/um/monthly/{typ}/{symbol}{extra}/{name}'
                       dest=root/'market'/typ/symbol/name
                       jobs.append((url,dest))
