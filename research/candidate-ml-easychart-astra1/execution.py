@@ -28,6 +28,7 @@ class ExecutionLiquidity(FillModel):
     def __init__(self,stress=1.):
         super().__init__(prob_fill_on_limit=1.,prob_slippage=0.,random_seed=31)
         self.activity=defaultdict(lambda:deque(maxlen=15));self.stress=stress
+        self.bar_open={}
     def observe(self,symbol,b):self.activity[symbol].append(max(b.quote,b.volume*b.close))
     def fraction(self,symbol,qty,price):
         history=self.activity[symbol]
@@ -39,15 +40,24 @@ class ExecutionLiquidity(FillModel):
         book=OrderBook(instrument_id=instrument.id,book_type=BookType.L2_MBP)
         q=float(order.leaves_qty);symbol=instrument.raw_symbol.value
         if order.order_type==OrderType.LIMIT:
-            # A resting target requires a trade-through, not an optimistic exact touch.
             tick=float(instrument.price_increment);limit=float(order.price)
             crosses=(float(best_bid)>limit+tick*.5) if order.side==OrderSide.SELL else (float(best_ask)<limit-tick*.5)
             if not crosses:return book
             bid=ask=instrument.make_price(limit)
         else:
-            f=self.fraction(symbol,q,(float(best_bid)+float(best_ask))/2)
-            bid=instrument.make_price(float(best_bid)*(1-f))
-            ask=instrument.make_price(float(best_ask)*(1+f))
+            base_bid,base_ask=float(best_bid),float(best_ask)
+            if order.order_type==OrderType.STOP_MARKET:
+                # A 1m OHLC path jumps from open to an extreme. A stop crossed
+                # along that segment is not a market order submitted AT the
+                # extreme. Use its first crossing, retaining real open gaps.
+                if str(instrument.id) not in self.bar_open:raise RuntimeError('stop has no execution-bar open')
+                bar_open=self.bar_open[str(instrument.id)]
+                trigger=float(order.trigger_price)
+                base=(max(trigger,bar_open) if order.side==OrderSide.BUY else min(trigger,bar_open))
+                base_bid=base_ask=base
+            f=self.fraction(symbol,q,(base_bid+base_ask)/2)
+            bid=instrument.make_price(base_bid*(1-f))
+            ask=instrument.make_price(base_ask*(1+f))
         size=instrument.make_qty(q)
         book.add(BookOrder(side=OrderSide.BUY,price=bid,size=size,order_id=1),ts_event=0)
         book.add(BookOrder(side=OrderSide.SELL,price=ask,size=size,order_id=2),ts_event=0)
@@ -57,6 +67,7 @@ class FundingCashflows(SimulationModule):
     def __init__(self,records,mark_at):
         super().__init__(SimulationModuleConfig())
         self.records=sorted(records);self.mark_at=mark_at;self.cursor=0;self.payments=[]
+        self.execution_liquidity=None
     def process(self,ts_now):
         while self.cursor<len(self.records) and self.records[self.cursor][0]<=ts_now:
             ts,symbol,rate=self.records[self.cursor];self.cursor+=1
@@ -67,11 +78,16 @@ class FundingCashflows(SimulationModule):
                 cash=-float(pos.quantity)*price*rate*(1 if pos.is_long else -1)
                 self.exchange.adjust_account(Money(cash,USDT))
                 self.payments.append({'ts':ts,'symbol':symbol,'position_id':str(pos.id),'cash':cash,'rate':rate,'mark':price})
-    def pre_process(self,data):pass
+    def pre_process(self,data):
+        # Execution-only open; never exposed to the forecasting policy. No
+        # high/low/close/volume from the future execution bar is used here.
+        if self.execution_liquidity is not None and hasattr(data,'bar_type'):
+            self.execution_liquidity.bar_open[str(data.bar_type.instrument_id)]=float(data.open)
     def log_diagnostics(self,logger):pass
     def reset(self):self.cursor=0;self.payments=[]
 
 def make_engine(funding,liquidity,starting_nav=100000.):
+    funding.execution_liquidity=liquidity
     e=BacktestEngine(BacktestEngineConfig(trader_id=TraderId('ASTRA-001'),logging=LoggingConfig(log_level='ERROR'),risk_engine=RiskEngineConfig(bypass=False)))
     e.add_venue(venue=VENUE,oms_type=OmsType.NETTING,account_type=AccountType.MARGIN,
                 starting_balances=[Money(starting_nav,USDT)],base_currency=USDT,default_leverage=Decimal('100'),
@@ -93,7 +109,6 @@ class AstraStrategy(EasyChartRE1Strategy):
         p=self.policy.markets[instrument.raw_symbol.value].history[-1].close
         return Decimal(str(p*.0002)),Decimal(str(p*.0002))
     def _quantity(self,instrument,plan,nav):
-        # One fixed 3% loss-budget equation, including modeled execution costs.
         s=instrument.raw_symbol.value;entry=plan.entry;stop=plan.stop
         q=float(nav)*.03/max(abs(entry-stop),float(instrument.price_increment))
         for _ in range(8):
@@ -125,8 +140,6 @@ class AstraStrategy(EasyChartRE1Strategy):
         self.all_plans.extend(plans)
         ranked=[]
         for p in plans:
-            # Router can only read pre-entry features. The initial diagnostic admits
-            # every causal, economically feasible plan; no desired win-rate gate.
             score=(self.router(p) if self.router else 1.-p.features['cost_r'])
             reason='candidate' if score>0 else 'decision_declined'
             if any(a<=p.observed_time_ns and p.interaction_time_ns<=z and side==p.side.value for a,z,side in self.used_intervals):
@@ -158,11 +171,9 @@ class AstraStrategy(EasyChartRE1Strategy):
                         'evaluation_censored':self.stopping_at_boundary})
             self.closed.append(row)
             for j,(a,z,side) in enumerate(self.used_intervals):
-                if a==p.interaction_time_ns and side==p.side.value:
-                    self.used_intervals[j]=(a,max(z,int(event.ts_closed)),side)
+                if a==p.interaction_time_ns and side==p.side.value:self.used_intervals[j]=(a,max(z,int(event.ts_closed)),side)
         super().on_position_closed(event)
     def on_stop(self):
-        # Evaluation boundary is not a strategy time stop.
         self.stopping_at_boundary=True
         for iid,bt in zip(self.config.instrument_ids,self.config.execution_bar_types,strict=True):
             self.cancel_all_orders(iid)
