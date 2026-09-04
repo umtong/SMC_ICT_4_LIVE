@@ -39,6 +39,12 @@ jobs:
           name: astra2-extended-market
           run-id: 33913126904
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: astra2-micro-*
+          merge-multiple: true
+          run-id: 33916611253
+          github-token: ${{ github.token }}
       - uses: actions/cache/restore@v4
         with:
           path: astra3_cache
@@ -47,6 +53,7 @@ jobs:
         run: |
           tar -xzf astra-inputs.tar.gz
           tar -xzf astra2-extended-market.tar.gz
+          for archive in micro-*.tar.gz; do tar -xzf "$archive"; done
           python -m pip install --no-index --find-links bundle/wheels nautilus_trader==1.230.0 numpy==2.3.5 pandas==2.3.3
           python -m pip install scikit-learn==1.7.2
           python -m compileall -q research/candidate-ml-easychart-astra3
