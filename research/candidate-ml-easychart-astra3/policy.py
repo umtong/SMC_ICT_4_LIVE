@@ -153,10 +153,10 @@ class Market:
                 if not exists:continue
                 low,high=sorted((p.open,p.close)) if kind=='OB' else ((a.high,b.low) if side>0 else (b.high,a.low))
                 bars=(p,b) if kind=='OB' else (a,p,b)
-                self.zones.append(dict(key=f'{kind}:{tf}:{b.ts}:{side}',side=side,tf=tf,born=b.ts,low=low,high=high,
+                self.zones.append(dict(key=f'{kind}:{tf}:{b.ts}:{side}',side=side,tf=tf,born=b.ts,impulse_ts=p.ts if kind=='FVG' else b.ts,low=low,high=high,
                      stop=min(v.low for v in bars)-self.tick if side>0 else max(v.high for v in bars)+self.tick,
                      extreme=b.high if side>0 else b.low,first_test=0,alive=True))
-        self.zones=self.zones[-128:]
+        self.zones=[z for tf in (5,15,60) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]
     def _update_zones(self,b):
         for z in self.zones:
             if not z['alive'] or b.ts<=z['born']:continue
@@ -235,7 +235,7 @@ class Market:
                     family='LIQUIDITY_ORIGIN_RETURN' if origin else 'LIQUIDITY_RECLAIM')
     def _challenge_levels(self,b,prev):
         if len(self.five)<48: return
-        sources=[z for tf in (15,60) for z in self.frames[tf].levels]+self.channel_levels
+        sources=[z for tf in (5,15,60) for z in self.frames[tf].levels]+self.channel_levels
         hits=[]
         for z in sources:
             if z.consumed or z.born>=b.ts: continue
@@ -312,27 +312,22 @@ class Market:
             del self.origins[side]
         return plans
     def _new_origin(self,x):
-        f=self.five
-        if len(f)<3:return
-        a,p,b=f[-3:];body=b.close-b.open
-        side=1 if body>0 else -1
-        engulf=side*(b.close-p.open)>0 and side*(p.close-p.open)<0 and abs(body)>=2*abs(p.close-p.open)
-        meaningful=abs(p.close-p.open)>.1*np.median([abs(v.close-v.open) for v in f[-48:]])
-        gap=(b.low>a.high and p.close>p.open and abs(p.close-p.open)>=2*max(abs(body),abs(a.close-a.open))) if side>0 else (b.high<a.low and p.close<p.open and abs(p.close-p.open)>=2*max(abs(body),abs(a.close-a.open)))
-        if not (engulf and meaningful) and not gap:return
-        candidates=[c for c in self.recent if x.ts-c.started<=3*c.level.tf*MINUTE
-                    and side==-c.level.kind and side*(x.close-c.level.price)>0
-                    and c.key in self.contexts and self.contexts[c.key]['alive']]
-        if not candidates:return
-        c=max(candidates,key=lambda q:(q.started,q.level.tf))
-        if side>0:
-            low,high=(a.high,b.low) if gap else sorted((p.open,p.close));stop=min(v.low for v in ((a,p,b) if gap else (p,b)))-self.tick
-        else:
-            low,high=(b.high,a.low) if gap else sorted((p.open,p.close));stop=max(v.high for v in ((a,p,b) if gap else (p,b)))+self.tick
-        stop=min(stop,c.low-self.tick) if side>0 else max(stop,c.high+self.tick)
-        if side*(b.close-(high if side>0 else low))<=0:return
-        self.origins[side]=Origin(c.key,c,side,b.ts,low,high,stop,b.high,b.low,self.destination(side,b.close,b.ts),int(engulf)+int(gap))
-        self.stats['liquidity_displacement_origin']+=1
+        born=[z for z in self.zones if z['tf']==5 and z['born']==x.ts]
+        for side in (-1,1):
+            footprints=[z for z in born if z['side']==side]
+            if not footprints:continue
+            candidates=[(c,z) for c in self.recent for z in footprints
+                        if z['impulse_ts']>=c.started and side==-c.level.kind
+                        and side*(x.close-c.level.price)>0 and c.key in self.contexts
+                        and self.contexts[c.key]['alive']]
+            if not candidates:continue
+            c,z=max(candidates,key=lambda q:(q[0].started,q[1]['low'] if side>0 else -q[1]['high']))
+            low,high=z['low'],z['high']
+            stop=min(z['stop'],c.low-self.tick) if side>0 else max(z['stop'],c.high+self.tick)
+            if side*(x.close-(high if side>0 else low))<=0:continue
+            self.origins[side]=Origin(c.key,c,side,x.ts,low,high,stop,x.high,x.low,
+                                      self.destination(side,x.close,x.ts),len(footprints))
+            self.stats['liquidity_displacement_origin']+=1
     def observe(self,b,market):
         if self.last_ts and b.ts-self.last_ts!=MINUTE:raise ValueError(f'{self.symbol}: non-contiguous observation clock')
         self.last_ts=b.ts
