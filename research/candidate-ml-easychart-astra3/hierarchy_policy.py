@@ -37,6 +37,7 @@ class Defense:
     correction: list
     response: list
     returns: list
+    departing_pivot: int=0
 
 class HierarchyMarket(GeometryMarket):
     def __init__(self,symbol,tick,external=None):
@@ -87,6 +88,11 @@ class HierarchyMarket(GeometryMarket):
         extreme=b.high if side>0 else b.low
         if side*(extreme-c.peak)>0:
             c.peak=extreme;c.peak_ts=b.ts
+            # Completing the prior initiative leg ends that corrective auction.
+            # A new opposite leg, not another entry ID, creates a new episode.
+            if c.episode and side*(extreme-c.episode_peak)>0:
+                self._finish()
+                c.episode=0;c.episode_start=0
         opposite=side*(b.close-b.open)<0
         if not c.episode and opposite:
             c.episode=c.peak_ts;c.episode_peak=c.peak;c.episode_start=b.ts-5*MINUTE
@@ -114,13 +120,23 @@ class HierarchyMarket(GeometryMarket):
         if self.defense is None:return
         self.closed_episodes.add(self.defense.origin.key)
         self.defense=None
-        if self.controller is not None:
-            self.controller.episode=0;self.controller.episode_start=0
     def _returns(self,b,market):
         d=self.defense;c=self.controller
         if d is None or c is None:return []
         o=d.origin;side=o.side
         if b.ts<=o.born:return []
+        frame=self.frames[5]
+        after=[z for z in frame.pivots if z.pivot_time>o.born]
+        peaks=[z for z in after if z.kind==side]
+        if peaks:
+            first=min(peaks,key=lambda z:z.pivot_time)
+            turns=[z for z in after if z.kind==-side and z.pivot_time>first.pivot_time]
+            if turns:
+                # A confirmed corrective trough followed by a new initiative
+                # wave outside the old entry zone means its first return was
+                # completed elsewhere. Do not revisit it hours later.
+                self.stats['first_return_completed_elsewhere']+=1
+                self._finish();return []
         if b.low<=o.stop if side>0 else b.high>=o.stop:
             self.stats['new_defense_invalidated']+=1;self._finish();return []
         if not o.returned:
@@ -133,6 +149,11 @@ class HierarchyMarket(GeometryMarket):
             self.stats['defended_wave_completed']+=1;self._finish();return []
         d.returns.append(b);o.return_volume+=b.volume;o.return_count+=1
         if not o.low<=b.close<=o.high:return []
+        prior=self.history[-2]
+        # Location alone is not direction. The first local response must now
+        # recover the prior completed minute's extreme while still at the
+        # preselected defense; do not chase when it is already beyond it.
+        if not (b.close>prior.high if side>0 else b.close<prior.low):return []
         peak=o.departure_high if side>0 else o.departure_low
         targets=[z.price for tf in (15,60,240) for z in self.frames[tf].levels
                  if not z.consumed and z.kind==side and z.born<b.ts and side*(z.price-b.close)>self.tick]
@@ -170,7 +191,18 @@ class HierarchyMarket(GeometryMarket):
         for tf,frame in self.frames.items():
             x=frame.append(b)
             if x is not None:self._new_zones(tf);closed[tf]=x
-        if 15 in closed:self._control(closed[15])
+        if 15 in closed:
+            x=closed[15];c=self.controller
+            if c is not None:
+                # Breaking the latest protected swing defeats the current
+                # structural thesis even before the distant initial extreme.
+                protected=[z for z in self.frames[15].pivots if z.kind==-c.side and z.pivot_time>c.born]
+                if protected:
+                    last=max(protected,key=lambda z:z.pivot_time)
+                    if c.side*(x.close-last.price)<0:
+                        self.controller=None;self.defense=None
+                        self.stats['current_control_defeated']+=1
+            self._control(x)
         if 5 in closed:self._correction(closed[5])
         return plans
 
