@@ -1,0 +1,48 @@
+name: Astra spot and index inputs
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-spot-inputs.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          python - <<'PY'
+          import concurrent.futures,hashlib,json,pathlib,urllib.request,time
+          root=pathlib.Path('spot-context');jobs=[]
+          months=['2024-03','2024-08','2025-02','2025-08','2025-11','2026-01','2026-04','2026-07']
+          for symbol in ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']:
+            for month in months:
+              name=f'{symbol}-1m-{month}.zip'
+              jobs += [(f'https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/{name}',root/'spot'/symbol/name),(f'https://data.binance.vision/data/futures/um/monthly/indexPriceKlines/{symbol}/1m/{name}',root/'indexPriceKlines'/symbol/name)]
+          def get(job):
+            url,path=job;path.parent.mkdir(parents=True,exist_ok=True)
+            for i in range(3):
+              try:
+                with urllib.request.urlopen(url,timeout=90) as r:b=r.read()
+                path.write_bytes(b)
+                return dict(url=url,path=str(path),sha256=hashlib.sha256(b).hexdigest(),bytes=len(b))
+              except Exception as e:
+                if i==2:return dict(url=url,error=str(e))
+                time.sleep(i+1)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:results=list(ex.map(get,jobs))
+          (root/'inputs.json').write_text(json.dumps(results,indent=2))
+          print('downloaded',sum('error' not in r for r in results),'/',len(results))
+          for r in results:
+            if 'error' in r:print(r)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-spot-context
+          path: spot-context
+          compression-level: 0
+          retention-days: 7
