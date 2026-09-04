@@ -212,6 +212,11 @@ def backtest(tape,plans,scores,name,start,end,starting_nav=100000.,stress=1.):
         trades.to_csv(path/'trades.csv',index=False)
         pd.DataFrame(strategy.nav_path,columns=['ts','nav']).to_csv(path/'nav.csv',index=False)
         (path/'summary.json').write_text(json.dumps(summary,indent=2))
+        if len(trades) and abs((nav-starting_nav)-trades.pnl.sum())>.03:
+            engine.trader.generate_order_fills_report().tail(20).to_json(path/'last_fills.json',orient='records',date_format='iso',default_handler=str)
+            engine.trader.generate_positions_report().tail(8).to_json(path/'last_positions.json',orient='records',date_format='iso',default_handler=str)
+            engine.trader.generate_account_report(VENUE).tail(12).to_json(path/'last_account.json',orient='records',date_format='iso',default_handler=str)
+            (path/'active_execution.json').write_text(json.dumps({'open_positions':len(engine.cache.positions_open()),'closed_rows':len(trades),'active_plan':str(strategy.active_plan),'active_entry':str(strategy.active_entry_id)},indent=2))
         if len(trades) and not engine.cache.positions_open() and abs((nav-starting_nav)-trades.pnl.sum())>.03:
             raise AssertionError(f'account residual={nav-starting_nav-trades.pnl.sum():.12f}; wallet={nav}; attributed={trades.pnl.sum()}; funding={summary["funding_cash"]}')
         print('ACCOUNT',json.dumps(summary),flush=True)
