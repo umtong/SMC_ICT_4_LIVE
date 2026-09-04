@@ -18,7 +18,8 @@ from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
 from auction_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
 from extended_inputs import ExtraObservations,EXTRA_FEATURES
-FEATURES=AUCTION_FEATURES+EXTRA_FEATURES
+from executed_flow import ExecutedFlow,MICRO_FEATURES
+FEATURES=AUCTION_FEATURES+EXTRA_FEATURES+MICRO_FEATURES
 from execution import AstraStrategy,ExecutionLiquidity,FundingCashflows,make_engine,EasyChartMTFConfig,VENUE,USDT
 from fee_profiles_v5 import make_instrument_with_fee_profile,FEE_PROFILES
 from nautilus_trader.adapters.binance.common.types import BinanceBar
@@ -40,6 +41,7 @@ class Tape:
         self.marks={s:load_bars(s,month,'markPriceKlines') for s in symbols}
         self.funding=[r for s in symbols for r in load_funding(s,month)]
         self.extra=ExtraObservations(month,self.raw)
+        self.micro=ExecutedFlow(month,symbols)
         self.instruments={s:make_instrument_with_fee_profile(s,FEE_PROFILES['usd_m_vip0']) for s in symbols}
         self.ticks={s:float(i.price_increment) for s,i in self.instruments.items()}
         self.mark_arrays={s:(d.ts.to_numpy(dtype=np.int64),d.close.to_numpy(dtype=float)) for s,d in self.marks.items()}
@@ -62,7 +64,9 @@ class Tape:
         attached=[]
         for p in plans:
             unit_bps=p.features['risk_bps']/p.features['risk_range']
-            f=dict(p.features)
+            micro=self.micro.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps)
+            if micro is None:continue
+            f=dict(p.features);f.update(micro)
             f.update(self.extra.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps))
             attached.append(replace(p,features=f))
         return attached,stats
@@ -114,9 +118,9 @@ class Tape:
         return pd.DataFrame(output)
 
 class LearnedDecision:
-    def __init__(self,model,calibration=None):self.model=model;self.calibration=calibration
+    def __init__(self,model,calibration=None):self.model=model;self.calibration=calibration;self.columns=FEATURES
     def probability(self,plans):
-        x=np.array([[p.features[k] for k in FEATURES] for p in plans],dtype=float)
+        x=np.array([[p.features[k] for k in self.columns] for p in plans],dtype=float)
         probabilities=self.model.predict_proba(x)[:,1]
         if self.calibration is not None:
             logits=np.log(np.clip(probabilities,1e-5,1-1e-5)/(1-np.clip(probabilities,1e-5,1-1e-5)))[:,None]
@@ -140,11 +144,11 @@ def fit_decision(labels,train_end,calibration_end):
     # Equalize contemporaneous episodes, not symbols or trading outcomes.
     groups=(train.observed_time_ns//(15*MINUTE)).value_counts()
     weights=np.array([1/math.sqrt(groups[t//(15*MINUTE)]) for t in train.observed_time_ns])
-    model=HistGradientBoostingClassifier(max_iter=160,max_leaf_nodes=15,max_depth=4,min_samples_leaf=80,
+    model=HistGradientBoostingClassifier(max_iter=160,max_leaf_nodes=7,max_depth=3,min_samples_leaf=40,
               learning_rate=.05,l2_regularization=10.,early_stopping=False,random_state=31)
     model.fit(train[list(FEATURES)].to_numpy(),train.label_win.to_numpy(),sample_weight=weights)
     fitted=None
-    if len(calibration)>=150 and calibration.label_win.nunique()==2:
+    if len(calibration)>=50 and calibration.label_win.nunique()==2:
         p=model.predict_proba(calibration[list(FEATURES)].to_numpy())[:,1]
         logit=np.log(np.clip(p,1e-5,1-1e-5)/(1-np.clip(p,1e-5,1-1e-5)))[:,None]
         fitted=LogisticRegression(C=1.,random_state=31).fit(logit,calibration.label_win)
@@ -256,8 +260,10 @@ def label_summary(labels):
                    'mean_rr':float(g.gross_rr.mean()),'median_hold':float(g.label_hold.median()),'ambiguous':int(g.label_ambiguous.sum())} for k,g in labels.groupby('family')}
 
 def main():
+    global FEATURES
     (OUT/'error.txt').unlink(missing_ok=True)
     request=json.loads((HERE/'request.json').read_text())
+    FEATURES=tuple(request.get('features',FEATURES))
     tapes={m:Tape(m) for m in request['months']};allplans={};labels=[];generation={}
     for month,tape in tapes.items():
         plans,stats=tape.plans();allplans[month]=plans
