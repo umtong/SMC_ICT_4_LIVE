@@ -17,7 +17,7 @@ from domain import Side
 
 FEATURES = tuple(
     [f'{name}_{n}' for n in (3,15,60,240) for name in ('move','flow','efficiency','location')]
-    + ['body','wick','activity','range_expansion','impact_residual','flow_change',
+    + ['context_scale','context_age','source_strength','body','wick','activity','range_expansion','impact_residual','flow_change',
        'basis','basis_change','basis_dislocation','market_5','market_15','market_60',
        'relative_15','relative_60','context_15','context_60','channel_location',
        'source_scale','source_age','source_kind','event_age','penetration','event_flow',
@@ -120,6 +120,7 @@ class Market:
         self.pending={}; self.origins={}; self.recent=deque(maxlen=24)
         self.stats=Counter(); self.explanations=[]; self.last_ts=0
         self.bases=[]; self.last_channel_keys=set(); self.channel_levels=[]
+        self.zones=[]; self.contexts={}; self.completed_reclaims=set()
     @property
     def five(self): return self.frames[5].bars
     def unit(self):
@@ -129,8 +130,50 @@ class Market:
         if reason in ('plan_emitted','origin_plan_emitted'):
             self.explanations.append({'symbol':self.symbol,'ts':ts,'event':c.key,'reason':reason})
     def targets(self,side,entry,ts):
-        levels=[z for tf in (15,60) for z in self.frames[tf].levels if not z.consumed and z.kind==side and z.born<ts and side*(z.price-entry)>self.tick]
-        return [z.price for z in levels]
+        # The first opposing structure includes the execution-scale swing and
+        # opposing footprints; it is not just a remote hourly liquidity pool.
+        levels=[z.price for tf in (5,15,60) for z in self.frames[tf].levels
+                if not z.consumed and z.kind==side and z.born<ts and side*(z.price-entry)>self.tick]
+        for z in self.zones:
+            price=z['low'] if side>0 else z['high']
+            if z['alive'] and z['side']==-side and z['born']<ts and side*(price-entry)>self.tick:levels.append(price)
+        return levels
+    def _new_zones(self,tf):
+        f=self.frames[tf].bars
+        if len(f)<3:return
+        a,p,b=f[-3:]
+        typical=max(float(np.median([abs(v.close-v.open) for v in f[-48:]])),self.tick)
+        for side in (-1,1):
+            engulf=(side*(p.close-p.open)<0 and side*(b.close-p.open)>0
+                    and side*(b.close-b.open)>=2*abs(p.close-p.open)
+                    and abs(p.close-p.open)>.1*typical)
+            gap=(b.low>a.high if side>0 else b.high<a.low)
+            gap=gap and side*(p.close-p.open)>=2*max(abs(a.close-a.open),abs(b.close-b.open),self.tick)
+            for kind,exists in [('OB',engulf),('FVG',gap)]:
+                if not exists:continue
+                low,high=sorted((p.open,p.close)) if kind=='OB' else ((a.high,b.low) if side>0 else (b.high,a.low))
+                bars=(p,b) if kind=='OB' else (a,p,b)
+                self.zones.append(dict(key=f'{kind}:{tf}:{b.ts}:{side}',side=side,tf=tf,born=b.ts,low=low,high=high,
+                     stop=min(v.low for v in bars)-self.tick if side>0 else max(v.high for v in bars)+self.tick,
+                     extreme=b.high if side>0 else b.low,first_test=0,alive=True))
+        self.zones=self.zones[-128:]
+    def _update_zones(self,b):
+        for z in self.zones:
+            if not z['alive'] or b.ts<=z['born']:continue
+            side=z['side']
+            if b.low<=z['stop'] if side>0 else b.high>=z['stop']:
+                z['alive']=False;continue
+            touch=b.low<=z['high'] and b.high>=z['low']
+            if not z['first_test']:
+                if touch:z['first_test']=b.ts
+                else:z['extreme']=max(z['extreme'],b.high) if side>0 else min(z['extreme'],b.low)
+            elif b.high>=z['extreme'] if side>0 else b.low<=z['extreme']:
+                # The footprint's first return has completed its wave.
+                z['alive']=False
+    def _context(self,c):
+        candidates=[z for z in self.zones if z['alive'] and z['tf']>=15 and z['born']<c.started
+                    and z['side']==-c.level.kind and c.low<=z['high'] and c.high>=z['low']]
+        return max(candidates,key=lambda z:(z['tf'],z['born'])) if candidates else None
     def destination(self,side,entry,ts):
         x=self.targets(side,entry,ts)
         return min(x,key=lambda p:side*(p-entry)) if x else None
@@ -157,7 +200,11 @@ class Market:
         risk=side*(b.close-stop)
         peak=(origin.departure_high if side>0 else origin.departure_low) if origin else (c.high if side>0 else c.low)
         depth=side*(peak-b.close)/max(abs(peak-c.level.price),self.tick)
-        out.update(body=side*(b.close-b.open)/rng,wick=side*((min(b.open,b.close)-b.low)-(b.high-max(b.open,b.close)))/rng,
+        z=self.contexts.get(c.key)
+        out.update(context_scale=math.log2(z['tf']/5) if z else 0.,
+                   context_age=math.log1p((b.ts-z['born'])/(z['tf']*MINUTE)) if z else 0.,
+                   source_strength=c.level.strength,
+                   body=side*(b.close-b.open)/rng,wick=side*((min(b.open,b.close)-b.low)-(b.high-max(b.open,b.close)))/rng,
             activity=math.log1p(b.volume/meanvol),range_expansion=math.log1p(rng/meanrng),
             impact_residual=side*((b.close-b.open)/u-beta*currentflow),
             flow_change=side*(currentflow-float(np.mean(flows[-5:]))),
@@ -203,7 +250,13 @@ class Market:
             z=max(same,key=lambda x:(x.tf,x.strength))
             c=Challenge(f'EVENT:{b.ts}:{kind}',z,b.ts,b.high,b.low,b.volume,b.buy,
                         max(np.mean([x.volume for x in self.history[-61:-1]]),1e-12),self.unit(),self.destination(-kind,z.price,b.ts))
-            self.pending[kind]=c; self.recent.append(c); self.stats['boundary_challenge']+=1
+            z=self._context(c)
+            if z is None:
+                self.stats['no_prior_directional_footprint']+=1;continue
+            c.key=z['key']
+            c.started=z['first_test'] or c.started
+            self.contexts[c.key]=z
+            self.pending[kind]=c;self.recent.append(c);self.stats['boundary_challenge']+=1
     def _reclaims(self,b,prev,market):
         plans=[]
         for kind,c in list(self.pending.items()):
@@ -218,9 +271,16 @@ class Market:
                 self.stats['challenge_replaced_by_new_auction']+=1;del self.pending[kind];continue
             if c.target is not None and (b.high>=c.target if side>0 else b.low<=c.target):
                 self.stats['destination_already_traded']+=1;del self.pending[kind];continue
-            response=b.close>prev.high if side>0 else b.close<prev.low
-            if inside and response and not c.emitted:
-                c.emitted=True
+            if b.ts//MINUTE%5 or not self.five:continue
+            prior=self.five[-1]
+            response=(b.close>prior.high if side>0 else b.close<prior.low)
+            z=self.contexts.get(c.key)
+            if not z or not z['alive']:del self.pending[kind];continue
+            if inside and response and not c.emitted and c.key not in self.completed_reclaims:
+                c.emitted=True;self.completed_reclaims.add(c.key)
+                # A five-minute transfer must invalidate at the full formation,
+                # not an artificially tight one-minute noise extreme.
+                c.low=min(c.low,prior.low);c.high=max(c.high,prior.high)
                 if c.target is not None:
                     p=self._plan(c,b,side,c.low-self.tick if side>0 else c.high+self.tick,c.target,market)
                     if p is not None:plans.append(p);self._explain(c,'plan_emitted',b.ts)
@@ -260,13 +320,16 @@ class Market:
         meaningful=abs(p.close-p.open)>.1*np.median([abs(v.close-v.open) for v in f[-48:]])
         gap=(b.low>a.high and p.close>p.open and abs(p.close-p.open)>=2*max(abs(body),abs(a.close-a.open))) if side>0 else (b.high<a.low and p.close<p.open and abs(p.close-p.open)>=2*max(abs(body),abs(a.close-a.open)))
         if not (engulf and meaningful) and not gap:return
-        candidates=[c for c in self.recent if x.ts-c.started<=3*c.level.tf*MINUTE and side*(x.close-c.level.price)>0]
+        candidates=[c for c in self.recent if x.ts-c.started<=3*c.level.tf*MINUTE
+                    and side==-c.level.kind and side*(x.close-c.level.price)>0
+                    and c.key in self.contexts and self.contexts[c.key]['alive']]
         if not candidates:return
         c=max(candidates,key=lambda q:(q.started,q.level.tf))
         if side>0:
             low,high=(a.high,b.low) if gap else sorted((p.open,p.close));stop=min(v.low for v in ((a,p,b) if gap else (p,b)))-self.tick
         else:
             low,high=(b.high,a.low) if gap else sorted((p.open,p.close));stop=max(v.high for v in ((a,p,b) if gap else (p,b)))+self.tick
+        stop=min(stop,c.low-self.tick) if side>0 else max(stop,c.high+self.tick)
         if side*(b.close-(high if side>0 else low))<=0:return
         self.origins[side]=Origin(c.key,c,side,b.ts,low,high,stop,b.high,b.low,self.destination(side,b.close,b.ts),int(engulf)+int(gap))
         self.stats['liquidity_displacement_origin']+=1
@@ -280,6 +343,7 @@ class Market:
             self.bases.append(10000*(b.close/mark-1))
         else:self.bases.append(0.)
         plans=[]
+        self._update_zones(b)
         if len(self.history)>240:
             self._challenge_levels(b,prev)
             plans.extend(self._reclaims(b,prev,market))
@@ -287,6 +351,7 @@ class Market:
         for tf,frame in self.frames.items():
             x=frame.append(b)
             if x is None:continue
+            self._new_zones(tf)
             if tf==5:self._new_origin(x)
             if tf in (15,60):
                 ch=frame.channel(b.ts)
