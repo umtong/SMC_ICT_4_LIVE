@@ -155,14 +155,14 @@ class Market:
                 bars=(p,b) if kind=='OB' else (a,p,b)
                 self.zones.append(dict(key=f'{kind}:{tf}:{b.ts}:{side}',side=side,tf=tf,born=b.ts,impulse_ts=p.ts if kind=='FVG' else b.ts,low=low,high=high,
                      stop=min(v.low for v in bars)-self.tick if side>0 else max(v.high for v in bars)+self.tick,
-                     extreme=b.high if side>0 else b.low,first_test=0,alive=True))
+                     extreme=b.high if side>0 else b.low,first_test=0,alive=True,invalidated=False))
         self.zones=[z for tf in (5,15,60) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]
     def _update_zones(self,b):
         for z in self.zones:
             if not z['alive'] or b.ts<=z['born']:continue
             side=z['side']
             if b.low<=z['stop'] if side>0 else b.high>=z['stop']:
-                z['alive']=False;continue
+                z['alive']=False;z['invalidated']=True;continue
             touch=b.low<=z['high'] and b.high>=z['low']
             if not z['first_test']:
                 if touch:z['first_test']=b.ts
@@ -228,7 +228,7 @@ class Market:
             self.stats['geometry_below_one_r']+=1; return None
         features=self._features(c,b,side,stop,target,market,origin)
         return Plan(f'{self.symbol}:{c.key}:{b.ts}:{int(origin is not None)}',f'{self.symbol}:{c.key}',self.symbol,
-                    Side.LONG if side>0 else Side.SHORT,b.ts,c.started,b.close,stop,target,reward/risk,
+                    Side.LONG if side>0 else Side.SHORT,b.ts,(self.contexts.get(c.key,{}).get('first_test') or c.started),b.close,stop,target,reward/risk,
                     c.level.price,c.level.tf,c.level.key,'OBSERVED_OPPOSING_STRUCTURE',
                     origin.low if origin else c.level.price,origin.high if origin else c.level.price,
                     origin.departure_high if origin else c.high,origin.departure_low if origin else c.low,features,
@@ -254,7 +254,6 @@ class Market:
             if z is None:
                 self.stats['no_prior_directional_footprint']+=1;continue
             c.key=z['key']
-            c.started=z['first_test'] or c.started
             self.contexts[c.key]=z
             self.pending[kind]=c;self.recent.append(c);self.stats['boundary_challenge']+=1
     def _reclaims(self,b,prev,market):
@@ -293,20 +292,25 @@ class Market:
             if b.ts<=o.born:continue
             if (b.low<=o.stop if side>0 else b.high>=o.stop):
                 self.stats['origin_invalidated']+=1;del self.origins[side];continue
-            if o.destination is not None and (b.high>=o.destination if side>0 else b.low<=o.destination):
-                self.stats['origin_destination_spent']+=1;del self.origins[side];continue
             if not o.returned:
                 touch=b.low<=o.high if side>0 else b.high>=o.low
                 if not touch:
-                    o.departure_high=max(o.departure_high,b.high);o.departure_low=min(o.departure_low,b.low);continue
+                    o.departure_high=max(o.departure_high,b.high)
+                    o.departure_low=min(o.departure_low,b.low)
+                    continue
                 o.returned=True;o.return_time=b.ts;self.stats['origin_first_return']+=1
+                # A previously collected pool is no longer an obstacle. The
+                # completed departure leg supplies a known return-wave target.
+                peak=o.departure_high if side>0 else o.departure_low
+                ahead=[v for v in self.targets(side,b.close,b.ts)+[peak] if side*(v-b.close)>self.tick]
+                o.destination=min(ahead,key=lambda v:side*(v-b.close)) if ahead else None
+            elif (b.high>=o.departure_high if side>0 else b.low<=o.departure_low):
+                self.stats['return_wave_completed_without_entry']+=1;del self.origins[side];continue
             o.return_volume+=b.volume;o.return_count+=1
             response=b.close>prev.high if side>0 else b.close<prev.low
             if not response:continue
-            peak=o.departure_high if side>0 else o.departure_low
-            targets=[p for p in (peak,o.destination) if p is not None and side*(p-b.close)>self.tick]
-            if targets:
-                target=min(targets,key=lambda p:side*(p-b.close))
+            target=o.destination
+            if target is not None and side*(target-b.close)>self.tick:
                 p=self._plan(o.parent,b,side,o.stop,target,market,o)
                 if p is not None:plans.append(p);self._explain(o.parent,'origin_plan_emitted',b.ts)
             del self.origins[side]
@@ -319,7 +323,8 @@ class Market:
             candidates=[(c,z) for c in self.recent for z in footprints
                         if z['impulse_ts']>=c.started and side==-c.level.kind
                         and side*(x.close-c.level.price)>0 and c.key in self.contexts
-                        and self.contexts[c.key]['alive']]
+                        and not self.contexts[c.key]['invalidated']
+                        and x.ts-c.started<=3*c.level.tf*MINUTE]
             if not candidates:continue
             c,z=max(candidates,key=lambda q:(q[0].started,q[1]['low'] if side>0 else -q[1]['high']))
             low,high=z['low'],z['high']
