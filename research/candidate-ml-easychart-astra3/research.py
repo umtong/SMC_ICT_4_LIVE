@@ -16,7 +16,7 @@ for p in (ROOT/'candidate-easychart-v3',ROOT/'candidate-easychart-v5',ROOT/'cand
     sys.path.insert(0,str(p))
 from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
-from flow_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
+from space_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
 from extended_inputs import ExtraObservations,EXTRA_FEATURES
 from executed_flow import ExecutedFlow,MICRO_FEATURES
 FEATURES=AUCTION_FEATURES+EXTRA_FEATURES+MICRO_FEATURES
@@ -65,13 +65,13 @@ class Tape:
         for p in plans:
             unit_bps=p.features['risk_bps']/p.features['risk_range']
             micro=self.micro.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps)
-            if micro is None:continue
+            if micro is None:micro={k:float("nan") for k in MICRO_FEATURES}
             f=dict(p.features);f.update(micro)
             f.update(self.extra.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps))
             attached.append(replace(p,features=f))
         return attached,stats
     def plans(self):
-        source=b''.join((HERE/f).read_bytes() for f in ('policy.py','auction_policy.py','flow_policy.py','executed_flow.py'))
+        source=b''.join((HERE/f).read_bytes() for f in ('policy.py','space_policy.py'))
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
         if path.exists():return self.with_participation(pickle.loads(path.read_bytes()))

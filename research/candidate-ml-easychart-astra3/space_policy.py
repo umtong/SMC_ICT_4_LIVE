@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'space_policy.py').write_text('''"""A price corridor is context, not an independent channel trading strategy.
+"""A price corridor is context, not an independent channel trading strategy.
 
 EasyChart channel pp6-12 and Fakeout/Trap pp6-7: three known wick anchors define
 where a public boundary exists. The attack's rejection/acceptance supplies the
@@ -155,19 +152,3 @@ class LiquidityPolicy:
                     for s,b in bars.items() if len(self.markets[s].history)>=n]
             market[n]=float(np.median(values)) if values else 0.
         return [p for s in sorted(bars) for p in self.markets[s].observe(bars[s],market)]
-''')
-p=here/'research.py';s=p.read_text()
-s=s.replace('from flow_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES','from space_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES')
-s=s.replace("('policy.py','auction_policy.py','flow_policy.py','executed_flow.py')","('policy.py','space_policy.py')")
-s=s.replace('            if micro is None:continue','            if micro is None:micro={k:float("nan") for k in MICRO_FEATURES}')
-p.write_text(s)
-features=['move_15','move_60','move_240','flow_15','flow_60','efficiency_15','efficiency_60','location_60',
-          'body','wick','range_expansion','context_15','context_60','cost_r','planned_rr','risk_bps',
-          'source_scale','source_strength','event_age','entry_distance','penetration','event_flow','event_activity',
-          'acceptance','channel_width','channel_slope','channel_age','channel_location','response_effort',
-          'market_15','market_60','relative_15','x_spot_flow_15','x_relative_move_15','x_oi_change_15','x_premium']
-r={'months':['2024-03','2024-08'],'train_end':'2024-08-11','calibration_end':'2024-08-15','features':features,
-   'experiments':[{'name':'v9_corridor_raw_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24','raw':True},
-                  {'name':'v9_corridor_learned_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24'}]}
-(here/'request.json').write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()
