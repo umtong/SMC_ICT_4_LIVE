@@ -27,6 +27,7 @@ from sklearn.linear_model import LogisticRegression
 OUT=Path('research_results/candidate_ml_easychart_astra3')
 CACHE=Path('astra3_cache');CACHE.mkdir(exist_ok=True)
 OUT.mkdir(parents=True,exist_ok=True)
+LOG_GUARDS=[]  # Keep Nautilus' process-global logger alive across engine disposal.
 
 def ns(x):return int(pd.Timestamp(x,tz='UTC').value)
 
@@ -175,6 +176,7 @@ def backtest(tape,plans,scores,name,start,end,starting_nav=100000.,stress=1.):
     liquidity=ExecutionLiquidity(stress)
     funding=FundingCashflows([r for r in tape.funding if a<r[0]<=end_ns],tape.mark_at)
     engine=make_engine(funding,liquidity,starting_nav)
+    if engine.kernel._log_guard is not None:LOG_GUARDS.append(engine.kernel._log_guard)
     types=[];instruments=[]
     for s,inst in tape.instruments.items():
         instruments.append(inst);engine.add_instrument(inst)
@@ -241,6 +243,7 @@ def label_summary(labels):
                    'mean_rr':float(g.gross_rr.mean()),'median_hold':float(g.label_hold.median()),'ambiguous':int(g.label_ambiguous.sum())} for k,g in labels.groupby('family')}
 
 def main():
+    (OUT/'error.txt').unlink(missing_ok=True)
     request=json.loads((HERE/'request.json').read_text())
     tapes={m:Tape(m) for m in request['months']};allplans={};labels=[];generation={}
     for month,tape in tapes.items():
