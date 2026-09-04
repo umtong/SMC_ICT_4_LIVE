@@ -16,7 +16,9 @@ for p in (ROOT/'candidate-easychart-v3',ROOT/'candidate-easychart-v5',ROOT/'cand
     sys.path.insert(0,str(p))
 from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
-from auction_policy import LiquidityPolicy,FEATURES
+from auction_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
+from extended_inputs import ExtraObservations,EXTRA_FEATURES
+FEATURES=AUCTION_FEATURES+EXTRA_FEATURES
 from execution import AstraStrategy,ExecutionLiquidity,FundingCashflows,make_engine,EasyChartMTFConfig,VENUE,USDT
 from fee_profiles_v5 import make_instrument_with_fee_profile,FEE_PROFILES
 from nautilus_trader.adapters.binance.common.types import BinanceBar
@@ -37,6 +39,7 @@ class Tape:
         self.raw={s:load_bars(s,month) for s in symbols}
         self.marks={s:load_bars(s,month,'markPriceKlines') for s in symbols}
         self.funding=[r for s in symbols for r in load_funding(s,month)]
+        self.extra=ExtraObservations(month,self.raw)
         self.instruments={s:make_instrument_with_fee_profile(s,FEE_PROFILES['usd_m_vip0']) for s in symbols}
         self.ticks={s:float(i.price_increment) for s,i in self.instruments.items()}
         self.mark_arrays={s:(d.ts.to_numpy(dtype=np.int64),d.close.to_numpy(dtype=float)) for s,d in self.marks.items()}
@@ -53,11 +56,21 @@ class Tape:
         stamps,prices=self.mark_arrays[s]
         i=np.searchsorted(stamps,t,side='right')-1
         return float(prices[i]) if i>=0 and t-stamps[i]<=MINUTE else float('nan')
+    def with_participation(self,value):
+        from dataclasses import replace
+        plans,stats=value
+        attached=[]
+        for p in plans:
+            unit_bps=p.features['risk_bps']/p.features['risk_range']
+            f=dict(p.features)
+            f.update(self.extra.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps))
+            attached.append(replace(p,features=f))
+        return attached,stats
     def plans(self):
         source=(HERE/'policy.py').read_bytes()+(HERE/'auction_policy.py').read_bytes()
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
-        if path.exists():return pickle.loads(path.read_bytes())
+        if path.exists():return self.with_participation(pickle.loads(path.read_bytes()))
         policy=LiquidityPolicy(self.ticks,self.feature_mark_at)
         arrays={s:d[['ts','open','high','low','close','volume','taker_buy_volume','quote_volume','count']].to_numpy() for s,d in self.raw.items()}
         plans=[]
@@ -69,7 +82,7 @@ class Tape:
             plans.extend(policy.observe(bars))
         value=(plans,{s:dict(m.stats) for s,m in policy.markets.items()})
         path.write_bytes(pickle.dumps(value));print('CANDIDATES',self.month,len(plans),flush=True)
-        return value
+        return self.with_participation(value)
     def outcomes(self,plans):
         arrays={s:d[['ts','open','high','low','close']].to_numpy() for s,d in self.raw.items()}
         output=[]

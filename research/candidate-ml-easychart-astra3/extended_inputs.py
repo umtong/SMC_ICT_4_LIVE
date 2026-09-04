@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'extended_inputs.py').write_text('''"""Observed cash/perpetual repricing and position creation, not candle votes.
+"""Observed cash/perpetual repricing and position creation, not candle votes.
 
 OI does not identify long versus short intent. We expose unsigned contract-count
 changes jointly with signed price/flow response. Metrics are made available one
@@ -76,33 +73,3 @@ class ExtraObservations:
             if '_move_' in k:v/=max(unit_bps,1e-6)
             result[k]=float(v)
         return result
-''')
-p=here/'research.py';s=p.read_text()
-old='from auction_policy import LiquidityPolicy,FEATURES'
-new='from auction_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES\nfrom extended_inputs import ExtraObservations,EXTRA_FEATURES\nFEATURES=AUCTION_FEATURES+EXTRA_FEATURES'
-assert s.count(old)==1;s=s.replace(old,new)
-old="        self.funding=[r for s in symbols for r in load_funding(s,month)]"
-new=old+"\n        self.extra=ExtraObservations(month,self.raw)"
-assert s.count(old)==1;s=s.replace(old,new)
-old='    def plans(self):\n'
-new='''    def with_participation(self,value):
-        from dataclasses import replace
-        plans,stats=value
-        attached=[]
-        for p in plans:
-            unit_bps=p.features['risk_bps']/p.features['risk_range']
-            f=dict(p.features)
-            f.update(self.extra.at(p.symbol,p.observed_time_ns,int(p.side.value),unit_bps))
-            attached.append(replace(p,features=f))
-        return attached,stats
-    def plans(self):
-'''
-assert s.count(old)==1;s=s.replace(old,new)
-s=s.replace('if path.exists():return pickle.loads(path.read_bytes())','if path.exists():return self.with_participation(pickle.loads(path.read_bytes()))')
-old='        return value\n    def outcomes(self,plans):'
-assert s.count(old)==1;s=s.replace(old,'        return self.with_participation(value)\n    def outcomes(self,plans):')
-p.write_text(s)
-p=here/'request.json';r=json.loads(p.read_text())
-for job in r['experiments']:job['name']=job['name'].replace('v5_auction_','v6_participation_')
-p.write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()
