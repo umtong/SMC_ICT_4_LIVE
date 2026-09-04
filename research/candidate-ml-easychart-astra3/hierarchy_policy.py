@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'hierarchy_policy.py').write_text('''"""One directional auction with successive local defenses.
+"""One directional auction with successive local defenses.
 
 Source interpretation: liquidity determines direction; a *new* lower-frame
 OB/FVG after a corrective wave supplies entry and its own invalidation. A new
@@ -201,29 +198,3 @@ class LiquidityPolicy:
                      peer_flow=float(np.median([side*sum(b.delta for b in m.history[-15:])/max(sum(b.volume for b in m.history[-15:]),1e-12) for m in peers])))
             result.append(replace(p,features=f))
         return result
-''')
-p=here/'policy.py';s=p.read_text()
-old="self.zones=[z for tf in (5,15,60) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]"
-new="self.zones=[z for tf in sorted(self.frames) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]"
-assert s.count(old)==1;s=s.replace(old,new);p.write_text(s)
-p=here/'research.py';s=p.read_text()
-s=s.replace('from space_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES','from hierarchy_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES')
-s=s.replace("('policy.py','space_policy.py')","('policy.py','hierarchy_policy.py')")
-p.write_text(s)
-p=here/'models.py';s=p.read_text()
-a=s.index('    buckets=');b=s.index('    data=lgb.Dataset(',a)
-s=s[:a]+'''    counts=train.causal_event_id.value_counts()
-    weights=np.array([1./counts[k] for k in train.causal_event_id])
-    weights*=len(weights)/weights.sum()
-''' +s[b:];p.write_text(s)
-features=['move_15','move_60','move_240','flow_15','flow_60','efficiency_15','efficiency_60',
-          'body','wick','range_expansion','context_15','context_60','cost_r','planned_rr','risk_bps',
-          'source_scale','source_strength','entry_distance','penetration','event_flow','event_activity',
-          'market_15','market_60','relative_15','controller_age','controller_progress','controller_distance','controller_scale',
-          'context_240','pullback_depth','pullback_effort','initiative_effort','defense_body','return_effort','return_progress',
-          'peer_direction','peer_flow','x_spot_flow_15','x_relative_move_15','x_oi_change_15','x_premium']
-r={'months':['2024-03','2024-08'],'train_end':'2024-08-11','calibration_end':'2024-08-15','features':features,
-   'experiments':[{'name':'v10_hierarchy_raw_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24','raw':True},
-                  {'name':'v10_hierarchy_learned_aug16_24','month':'2024-08','start':'2024-08-16','end':'2024-08-24'}]}
-(here/'request.json').write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()

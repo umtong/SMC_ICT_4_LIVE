@@ -156,7 +156,7 @@ class Market:
                 self.zones.append(dict(key=f'{kind}:{tf}:{b.ts}:{side}',side=side,tf=tf,born=b.ts,impulse_ts=p.ts if kind=='FVG' else b.ts,low=low,high=high,
                      stop=min(v.low for v in bars)-self.tick if side>0 else max(v.high for v in bars)+self.tick,
                      extreme=b.high if side>0 else b.low,first_test=0,alive=True,invalidated=False))
-        self.zones=[z for tf in (5,15,60) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]
+        self.zones=[z for tf in sorted(self.frames) for z in [v for v in self.zones if v['tf']==tf and v['alive']][-32:]]
     def _update_zones(self,b):
         for z in self.zones:
             if not z['alive'] or b.ts<=z['born']:continue

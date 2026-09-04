@@ -37,8 +37,9 @@ def fit_offset(train,calibration,columns):
     columns=tuple(k for k in columns if k!='planned_rr')
     rr=train.gross_rr.to_numpy(dtype=float)
     if not len(train) or np.any(~np.isfinite(rr)) or np.any(rr<1):raise ValueError('invalid training plans')
-    buckets=(train.observed_time_ns//900000000000).value_counts()
-    weights=np.array([1/math.sqrt(buckets[t//900000000000]) for t in train.observed_time_ns])
+    counts=train.causal_event_id.value_counts()
+    weights=np.array([1./counts[k] for k in train.causal_event_id])
+    weights*=len(weights)/weights.sum()
     data=lgb.Dataset(train[list(columns)].to_numpy(),label=train.label_target.to_numpy(),
                      init_score=-np.log(rr),weight=weights,feature_name=list(columns))
     params=dict(objective='binary',num_leaves=7,max_depth=3,min_data_in_leaf=40,
