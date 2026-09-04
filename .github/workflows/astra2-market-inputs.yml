@@ -1,0 +1,28 @@
+name: Astra2 spot and derivatives observations
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra2]
+    paths:
+      - research/candidate-ml-easychart-astra2/download_inputs.py
+      - .github/workflows/astra2-market-inputs.yml
+permissions:
+  contents: read
+jobs:
+  observations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reuse public archive transport for causal market observations
+        run: |
+          python research/candidate-ml-easychart-astra2/download_inputs.py --extended-only --output extended_market
+          tar -czf astra2-extended-market.tar.gz extended_market
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra2-extended-market
+          path: astra2-extended-market.tar.gz
+          compression-level: 0
+          retention-days: 30
