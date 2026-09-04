@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'models.py').write_text('''"""Offset binary model: learn directional excess, not a raw RR-dependent hit rate.
+"""Offset binary model: learn directional excess, not a raw RR-dependent hit rate.
 
 For a driftless continuous-price process between fixed barriers, the target-hit
 probability is 1/(1+RR). This is an explicit null model, not a claim that markets
@@ -59,23 +56,3 @@ def fit_offset(train,calibration,columns):
     return decision,dict(training_labels=len(train),calibration_labels=len(calibration),features=list(columns),
                          null_model='logit(p_target)=-log(gross_RR)',calibration_intercept=intercept,
                          importance={k:float(v) for k,v in zip(columns,model.feature_importance(importance_type='gain'),strict=True)})
-''')
-p=here/'research.py';s=p.read_text()
-old='label_win=int(net_r>0),'
-assert s.count(old)==1;s=s.replace(old,old+'label_target=int(not stop),')
-a=s.index('class LearnedDecision:');b=s.index('class AccountStrategy(',a)
-s=s[:a]+'''def fit_decision(labels,train_end,calibration_end):
-    from models import fit_offset
-    train=labels[labels.label_closed<ns(train_end)].copy()
-    calibration=labels[(labels.observed_time_ns>=ns(train_end))&(labels.label_closed<ns(calibration_end))].copy()
-    decision,details=fit_offset(train,calibration,FEATURES)
-    details.update(train_end=train_end,calibration_end=calibration_end)
-    print('FIT_OFFSET',json.dumps(details),flush=True)
-    return decision,details
-
-''' +s[b:]
-p.write_text(s)
-p=here/'request.json';r=json.loads(p.read_text())
-for job in r['experiments']:job['name']=job['name'].replace('v9_corridor_','v9_offset_corridor_')
-p.write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()

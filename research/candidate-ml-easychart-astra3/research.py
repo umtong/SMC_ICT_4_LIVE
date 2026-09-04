@@ -112,51 +112,19 @@ class Tape:
             fee=.0005*entry+(.0005 if stop else .0002)*exit_price
             funding=sum(-side*self.mark_at(s,t)*r for t,s,r in self.funding if s==p.symbol and p.observed_time_ns<t<=closed)
             net_r=(side*(exit_price-entry)-fee+funding)/risk
-            row=p.record();row.update(label_closed=closed,label_net_r=float(net_r),label_win=int(net_r>0),
+            row=p.record();row.update(label_closed=closed,label_net_r=float(net_r),label_win=int(net_r>0),label_target=int(not stop),
                                      label_hold=(closed-p.observed_time_ns)/MINUTE,label_ambiguous=ambiguous)
             output.append(row)
         return pd.DataFrame(output)
 
-class LearnedDecision:
-    def __init__(self,model,calibration=None):self.model=model;self.calibration=calibration;self.columns=FEATURES
-    def probability(self,plans):
-        x=np.array([[p.features[k] for k in self.columns] for p in plans],dtype=float)
-        probabilities=self.model.predict_proba(x)[:,1]
-        if self.calibration is not None:
-            logits=np.log(np.clip(probabilities,1e-5,1-1e-5)/(1-np.clip(probabilities,1e-5,1-1e-5)))[:,None]
-            probabilities=self.calibration.predict_proba(logits)[:,1]
-        return probabilities
-    def scores(self,plans):
-        probabilities=self.probability(plans);scores={}
-        for p,prob in zip(plans,probabilities,strict=True):
-            side=int(p.side.value)
-            entry=p.entry*(1+side*.0001)
-            risk=abs(p.entry-p.stop)+.0006*(p.entry+p.stop)+p.entry*.0001
-            win_r=(side*(p.target-entry)-.0005*entry-.0002*p.target)/risk
-            loss_r=-1.
-            score=prob*math.log1p(.03*win_r)+(1-prob)*math.log1p(.03*loss_r)
-            scores[p.plan_id]=(float(score),float(prob))
-        return scores
-
 def fit_decision(labels,train_end,calibration_end):
+    from models import fit_offset
     train=labels[labels.label_closed<ns(train_end)].copy()
     calibration=labels[(labels.observed_time_ns>=ns(train_end))&(labels.label_closed<ns(calibration_end))].copy()
-    # Equalize contemporaneous episodes, not symbols or trading outcomes.
-    groups=(train.observed_time_ns//(15*MINUTE)).value_counts()
-    weights=np.array([1/math.sqrt(groups[t//(15*MINUTE)]) for t in train.observed_time_ns])
-    model=HistGradientBoostingClassifier(max_iter=160,max_leaf_nodes=7,max_depth=3,min_samples_leaf=40,
-              learning_rate=.05,l2_regularization=10.,early_stopping=False,random_state=31)
-    model.fit(train[list(FEATURES)].to_numpy(),train.label_win.to_numpy(),sample_weight=weights)
-    fitted=None
-    if len(calibration)>=50 and calibration.label_win.nunique()==2:
-        p=model.predict_proba(calibration[list(FEATURES)].to_numpy())[:,1]
-        logit=np.log(np.clip(p,1e-5,1-1e-5)/(1-np.clip(p,1e-5,1-1e-5)))[:,None]
-        fitted=LogisticRegression(C=1.,random_state=31).fit(logit,calibration.label_win)
-    decision=LearnedDecision(model,fitted)
-    print('FIT',len(train),'CALIBRATION',len(calibration),'CLASS_MEANS',float(train.label_win.mean()),float(calibration.label_win.mean()) if len(calibration) else None,flush=True)
-    return decision,{'training_labels':len(train),'calibration_labels':len(calibration),'train_end':train_end,'calibration_end':calibration_end,
-                     'features':list(FEATURES),'calibration_slope':float(fitted.coef_[0,0]) if fitted else None,
-                     'calibration_intercept':float(fitted.intercept_[0]) if fitted else None}
+    decision,details=fit_offset(train,calibration,FEATURES)
+    details.update(train_end=train_end,calibration_end=calibration_end)
+    print('FIT_OFFSET',json.dumps(details),flush=True)
+    return decision,details
 
 class AccountStrategy(AstraStrategy):
     def __init__(self,*args,**kwargs):
