@@ -16,7 +16,7 @@ for p in (ROOT/'candidate-easychart-v3',ROOT/'candidate-easychart-v5',ROOT/'cand
     sys.path.insert(0,str(p))
 from experiment import load_bars,load_funding
 from astra_policy import Observation,MINUTE,SYMBOLS
-from auction_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
+from flow_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES
 from extended_inputs import ExtraObservations,EXTRA_FEATURES
 from executed_flow import ExecutedFlow,MICRO_FEATURES
 FEATURES=AUCTION_FEATURES+EXTRA_FEATURES+MICRO_FEATURES
@@ -71,11 +71,11 @@ class Tape:
             attached.append(replace(p,features=f))
         return attached,stats
     def plans(self):
-        source=(HERE/'policy.py').read_bytes()+(HERE/'auction_policy.py').read_bytes()
+        source=b''.join((HERE/f).read_bytes() for f in ('policy.py','auction_policy.py','flow_policy.py','executed_flow.py'))
         key=hashlib.sha256(source).hexdigest()[:16]
         path=CACHE/f'{self.month}-{key}-plans.pkl'
         if path.exists():return self.with_participation(pickle.loads(path.read_bytes()))
-        policy=LiquidityPolicy(self.ticks,self.feature_mark_at)
+        policy=LiquidityPolicy(self.ticks,self.feature_mark_at,self.micro)
         arrays={s:d[['ts','open','high','low','close','volume','taker_buy_volume','quote_volume','count']].to_numpy() for s,d in self.raw.items()}
         plans=[]
         for i in range(len(next(iter(arrays.values())))):

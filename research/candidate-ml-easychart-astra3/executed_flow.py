@@ -23,6 +23,11 @@ class ExecutedFlow:
             if d.index.duplicated().any():raise ValueError('duplicate microstructure observation')
             times=d.index.as_unit('ns').asi8
             self.tables[s]=(times,d,d.rolling(5,min_periods=5).mean())
+    def raw_at(self,symbol,ts):
+        if symbol not in self.tables:return None
+        stamps,one,_=self.tables[symbol]
+        i=np.searchsorted(stamps,ts,side='right')-1
+        return one.iloc[i] if i>=0 and stamps[i]==ts else None
     def at(self,symbol,ts,side,unit_bps):
         if symbol not in self.tables:return None
         stamps,one,five=self.tables[symbol]

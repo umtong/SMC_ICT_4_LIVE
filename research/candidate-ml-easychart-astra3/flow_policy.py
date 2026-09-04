@@ -1,7 +1,4 @@
-from pathlib import Path
-import json
-here=Path(__file__).resolve().parent
-(here/'flow_policy.py').write_text('''"""Direction from a liquidity attack's price response; location from its inventory.
+"""Direction from a liquidity attack's price response; location from its inventory.
 
 This is a research generalization of EasyChart's liquidity/structure logic, not
 an assertion that its PDFs prescribe VWAP or observed 5-second trade markouts.
@@ -183,24 +180,3 @@ class LiquidityPolicy:
                      relative_displacement=f['move_15']-float(np.median(moves)))
             out.append(replace(p,features=f))
         return out
-''')
-p=here/'executed_flow.py';s=p.read_text()
-old='    def at(self,symbol,ts,side,unit_bps):\n'
-new='''    def raw_at(self,symbol,ts):
-        if symbol not in self.tables:return None
-        stamps,one,_=self.tables[symbol]
-        i=np.searchsorted(stamps,ts,side='right')-1
-        return one.iloc[i] if i>=0 and stamps[i]==ts else None
-    def at(self,symbol,ts,side,unit_bps):
-'''
-assert s.count(old)==1;s=s.replace(old,new);p.write_text(s)
-p=here/'research.py';s=p.read_text()
-s=s.replace('from auction_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES','from flow_policy import LiquidityPolicy,FEATURES as AUCTION_FEATURES')
-s=s.replace("source=(HERE/'policy.py').read_bytes()+(HERE/'auction_policy.py').read_bytes()","source=b''.join((HERE/f).read_bytes() for f in ('policy.py','auction_policy.py','flow_policy.py','executed_flow.py'))")
-s=s.replace('policy=LiquidityPolicy(self.ticks,self.feature_mark_at)','policy=LiquidityPolicy(self.ticks,self.feature_mark_at,self.micro)')
-p.write_text(s)
-p=here/'request.json';r=json.loads(p.read_text())
-r['features']+=['peer_direction','peer_flow','peer_response','relative_displacement']
-for job in r['experiments']:job['name']=job['name'].replace('v7_flow_','v8_inventory_')
-p.write_text(json.dumps(r,indent=2)+'\n')
-Path(__file__).unlink()
