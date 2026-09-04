@@ -73,7 +73,7 @@ class Tape:
         arrays={s:d[['ts','open','high','low','close']].to_numpy() for s,d in self.raw.items()}
         output=[]
         for p in plans:
-            a=arrays[p.symbol];side=1 if p.side.value=='LONG' else -1
+            a=arrays[p.symbol];side=int(p.side.value)
             j=np.searchsorted(a[:,0],p.observed_time_ns,side='right')
             # Entry happens after the signal's closed bar, never at its historical
             # low/high. One basis point is the small-account label assumption.
@@ -111,7 +111,7 @@ class LearnedDecision:
     def scores(self,plans):
         probabilities=self.probability(plans);scores={}
         for p,prob in zip(plans,probabilities,strict=True):
-            side=1 if p.side.value=='LONG' else -1
+            side=int(p.side.value)
             entry=p.entry*(1+side*.0001)
             risk=abs(p.entry-p.stop)+.0006*(p.entry+p.stop)+p.entry*.0001
             win_r=(side*(p.target-entry)-.0005*entry-.0002*p.target)/risk
@@ -213,7 +213,7 @@ def backtest(tape,plans,scores,name,start,end,starting_nav=100000.,stress=1.):
         pd.DataFrame(strategy.nav_path,columns=['ts','nav']).to_csv(path/'nav.csv',index=False)
         (path/'summary.json').write_text(json.dumps(summary,indent=2))
         if len(trades) and not engine.cache.positions_open() and abs((nav-starting_nav)-trades.pnl.sum())>.03:
-            raise AssertionError('account NAV and actual fills/funding differ')
+            raise AssertionError(f'account residual={nav-starting_nav-trades.pnl.sum():.12f}; wallet={nav}; attributed={trades.pnl.sum()}; funding={summary["funding_cash"]}')
         print('ACCOUNT',json.dumps(summary),flush=True)
         return summary
     finally:engine.dispose()
