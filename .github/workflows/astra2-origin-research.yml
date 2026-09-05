@@ -9,7 +9,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-  actions: read
 concurrency:
   group: astra2-origin-research
   cancel-in-progress: false
@@ -25,21 +24,21 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: market_research
-          key: astra2-origins-market-v2
+          key: astra2-origins-market-v3
           restore-keys: astra2-origins-market-
-      - uses: actions/download-artifact@v4
-        with:
-          name: astra2-micro-2025-08-10
-          run-id: 33916611253
-          github-token: ${{ github.token }}
-      - name: Native account with executed-trade seconds
+      - name: Short native accounts across distinct dates
         run: |
           mkdir -p research_results/candidate_ml_easychart_astra2
-          set -o pipefail
           python -m pip install --disable-pip-version-check -q numpy==2.3.5 pandas==2.3.3 nautilus_trader==1.230.0
-          python -u research/candidate-ml-easychart-astra2/review_transfer.py
-          tar -xzf micro-2025-08-10.tar.gz
-          python -u research/candidate-ml-easychart-astra2/nautilus_account.py --start 2025-08-10 --end 2025-08-17 --execution-root micro_market 2>&1 | tee research_results/candidate_ml_easychart_astra2/seconds_console.txt
+          set -o pipefail
+          python -u - <<'PY' 2>&1 | tee research_results/candidate_ml_easychart_astra2/expanded_console.txt
+          import json,sys
+          sys.path.insert(0,'research/candidate-ml-easychart-astra2')
+          from nautilus_account import run,OUT
+          windows=[('2024-08-03','2024-08-10'),('2025-08-10','2025-08-17'),('2025-11-17','2025-11-24'),('2025-02-10','2025-02-17'),('2026-04-13','2026-04-20'),('2026-07-13','2026-07-20')]
+          results=[run(a,b) for a,b in windows]
+          (OUT/'expanded_native_results.json').write_text(json.dumps(results,indent=2)+'\n')
+          PY
       - name: Retain actual observations
         if: always()
         run: |
@@ -47,7 +46,7 @@ jobs:
           git config user.email 'astra2-research@users.noreply.github.com'
           git add -f research_results/candidate_ml_easychart_astra2
           if ! git diff --cached --quiet; then
-            git commit -m "Astra2: native seconds observations for ${{ github.sha }}"
+            git commit -m "Astra2: expanded short observations for ${{ github.sha }}"
             git pull --rebase origin research_candidate_ML_easychart_astra2
             git push origin HEAD:research_candidate_ML_easychart_astra2
           fi
