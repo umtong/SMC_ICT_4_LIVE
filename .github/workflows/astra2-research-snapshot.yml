@@ -1,0 +1,20 @@
+name: Astra2 research snapshot
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra2]
+    paths: [.github/workflows/astra2-research-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package existing source and observations
+        run: git archive --format=tar.gz -o astra2-source.tar.gz HEAD -- research/candidate-ml-easychart-astra2 research_results/candidate_ml_easychart_astra2 research/candidate-easychart-v3 .github/workflows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra2-source
+          path: astra2-source.tar.gz
+          retention-days: 7
