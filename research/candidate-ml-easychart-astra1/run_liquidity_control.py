@@ -17,8 +17,12 @@ base.CACHE.mkdir(parents=True,exist_ok=True)
 
 if __name__=='__main__':
     try:
-        if request.get('entry_method')=='passive':
+        method=request.get('entry_method')
+        if method=='passive':
             from passive_experiment import execute
+            execute(base,request)
+        elif method=='micro':
+            from micro_experiment import execute
             execute(base,request)
         else:
             if all(job.get('learned',True) is False for job in request['experiments']):
