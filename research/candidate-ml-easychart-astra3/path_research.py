@@ -6,10 +6,13 @@ import pandas as pd
 import research as r
 from models import fit_offset
 from path_state import PathTable,FEATURES,test_order_information
+import fast_auction
 
 
 def run():
     request=json.loads((r.HERE/'request.json').read_text())
+    if request.get('fastbook_check',False):fast_auction.check_equivalence(r.Tape(request['months'][0]))
+    fast_auction.install()
     if request.get('driver')!='ordered_path':return r.main()
     test_order_information()
     (r.OUT/'error.txt').unlink(missing_ok=True)
