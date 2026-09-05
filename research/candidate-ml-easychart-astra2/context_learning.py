@@ -1,6 +1,6 @@
-"""A small shared conditional model; no symbol, date, or desired win-rate feature.
-Training labels are first-passage observations. Reported account results must
-come from Nautilus, not from adding counterfactual outcomes.
+"""Shared conditional context model with no symbol or desired win-rate feature.
+Earlier counterfactual labels train the model. Only native Nautilus accounts
+measure the selected policy. Every examined evaluation window is development.
 """
 import json
 from pathlib import Path
@@ -13,7 +13,6 @@ from control_transfer import candidates as base_candidates
 from structural_context import features,FEATURES
 from limit_observations import outcomes
 from first_passage import attach_episodes
-
 OUT=Path('research_results/candidate_ml_easychart_astra2')
 
 class ContextModel:
@@ -58,18 +57,15 @@ def train():
 def main():
     model=train()
     import nautilus_account as account
-    original=account.candidates
+    account.OUT=OUT/'context_native'
     def selected(symbol,d):
-        raw=original(symbol,d)
-        if raw.empty: return raw
-        return model.apply(raw,{symbol:d})
+        raw=base_candidates(symbol,d)
+        return model.apply(raw,{symbol:d}) if not raw.empty else raw
     account.candidates=selected
     results=[]
     for a,b in [('2024-08-03','2024-08-10'),('2025-08-10','2025-08-17'),('2025-11-17','2025-11-24')]:
         result=account.run(a,b)
         result['policy']='earlier_trained_context'
         results.append(result)
-        for p in OUT.glob(f'nautilus_transfer_{a}_1-MINUTE_*'):
-            p.rename(p.with_name(p.name.replace('nautilus_transfer_','nautilus_context_')))
     (OUT/'context_native_results.json').write_text(json.dumps(results,indent=2)+'\n')
 if __name__=='__main__': main()
