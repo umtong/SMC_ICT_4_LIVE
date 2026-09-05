@@ -1,8 +1,7 @@
 """External liquidity -> internal structure break -> original-price retest.
-Unlike an isolated OB or boundary touch, direction is not asserted until the
-incoming side loses its last defended internal swing. The entry is a limit at
-the displacement origin, the stop the whole liquidity event, and the target the
-nearest previously observed opposing pool. No partials or fixed-RR target.
+The incoming side must lose its last defended internal swing. The limit entry
+is the displacement origin, stop the entire liquidity event, and target the
+nearest unconsumed opposing pool. No fixed-RR target or partial execution.
 """
 import numpy as np
 import pandas as pd
@@ -32,38 +31,29 @@ def candidates(symbol,d):
             side=-kind
             if side not in latest: continue
             swing=latest[side]
-            # A swing already broken before the sweep cannot establish a new transfer.
             if side*(c[i-1]-swing[1])>=0: continue
             old=active.get(side)
             if old is None or scale>old['scale']:
                 active[side]={'start':i,'source':pt,'pool':price,'scale':scale,'shift':swing[1],'extreme':h[i] if side==-1 else l[i]}
-        pools=untouched
-        keep={}
+        pools=untouched; keep={}
         for side,event in active.items():
             a=event['start']
             event['extreme']=min(event['extreme'],l[i]) if side==1 else max(event['extreme'],h[i])
             reclaimed=side*(c[i]-event['pool'])>0
             transferred=side*(c[i]-event['shift'])>0
             if not reclaimed or not transferred:
-                # A full incoming swing beyond the swept pool is accepted continuation,
-                # not a reversal hypothesis waiting indefinitely to become true.
                 if abs(event['extreme']-event['pool'])<=abs(event['shift']-event['pool']): keep[side]=event
                 continue
             opposite=[j for j in range(a,i+1) if side*(c[j]-o[j])<0]
-            if not opposite:
-                opposite=[j for j in range(max(0,a-2),a) if side*(c[j]-o[j])<0]
+            if not opposite: opposite=[j for j in range(max(0,a-2),a) if side*(c[j]-o[j])<0]
             if not opposite: continue
-            origin=opposite[-1]
-            entry=(o[origin]+c[origin])/2
-            stop=event['extreme']-side*tick
-            risk=side*(entry-stop)
+            origin=opposite[-1]; entry=(o[origin]+c[origin])/2
+            stop=event['extreme']-side*tick; risk=side*(entry-stop)
             if risk<=0 or side*(c[i]-entry)<=0: continue
-            targets=[p[1]-side*tick for p in pools if p[2]==side and side*(p[1]-entry)>tick]
-            # The last internal opposing swing is also a real obstacle, not ignored for RR.
-            targets += [p[1]-side*tick for k,p in latest.items() if k==side and side*(p[1]-entry)>tick]
+            targets=[p[1]-side*tick for p in pools if p[2]==side and side*(p[1]-c[i])>tick]
             if not targets: continue
             target=min(targets,key=lambda x:side*(x-entry)); reward=side*(target-entry)
-            if reward<risk or side*(target-c[i])<=0: continue
+            if reward<risk: continue
             length=i-a+1; volume=vv[i+1]-vv[a]; delta=dd[i+1]-dd[a]
             f={'rr':reward/risk,'cost_r':entry*.0009/risk,'scale':float(event['scale']),'sweep_depth':abs(event['extreme']-event['pool'])/max(atr[i],tick),'shift_size':side*(c[i]-event['shift'])/max(atr[i],tick),'event_effort':volume/length/max(med[i],1e-12),'flow':side*delta/max(volume,1e-12),'flow_resilience':side*(c[i]-c[a-1])/max(atr[i],tick)-side*delta/max(volume,1e-12),'retracement':side*(c[i]-entry)/max(atr[i],tick),'event_minutes':float(length*5)}
             for bars,name in [(12,'hour'),(48,'fourhour')]:
