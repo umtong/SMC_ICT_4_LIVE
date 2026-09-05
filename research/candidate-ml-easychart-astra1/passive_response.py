@@ -5,7 +5,6 @@ response. Once the footprint exists, place the single order at its nearest edge.
 Stop includes all forming wicks; target is the first opposing structure. No entry
 is assumed from the bar that created the order, and no entry is chased later.
 """
-from dataclasses import replace
 import numpy as np
 from astra_policy import Plan
 from domain import Side
@@ -46,7 +45,7 @@ class PassiveResponseMarket(LocalResponseMarket):
         unit=f.pop('unit');f.update(planned_rr=rr,risk_range=risk/unit,cost_r=.0008*entry/risk,
             obstacle_distance=side*(target-entry)/unit,risk_bps=10000*risk/entry,
             auction_value_distance=side*(e.reference_value-entry)/unit,
-            entry_displacement=side*(b.close-entry)/unit)
+            entry_displacement=side*(b.close-entry)/unit,pending_cancel_price=e.departure)
         self.stats['passive_plans']+=1
         region=self.history[e.start_index:]
         return Plan(f'{self.symbol}:PASSIVE:{e.key}:{b.ts}',f'{self.symbol}:LQC:{e.key}',self.symbol,
