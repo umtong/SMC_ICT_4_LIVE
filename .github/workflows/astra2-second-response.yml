@@ -1,0 +1,70 @@
+name: Astra2 second-resolution response
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra2]
+    paths:
+      - research/candidate-ml-easychart-astra2/excursion_repair.py
+      - research/candidate-ml-easychart-astra2/micro_replay.py
+      - .github/workflows/astra2-second-response.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: astra2-second-response
+  cancel-in-progress: false
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - start: '2024-08-03'
+            end: '2024-08-10'
+          - start: '2025-08-10'
+            end: '2025-08-17'
+          - start: '2025-11-17'
+            end: '2025-11-24'
+    env:
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/cache/restore@v4
+        with:
+          path: market_research
+          key: astra2-adaptive-market-v1
+          restore-keys: |
+            astra2-impact-market-
+            astra2-decision-market-
+      - uses: actions/download-artifact@v4
+        with:
+          name: astra2-micro-${{ matrix.start }}
+          run-id: 33916611253
+          github-token: ${{ github.token }}
+      - name: Reuse observed executions
+        run: |
+          tar -xzf micro-${{ matrix.start }}.tar.gz
+          python -m pip install --disable-pip-version-check -q numpy==2.3.5 pandas==2.3.3 nautilus_trader==1.230.0 scikit-learn==1.7.2 joblib pyarrow matplotlib
+          python -u research/candidate-ml-easychart-astra2/micro_replay.py --policy adaptive --start ${{ matrix.start }} --end ${{ matrix.end }} --execution-root micro_market
+          python -u research/candidate-ml-easychart-astra2/micro_replay.py --policy excursion --start ${{ matrix.start }} --end ${{ matrix.end }} --execution-root micro_market
+      - name: Persist actual second-resolution observations
+        if: always()
+        run: |
+          git config user.name 'astra2-research'
+          git config user.email 'astra2-research@users.noreply.github.com'
+          git add -f research_results/candidate_ml_easychart_astra2/adaptive_impact_seconds research_results/candidate_ml_easychart_astra2/excursion_repair_seconds
+          if ! git diff --cached --quiet; then
+            git commit -m "Astra2: second-resolution observations for ${{ matrix.start }} at ${{ github.sha }}"
+            for attempt in 1 2 3; do
+              git pull --rebase origin research_candidate_ML_easychart_astra2
+              git push origin HEAD:research_candidate_ML_easychart_astra2 && break
+              sleep 2
+            done
+          fi
