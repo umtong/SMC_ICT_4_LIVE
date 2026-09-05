@@ -212,7 +212,7 @@ class ControlMarket:
                  innovation_fast=side*self.impact.fast,innovation_slow=side*self.impact.slow,
                  impact_slope=float(self.impact.theta[1]),risk_range=risk/e.unit,cost_r=.0012*entry/risk,
                  planned_rr=rr,obstacle_distance=side*(target-entry)/e.unit,risk_bps=10000*risk/entry,
-                 participation=b.quote/max(b.trades,1)/max(entry,1e-12))
+                 participation=(b.volume/max(b.trades,1))/max(self.current_volume/max(np.mean([x.trades for x in self.history[-60:]]),1),1e-12))
         e.finished=True;self.stats['plans']+=1
         return Plan(f'{self.symbol}:CONTROL:{e.key}:{b.ts}',f'{self.symbol}:CONTROL:{e.key}',self.symbol,
                     Side.LONG if side>0 else Side.SHORT,b.ts,e.started,entry,stop,target,rr,e.level,5,e.key,kind,
