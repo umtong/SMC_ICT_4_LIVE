@@ -11,6 +11,9 @@ import fast_auction
 
 def run():
     request=json.loads((r.HERE/'request.json').read_text())
+    if request.get('driver')=='evolving_auction':
+        import episode_research
+        return episode_research.run()
     if request.get('fastbook_check',False):fast_auction.check_equivalence(r.Tape(request['months'][0]))
     fast_auction.install()
     if request.get('driver')!='ordered_path':return r.main()
