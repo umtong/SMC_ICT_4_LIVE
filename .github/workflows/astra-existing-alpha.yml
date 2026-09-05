@@ -1,0 +1,68 @@
+name: Existing alpha experiments
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-existing-alpha.yml]
+permissions:
+  contents: write
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research_candidate_ML_easychart_astra1
+      - name: Read existing experiment evidence, deduplicating inherited results
+        run: |
+          python - <<'PY'
+          import subprocess,json,pathlib
+          refs=['research_candidate_ML_easychart_a','research_candidate_ML_easychart_b','research_candidate_ML_easychart_c','research_candidate_ML_k_causal_alpha_v3','research_candidate_ML_MN','research_candidate_4_causal_inventory_transfer','research_candidate_4t','research_candidate_3b','research_candidate_1k','research_ML1','research_ML2','research_ML3','research_causal_factor_auction_response','research_liquidity_world_model','research_skilled_auction_control_easychart_base','production-candidate-liquidity-episode-policy-v1']
+          seen=set();positive=[];negative=[];sources=[]
+          def walk(x,loc=''):
+              if isinstance(x,dict):
+                  values={k:v for k,v in x.items() if isinstance(v,(int,float,str)) and any(t in k.lower() for t in ['win','trades','expect','net_r','profit_factor','nav','drawdown','rr','hold','return','start','end','days','name','policy','candidate'])}
+                  n=next((values[k] for k in ['completed_trades','closed_trades','total_trades','trades','n_trades'] if isinstance(values.get(k),(int,float))),0)
+                  edge=next((values[k] for k in ['mean_net_r','mean_net_R','expectancy_r','net_expectancy_r','expectancy'] if isinstance(values.get(k),(int,float))),None)
+                  gain=next((values[k] for k in ['return_pct','net_return_pct','total_return_pct'] if isinstance(values.get(k),(int,float))),None)
+                  if n>=5 and (edge is not None or gain is not None):yield loc,values,edge if edge is not None else gain
+                  for k,v in x.items():
+                      if isinstance(v,(dict,list)):yield from walk(v,loc+'/'+str(k))
+              elif isinstance(x,list):
+                  for i,v in enumerate(x):yield from walk(v,loc+'/'+str(i))
+          for ref in refs:
+              r=subprocess.run(['git','fetch','--depth=1','origin',ref],capture_output=True,text=True)
+              if r.returncode:continue
+              sha=subprocess.check_output(['git','rev-parse','FETCH_HEAD'],text=True).strip()
+              entries=subprocess.check_output(['git','ls-tree','-r','-l',sha],text=True).splitlines()
+              clues=[]
+              for line in entries:
+                  meta,path=line.split('\t',1);f=meta.split()
+                  if f[1]!='blob':continue
+                  if any(w in path.lower() for w in ['inventory','breakthrough','causal_alpha','research_result']) and path.endswith(('.md','.py')):clues.append(path)
+                  if not path.endswith('.json') or int(f[3])>200000 or f[2] in seen:continue
+                  if not any(w in path.lower() for w in ['result','summary','metric','report','diagnos']):continue
+                  seen.add(f[2])
+                  try:d=json.loads(subprocess.check_output(['git','show',f'{sha}:{path}']))
+                  except Exception:continue
+                  for loc,v,edge in walk(d):
+                      row={'branch':ref,'commit':sha,'path':path,'section':loc,'values':v}
+                      (positive if edge>0 else negative).append(row)
+              sources.append({'branch':ref,'commit':sha,'code_clues':clues[:30]})
+          # These are search results, not a portfolio, a ranking score, or a test.
+          def count(r):
+              d=r['values'];return max([d.get(k,0) for k in ['completed_trades','closed_trades','total_trades','trades','n_trades'] if isinstance(d.get(k,0),(int,float))]+[0])
+          positive.sort(key=count,reverse=True)
+          out={'positive_experiment_search_results':positive[:60],'negative_example_search_results':negative[:15],'source_locations':sources}
+          p=pathlib.Path('research_results/astra_existing_alpha.json');p.parent.mkdir(exist_ok=True);p.write_text(json.dumps(out,indent=2))
+          print('Distinct positive records',len(positive),'negative records',len(negative))
+          for r in positive[:20]:print(json.dumps(r))
+          PY
+      - name: Preserve the small reuse index
+        run: |
+          git config user.name 'Astra research'
+          git config user.email 'research@users.noreply.github.com'
+          git add -f research_results/astra_existing_alpha.json
+          git commit -m 'Locate existing alpha evidence for reuse [skip ci]' || true
+          git pull --rebase origin research_candidate_ML_easychart_astra1
+          git push origin HEAD:research_candidate_ML_easychart_astra1
