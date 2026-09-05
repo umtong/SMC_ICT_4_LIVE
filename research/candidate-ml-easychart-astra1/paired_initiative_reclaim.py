@@ -1,16 +1,14 @@
-"""One causal policy: context -> adverse liquidity event -> initiative defeat -> first return.
+"""Context -> adverse liquidity event -> opposing initiative defeat -> first return.
 
-An isolated wick, order block, gap, or learned chart score is not directional
-permission. This policy requires a prior higher-timeframe context, an adverse
-liquidity challenge, and a new displacement which defeats the opposing gap.
-The overlap of the two price-delivery footprints locates the first return.
+Neither an isolated wick nor an order block is directional permission. A prior
+higher-timeframe context and an actual liquidity challenge must precede a new
+displacement defeating the adverse gap. The overlapping price footprints locate
+entry; the whole episode invalidates it; the closest opposing object is target.
 
 Reuses WickMap and the existing single-account Nautilus execution. Source basis:
-EasyChart Fakeout/Trap section 5; OB section 4 (whole forming wick invalidation,
-first wave/opposing structure objective); FVG section 5 (large center body).
-The paired-initiative state and overlap are research translations, also informed
-by the project's ML-MN adverse-reacceptance work. No future holding-time filter,
-net-target cap, calendar filter, symbol parameters, or fitted win-rate threshold.
+EasyChart Fakeout/Trap section 5, OB section 4, FVG section 5. Paired initiative
+is a research translation informed by ML-MN reacceptance, not institutional fact.
+No future holding-time filter, target-R cap, symbol parameters, or fitted threshold.
 """
 from collections import Counter
 from dataclasses import dataclass,replace
@@ -28,8 +26,7 @@ FEATURES=('higher_direction','higher_location','source_scale','source_prominence
 @dataclass
 class Footprint:
     key:str;side:int;tf:int;observed:int;started:int
-    low:float;high:float;stop:float;first:int
-    activity:float;flow:float
+    low:float;high:float;stop:float;first:int;activity:float;flow:float
     live:bool=True
 
 @dataclass
@@ -47,22 +44,21 @@ class Reclaim:
 class ReclaimMarket:
     def __init__(self,symbol,tick):
         self.symbol=symbol;self.tick=tick;self.history=[]
-        self.frames={tf:[] for tf in (5,15,60,240)}
-        self.agg={tf:[] for tf in self.frames}
+        self.frames={tf:[] for tf in (5,15,60,240)};self.agg={tf:[] for tf in self.frames}
         self.books={tf:WickMap(symbol,tf,tick,pivot_spans=(2,)) for tf in self.frames}
         self.touched={};self.broken=set();self.zones=[];self.gaps=[]
         self.bias=0;self.protected=None;self.challenges={};self.reclaims={}
         self.stats=Counter();self.explanations=[]
 
     def _higher_direction(self,tf,b):
-        if tf!=60:return
-        book=self.books[60]
+        if tf!=60 or len(self.frames[60])<2:return
+        previous=self.frames[60][-2];book=self.books[60]
         for side,label in ((1,'HIGH'),(-1,'LOW')):
             levels=[p for p in book.pivots[-24:] if p.side==label and p.pivot_id not in self.broken
-                    and p.observed_time_ns<b.ts and side*(b.close-p.price)>self.tick]
+                    and p.observed_time_ns<b.ts and side*(b.close-p.price)>self.tick
+                    and side*(previous.close-p.price)<=0]
             if not levels:continue
-            level=max(levels,key=lambda p:p.event_time_ns)
-            defenses=[p for p in book.pivots[-24:] if p.side!=label and p.event_time_ns<level.observed_time_ns
+            defenses=[p for p in book.pivots[-24:] if p.side!=label and p.observed_time_ns<b.ts
                       and side*(b.close-p.price)>0]
             self.bias=side
             self.protected=max(defenses,key=lambda p:p.event_time_ns).price if defenses else None
@@ -84,8 +80,7 @@ class ReclaimMarket:
                 self.zones.append(Footprint(f'{self.symbol}:{tf}:OB:{previous.ts}',s,tf,b.ts,
                     previous.ts-(tf-1)*MINUTE,low,high,stop,len(a)-2,b.volume/baseline,
                     s*b.delta/max(b.volume,1e-12)))
-        first,center,last=a[-3:]
-        s=1 if center.close>center.open else -1
+        first,center,last=a[-3:];s=1 if center.close>center.open else -1
         body=abs(center.close-center.open)
         if body<max(median_body,2*abs(first.close-first.open),2*abs(last.close-last.open),2*self.tick):return
         low,high=(first.high,last.low) if s>0 else (last.high,first.low)
@@ -103,17 +98,14 @@ class ReclaimMarket:
         if s*(last.close-event.level)<=0:return
         matches=[]
         for prior in old:
-            # The adverse footprint must belong to the approach into this same
-            # liquidity challenge, not a gap chosen from unrelated old trading.
-            if prior.observed<event.started-60*MINUTE:continue
+            # The old adverse impulse must precede this challenge. The new one
+            # cannot adopt an old liquidity event after an unrelated later drive.
+            if prior.started>event.started or prior.observed<event.started-60*MINUTE:continue
             left,right=max(gap.low,prior.low),min(gap.high,prior.high)
             defeated=last.close>prior.high if s>0 else last.close<prior.low
             if right-left>=self.tick and defeated:matches.append((prior,left,right))
         if not matches:return
         prior,left,right=max(matches,key=lambda x:x[0].observed)
-        stop=min(event.extreme,gap.stop,prior.stop)-self.tick if s>0 else max(event.extreme,gap.stop,prior.stop)+self.tick
-        # prior.stop is adverse-side, so use the actual forming-candle extreme
-        # of the whole price-delivery episode instead of that opposite stop.
         forming=a[prior.first:]
         stop=min(event.extreme,min(q.low for q in forming))-self.tick if s>0 else max(event.extreme,max(q.high for q in forming))+self.tick
         unit=max(float(np.mean([q.high-q.low for q in a[-22:-2]])),2*self.tick)
@@ -124,7 +116,7 @@ class ReclaimMarket:
             defeat_distance=s*(last.close-(prior.high if s>0 else prior.low))/unit,
             event_age=(last.ts-event.started)/(5*MINUTE))
         key=event.key+':DEFEATED:'+prior.key
-        peak=max(q.high for q in forming) if s>0 else min(q.low for q in forming)
+        peak=max(q.high for q in a[-3:]) if s>0 else min(q.low for q in a[-3:])
         self.reclaims[s]=Reclaim(key,s,last.ts,min(event.started,prior.started),left,right,stop,peak,unit,features)
         event.claimed=True;self.stats['opposing_initiative_defeated']+=1
 
@@ -140,26 +132,23 @@ class ReclaimMarket:
                     and b.low<=z.high and b.high>=z.low for z in self.zones)
                 candidates[s].append((p,tf,location))
         for s,values in candidates.items():
+            if not values:continue
             p,tf,location=max(values,key=lambda x:(x[1],x[0].strength_ratio))
             active=self.challenges.get(s)
             if active is not None and not active.claimed and s*(b.close-active.level)<=0:
-                # A cascade consuming several levels remains one causal event.
                 active.extreme=min(active.extreme,b.low) if s>0 else max(active.extreme,b.high)
                 active.context_location=active.context_location or location
-                if tf>active.scale:
-                    active.level=p.price;active.scale=tf;active.strength=p.strength_ratio
+                if tf>active.scale:active.level=p.price;active.scale=tf;active.strength=p.strength_ratio
                 continue
-            extreme=b.low if s>0 else b.high
             self.challenges[s]=Challenge(f'{self.symbol}:LIQUIDITY:{p.pivot_id}:{b.ts}',s,b.ts,p.price,tf,
-                p.strength_ratio,extreme,self.bias==s,location)
+                p.strength_ratio,b.low if s>0 else b.high,self.bias==s,location)
             self.stats['higher_liquidity_challenged']+=1
 
     def observe(self,b):
         if self.history and b.ts-self.history[-1].ts!=MINUTE:raise ValueError('non-contiguous observed clock')
         previous=self.history[-1] if self.history else b
         baseline=max(float(np.mean([q.volume for q in self.history[-60:]])) if self.history else b.volume,1e-12)
-        self.history.append(b)
-        self._observe_liquidity(b)
+        self.history.append(b);self._observe_liquidity(b)
         for event in self.challenges.values():
             if not event.claimed:event.extreme=min(event.extreme,b.low) if event.side>0 else max(event.extreme,b.high)
         self.zones=[z for z in self.zones if z.live]
@@ -184,10 +173,8 @@ class ReclaimMarket:
             r.volume+=b.volume;r.delta+=b.delta;r.bars+=1
             response=b.close>previous.high if s>0 else b.close<previous.low
             if not response or s*(b.close-(r.low+r.high)/2)<=0:continue
-            r.consumed=True
-            entry=b.close;risk=s*(entry-r.stop)
-            objectives=[(r.peak,'FIRST_RECLAIM_WAVE')]
-            opposing_inside=False
+            r.consumed=True;entry=b.close;risk=s*(entry-r.stop)
+            objectives=[(r.peak,'FIRST_RECLAIM_WAVE')];opposing_inside=False
             for z in self.zones:
                 if not z.live or z.side!=-s:continue
                 if z.low<=entry<=z.high:opposing_inside=True
