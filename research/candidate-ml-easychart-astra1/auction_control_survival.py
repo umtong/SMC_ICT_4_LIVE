@@ -1,15 +1,10 @@
-"""A single directional auction-control policy, not a collection of entry patterns.
+"""Directional control is earned by defeating an existing opposing origin.
 
-Prior experiments largely sold every high challenge and bought every low
-challenge. This policy does neither. An auction owns direction only after its
-impulse defeats pre-existing opposing structure. Its originating inventory zone
-remains the invalidation point. A later correction is an entry opportunity only
-when price reclaims the adverse correction's traded value at that origin.
-
-EasyChart translations: OB body after a >=2-body displacement; wick-anchored
-structure; a fully specified first return with the nearest opposing objective.
-The protected-origin control graph and adverse-volume value are research
-hypotheses, not claims about identifiable institutions or actual inventory.
+This replaces automatic fading of high/low challenges. A displacement owns
+direction, its originating wick range defines invalidation, and its first
+correction can be bought/sold only after reclaiming adverse traded value.
+OB/body geometry and wick anchors are EasyChart translations. The control
+survival graph is a research hypothesis, not observable institutional intent.
 """
 from collections import Counter, deque
 from dataclasses import dataclass, replace
@@ -18,53 +13,30 @@ import numpy as np
 from astra_policy import Observation, Plan, WickMap, MINUTE
 from domain import Side
 
-FEATURES = ('control_scale','defeated_scale','impulse_efficiency','impulse_activity',
-            'impulse_flow','break_distance','control_age','pullback_depth',
-            'pullback_activity','pullback_flow','opponent_value_reclaim',
-            'response_flow','response_activity','risk_bps','risk_range','cost_r',
-            'planned_rr','market_move','relative_move')
+FEATURES=('control_scale','defeated_scale','impulse_efficiency','impulse_activity',
+ 'impulse_flow','break_distance','control_age','pullback_depth','pullback_activity',
+ 'pullback_flow','opponent_value_reclaim','response_flow','response_activity',
+ 'risk_bps','risk_range','cost_r','planned_rr','market_move','relative_move')
 
 @dataclass
 class Origin:
-    key: str
-    side: int
-    scale: int
-    observed: int
-    started: int
-    low: float
-    high: float
-    stop: float
-    extreme: float
-    unit: float
-    volume: float
-    features: dict
-    live: bool = True
-    controls: bool = False
-    returned: int = 0
-    consumed: bool = False
-    adverse_volume: float = 0.
-    adverse_value: float = 0.
-    return_volume: float = 0.
-    return_delta: float = 0.
-    return_bars: int = 0
+    key:str;side:int;scale:int;observed:int;started:int
+    low:float;high:float;stop:float;extreme:float;unit:float;volume:float;features:dict
+    live:bool=True;controls:bool=False;returned:int=0;consumed:bool=False
+    adverse_volume:float=0.;adverse_value:float=0.;return_volume:float=0.
+    return_delta:float=0.;return_bars:int=0
 
-
-def aggregate(items):
-    return Observation(items[-1].ts,items[0].open,max(b.high for b in items),
-        min(b.low for b in items),items[-1].close,sum(b.volume for b in items),
-        sum(b.buy for b in items),sum(b.quote for b in items),sum(b.trades for b in items))
-
+def aggregate(a):
+    return Observation(a[-1].ts,a[0].open,max(b.high for b in a),min(b.low for b in a),
+        a[-1].close,sum(b.volume for b in a),sum(b.buy for b in a),sum(b.quote for b in a),sum(b.trades for b in a))
 
 class AuctionMarket:
     def __init__(self,symbol,tick):
         self.symbol=symbol;self.tick=tick;self.history=[]
-        self.frames={tf:[] for tf in (5,15,60,240)}
-        self.agg={tf:[] for tf in self.frames}
+        self.frames={tf:[] for tf in (5,15,60,240)};self.agg={tf:[] for tf in self.frames}
         self.books={tf:WickMap(symbol,tf,tick,pivot_spans=(2,)) for tf in self.frames}
-        self.origins=[];self.control=None;self.consumed_pivots=set()
-        self.stats=Counter();self.explanations=[]
-        self.ranges=deque(maxlen=60);self.volumes=deque(maxlen=60)
-        self.last_opposing_defeat={1:0,-1:0}
+        self.origins=[];self.control=None;self.consumed_pivots=set();self.pivot_touch={}
+        self.stats=Counter();self.explanations=[];self.volumes=deque(maxlen=60)
 
     def _form_origin(self,tf):
         a=self.frames[tf]
@@ -72,48 +44,42 @@ class AuctionMarket:
         b=a[-1];s=1 if b.close>b.open else -1
         choices=[j for j in range(max(0,len(a)-4),len(a)-1) if s*(a[j].close-a[j].open)<0]
         if not choices:return
-        j=choices[-1];ob=a[j];impulse=a[j+1:]
-        body=abs(ob.close-ob.open)
+        j=choices[-1];ob=a[j];impulse=a[j+1:];body=abs(ob.close-ob.open)
         if body<2*self.tick or s*(b.close-ob.open)<2*body:return
-        # An impulse must actually leave its entire originating wick range.
         if s*(b.close-(ob.high if s>0 else ob.low))<=0:return
         start=ob.ts-(tf-1)*MINUTE
-        existing=[z for z in self.origins if z.side==-s and z.observed<start]
-        defeated=[z for z in existing if s*(b.close-z.stop)>self.tick
-                  and s*(ob.open-z.stop)<=0 and z.scale>=15]
-        pivots=[(q,t) for t,book in self.books.items() if t>=15
-                for q in book.pivots[-20:] if q.observed_time_ns<start
-                and q.pivot_id not in self.consumed_pivots
+        defeated=[z for z in self.origins if z.side==-s and z.observed<start and z.scale>=15
+                  and s*(b.close-z.stop)>self.tick and s*(ob.open-z.stop)<=0]
+        pivots=[(q,t) for t,book in self.books.items() if t>=15 for q in book.pivots[-20:]
+                if q.observed_time_ns<start and q.pivot_id not in self.consumed_pivots
+                and self.pivot_touch.get(q.pivot_id,start)>=start
                 and q.side==('HIGH' if s>0 else 'LOW')
                 and s*(b.close-q.price)>self.tick and s*(ob.open-q.price)<=0]
         level=max([z.scale for z in defeated]+[t for _,t in pivots]+[0])
         controls=tf>=15 and level>=15
-        unit=max(float(np.mean([x.high-x.low for x in a[max(0,j-20):j]])),self.tick*2)
-        baseline=max(float(np.mean([x.volume for x in a[max(0,j-20):j]])),1e-12)
+        prior=a[max(0,j-20):j]
+        unit=max(float(np.mean([x.high-x.low for x in prior])),self.tick*2)
+        baseline=max(float(np.mean([x.volume for x in prior])),1e-12)
         v=sum(x.volume for x in impulse)
-        stop=(min(x.low for x in a[j:])-self.tick if s>0 else max(x.high for x in a[j:])+self.tick)
+        stop=min(x.low for x in a[j:])-self.tick if s>0 else max(x.high for x in a[j:])+self.tick
         crossed=[z.stop for z in defeated]+[q.price for q,_ in pivots]
         f={'control_scale':math.log(tf/5),'defeated_scale':math.log(max(level,5)/5),
            'impulse_efficiency':s*(b.close-ob.open)/max(sum(x.high-x.low for x in a[j:]),self.tick),
            'impulse_activity':v/max(len(impulse)*baseline,1e-12),
            'impulse_flow':s*sum(x.delta for x in impulse)/max(v,1e-12),
-           'break_distance':min([s*(b.close-p)/unit for p in crossed]+[0.])}
+           'break_distance':min(s*(b.close-p)/unit for p in crossed) if crossed else 0.}
         z=Origin(f'{self.symbol}:{tf}:ORIGIN:{ob.ts}:{s}',s,tf,b.ts,start,
                  min(ob.open,ob.close),max(ob.open,ob.close),stop,
                  max(x.high for x in a[j:]) if s>0 else min(x.low for x in a[j:]),unit,baseline,f,controls=controls)
         if any(x.key==z.key for x in self.origins):return
         self.origins.append(z);self.stats['origin_created']+=1
-        for q,_ in pivots:self.consumed_pivots.add(q.pivot_id)
         if controls:
-            # Overlapping same-direction footprints describe the same drive.
-            # They may strengthen its authority but do not create another entry.
+            for q,_ in pivots:self.consumed_pivots.add(q.pivot_id)
             old=self.control
             if old is not None and old.live and old.side==s and z.started<=old.observed:
-                self.stats['same_drive_not_split']+=1
-                return
+                self.stats['same_drive_not_split']+=1;return
             if old is not None and old.live and old.side==-s and s*(b.close-old.stop)<=0:
-                self.stats['opposite_control_not_defeated']+=1
-                return
+                self.stats['opposite_control_not_defeated']+=1;return
             self.control=z;self.stats['direction_control_transferred']+=1
 
     def move(self,n=60):
@@ -125,9 +91,7 @@ class AuctionMarket:
         if self.history and b.ts-self.history[-1].ts!=MINUTE:raise ValueError('missing observed minute')
         prev=self.history[-1] if self.history else b
         vbase=max(float(np.mean(self.volumes)) if self.volumes else b.volume,1e-12)
-        self.history.append(b);self.ranges.append(b.high-b.low);self.volumes.append(b.volume)
-        # Retain invalidated origins long enough to recognize the impulse that
-        # defeated them. Direction survives wicks, but trade stops never do.
+        self.history.append(b);self.volumes.append(b.volume)
         for z in self.origins:
             if z.live and z.side*(b.close-z.stop)<0:z.live=False
         for tf in sorted(self.frames,reverse=True):
@@ -137,11 +101,15 @@ class AuctionMarket:
                 if len(seq)==tf:
                     bar=aggregate(seq);self.frames[tf].append(bar)
                     self._form_origin(tf);self.books[tf].observe(bar)
+        for book in self.books.values():
+            for q in book.pivots[-20:]:
+                if q.observed_time_ns<b.ts and q.pivot_id not in self.pivot_touch:
+                    if b.high>q.price if q.side=='HIGH' else b.low<q.price:self.pivot_touch[q.pivot_id]=b.ts
         self.origins=[z for z in self.origins if z.live or b.ts-z.observed<240*MINUTE]
         z=self.control
         if z is None or not z.live or z.consumed or z.observed>=b.ts:return None
         s=z.side
-        if (b.low<=z.stop if s>0 else b.high>=z.stop):
+        if b.low<=z.stop if s>0 else b.high>=z.stop:
             z.consumed=True;self.stats['protected_origin_wick_failed']+=1;return None
         if not z.returned:
             z.extreme=max(z.extreme,b.high) if s>0 else min(z.extreme,b.low)
@@ -165,7 +133,7 @@ class AuctionMarket:
         for tf,book in self.books.items():
             if tf<15:continue
             for q in book.pivots[-20:]:
-                if q.observed_time_ns<b.ts and q.pivot_id not in self.consumed_pivots and q.side==('HIGH' if s>0 else 'LOW'):
+                if q.observed_time_ns<b.ts and q.pivot_id not in self.pivot_touch and q.side==('HIGH' if s>0 else 'LOW'):
                     objectives.append((q.price,f'{tf}M_OPPOSING_LIQUIDITY'))
         objectives=[(p,k) for p,k in objectives if s*(p-entry)>self.tick]
         if not objectives or distance<=self.tick:return None
@@ -186,9 +154,8 @@ class AuctionMarket:
             risk_bps=10000*distance/entry,risk_range=distance/z.unit,cost_r=.0012*entry/distance,planned_rr=rr)
         z.consumed=True;self.stats['plans']+=1
         return Plan(z.key+':'+str(b.ts),z.key,self.symbol,Side.LONG if s>0 else Side.SHORT,
-            b.ts,z.returned,entry,z.stop,target,rr,(z.low+z.high)/2,z.scale,z.key,kind,z.low,z.high,
+            b.ts,z.started,entry,z.stop,target,rr,(z.low+z.high)/2,z.scale,z.key,kind,z.low,z.high,
             max(entry,z.extreme),min(entry,z.extreme),f,family='AUCTION_CONTROL_SURVIVAL')
-
 
 class AuctionControlPolicy:
     def __init__(self,ticks):self.markets={s:AuctionMarket(s,t) for s,t in ticks.items()}
