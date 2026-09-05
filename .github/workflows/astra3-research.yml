@@ -62,14 +62,14 @@ jobs:
           python -m compileall -q research/candidate-ml-easychart-astra3
           mkdir -p research_results/candidate_ml_easychart_astra3
           set -o pipefail
-          python -u research/candidate-ml-easychart-astra3/path_research.py 2>&1 | tee research_results/candidate_ml_easychart_astra3/console.txt
+          python -u research/candidate-ml-easychart-astra3/path_research.py 2>&1 | tee research_results/candidate_ml_easychart_astra3/console-${{ github.run_id }}.txt
       - uses: actions/cache/save@v4
         if: always()
         with:
           path: astra3_cache
           key: astra3-auction-${{ hashFiles('research/candidate-ml-easychart-astra3/auction_reuse_policy.py', 'research/candidate-ml-easychart-astra3/policy.py') }}-${{ github.run_id }}
       - name: Preserve actual source and experiment results
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           git config user.name 'astra3-research'
           git config user.email 'astra3-research@users.noreply.github.com'
