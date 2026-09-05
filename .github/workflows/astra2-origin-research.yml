@@ -3,7 +3,8 @@ on:
   push:
     branches: [research_candidate_ML_easychart_astra2]
     paths:
-      - research/candidate-ml-easychart-astra2/**
+      - research/candidate-ml-easychart-astra2/nautilus*.py
+      - research/candidate-ml-easychart-astra2/control_transfer.py
       - .github/workflows/astra2-origin-research.yml
   workflow_dispatch:
 permissions:
@@ -14,7 +15,7 @@ concurrency:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,21 +26,22 @@ jobs:
           path: market_research
           key: astra2-origins-market-v2
           restore-keys: astra2-origins-market-
-      - name: Run market hypotheses
+      - name: Native account experiments
         run: |
           mkdir -p research_results/candidate_ml_easychart_astra2
           set -o pipefail
           python -m pip install --disable-pip-version-check -q numpy==2.3.5 pandas==2.3.3 scikit-learn==1.7.2 nautilus_trader==1.230.0
-          python -u research/candidate-ml-easychart-astra2/experiment.py 2>&1 | tee research_results/candidate_ml_easychart_astra2/console.txt
-          python -u research/candidate-ml-easychart-astra2/learn_response.py 2>&1 | tee research_results/candidate_ml_easychart_astra2/learning_console.txt
-      - name: Retain actual observations on the research branch
+          python -u research/candidate-ml-easychart-astra2/nautilus_account.py --start 2024-08-03 --end 2024-08-10 2>&1 | tee research_results/candidate_ml_easychart_astra2/nautilus_console.txt
+          python -u research/candidate-ml-easychart-astra2/nautilus_account.py --start 2025-08-10 --end 2025-08-17 2>&1 | tee -a research_results/candidate_ml_easychart_astra2/nautilus_console.txt
+          python -u research/candidate-ml-easychart-astra2/nautilus_account.py --start 2025-11-17 --end 2025-11-24 2>&1 | tee -a research_results/candidate_ml_easychart_astra2/nautilus_console.txt
+      - name: Retain actual observations
         if: always()
         run: |
           git config user.name 'astra2-research'
           git config user.email 'astra2-research@users.noreply.github.com'
           git add -f research_results/candidate_ml_easychart_astra2
           if ! git diff --cached --quiet; then
-            git commit -m "Astra2: observed auction-response experiments for ${{ github.sha }}"
+            git commit -m "Astra2: native account observations for ${{ github.sha }}"
             git pull --rebase origin research_candidate_ML_easychart_astra2
             git push origin HEAD:research_candidate_ML_easychart_astra2
           fi
