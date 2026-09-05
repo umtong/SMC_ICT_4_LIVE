@@ -1,0 +1,67 @@
+name: Astra3 forced inventory alpha
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra3]
+    paths:
+      - .github/workflows/astra3-inventory.yml
+      - research/candidate-ml-easychart-astra3/forced_inventory_response.py
+      - research/candidate-ml-easychart-astra3/forced_inventory_experiment.py
+      - research/candidate-ml-easychart-astra3/run_acquired_inventory.py
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: astra3-forced-inventory
+  cancel-in-progress: false
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: astra-inputs
+          run-id: 33909899122
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: astra2-extended-market
+          run-id: 33913126904
+          github-token: ${{ github.token }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: astra3_cache
+          key: inventory-observation-${{ github.run_id }}
+          restore-keys: |
+            astra3-auction-${{ hashFiles('research/candidate-ml-easychart-astra3/auction_reuse_policy.py', 'research/candidate-ml-easychart-astra3/policy.py') }}-
+            astra3-auction-
+      - name: Evaluate actual observed inventory episodes
+        run: |
+          tar -xzf astra-inputs.tar.gz
+          tar -xzf astra2-extended-market.tar.gz
+          python -m pip install --no-index --find-links bundle/wheels nautilus_trader==1.230.0 numpy==2.3.5 pandas==2.3.3
+          python -m pip install scikit-learn==1.7.2 lightgbm==4.6.0
+          python -m compileall -q research/candidate-ml-easychart-astra3/forced_inventory_response.py research/candidate-ml-easychart-astra3/forced_inventory_experiment.py research/candidate-ml-easychart-astra3/run_acquired_inventory.py
+          mkdir -p research_results/candidate_ml_easychart_astra3/forced_inventory_v24
+          set -o pipefail
+          python -u research/candidate-ml-easychart-astra3/run_acquired_inventory.py 2>&1 | tee research_results/candidate_ml_easychart_astra3/forced_inventory_v24/execution-${{ github.run_id }}.txt
+      - name: Save actual experiment output
+        if: ${{ !cancelled() }}
+        run: |
+          git config user.name 'astra3-research'
+          git config user.email 'astra3-research@users.noreply.github.com'
+          git add -f research_results/candidate_ml_easychart_astra3/forced_inventory_v24
+          if ! git diff --cached --quiet; then
+            git commit -m "Forced inventory actual observations ${{ github.sha }} [skip ci]"
+            git pull --rebase origin research_candidate_ML_easychart_astra3
+            git push origin HEAD:research_candidate_ML_easychart_astra3
+          fi
