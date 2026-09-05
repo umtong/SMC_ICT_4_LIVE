@@ -6,7 +6,7 @@ import traceback
 
 HERE=Path(__file__).resolve().parent
 request=json.loads((HERE/'request.json').read_text())
-module={'role_frontier':'frontier_experiment','control_wave':'control_research','washout':'washout_research','excursion':'excursion_research','observed_flow':'observed_flow_inputs'}.get(request.get('driver'),'path_research')
+module={'role_frontier':'frontier_experiment','control_wave':'control_research','washout':'washout_research','excursion':'excursion_research','observed_flow':'observed_flow_inputs','forced_inputs':'forced_flow_inputs'}.get(request.get('driver'),'path_research')
 if __name__=='__main__':
     try:
         importlib.import_module(module).run()
