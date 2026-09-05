@@ -1,6 +1,6 @@
-"""Short experiments for ordered auction evidence; no new account simulator."""
+"""Short experiments over causal auction observations; one Nautilus account."""
 from __future__ import annotations
-import json,pickle,traceback
+import hashlib,json,pickle,traceback
 import numpy as np
 import pandas as pd
 import research as r
@@ -10,34 +10,44 @@ import fast_auction
 
 
 def run():
-    request=json.loads((r.HERE/'request.json').read_text())
-    if request.get('driver')=='cash_dislocation':
+    request=json.loads((r.HERE/'request.json').read_text());driver=request.get('driver')
+    if driver=='cash_dislocation':
         import basis_research
         return basis_research.run()
-    if request.get('driver')=='evolving_auction':
+    if driver=='evolving_auction':
         import episode_research
         return episode_research.run()
     if request.get('fastbook_check',False):fast_auction.check_equivalence(r.Tape(request['months'][0]))
     fast_auction.install()
-    if request.get('driver')!='ordered_path':return r.main()
-    test_order_information()
+    if driver not in ('ordered_path','structure_context'):return r.main()
+    columns_new=FEATURES
+    if driver=='structure_context':
+        import structure_context as context
+        columns_new=context.FEATURES
+    else:test_order_information()
     (r.OUT/'error.txt').unlink(missing_ok=True)
     tapes={};plans_by_month={};labels=[]
     for month in request['months']:
         tape=r.Tape(month);tapes[month]=tape
         original,stats=tape.plans()
-        plans=PathTable(tape.raw).attach(original)
+        if driver=='structure_context':
+            digest=hashlib.sha256((r.HERE/'structure_context.py').read_bytes()+(r.HERE/'policy.py').read_bytes()+(r.HERE/'auction_reuse_policy.py').read_bytes()).hexdigest()[:16]
+            cache=r.CACHE/f'{month}-{digest}-structure.pkl'
+            if cache.exists():plans=pickle.loads(cache.read_bytes())
+            else:
+                plans=context.attach_context(tape,original);cache.write_bytes(pickle.dumps(plans))
+        else:plans=PathTable(tape.raw).attach(original)
         plans_by_month[month]=plans
         label=tape.outcomes(plans)
         if len(label):label['month']=month;labels.append(label)
-        print('ORDERED_OBSERVATIONS',month,len(plans),flush=True)
+        print('CAUSAL_OBSERVATIONS',driver,month,len(plans),flush=True)
     labels=pd.concat(labels,ignore_index=True)
     train=labels[labels.label_closed<r.ns(request['train_end'])].copy()
     calibration=labels[(labels.observed_time_ns>=r.ns(request['train_end']))&
                        (labels.label_closed<r.ns(request['calibration_end']))].copy()
     decisions={}
     for variant in request.get('variants',['ordered']):
-        columns=tuple(request['features']) if variant=='base' else FEATURES
+        columns=tuple(request['features']) if variant=='base' else columns_new
         decision,fit=fit_offset(train,calibration,columns)
         decisions[variant]=decision
         fit.update(train_end=request['train_end'],calibration_end=request['calibration_end'])
@@ -46,6 +56,7 @@ def run():
         print('FIT',variant,len(train),len(calibration),flush=True)
     observations=[]
     for job in request['experiments']:
+        if r.ns(job['start'])<r.ns(request['calibration_end']):raise ValueError('evaluation overlaps fitted label frontier')
         month=job['month'];plans=plans_by_month[month]
         for variant,decision in decisions.items():
             name=f'{request["prefix"]}_{variant}_{job["name"]}'
