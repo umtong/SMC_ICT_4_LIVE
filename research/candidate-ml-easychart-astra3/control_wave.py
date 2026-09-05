@@ -1,13 +1,13 @@
 """Liquidity-owned displacement -> first return -> completed price response.
 
 Source-derived relations: EasyChart OB pp3-6, FVG pp5-7, Fakeout pp6-7,11.
-A footprint is an entry location, not a standalone reason for direction. Its
-parent must have challenged a previously observed public swing. A rejected
-challenge and an accepted break share one control/return state machine.
+A footprint is a location, not a standalone direction. The challenged public
+boundary must STILL be controlled when entry is requested. A return inside a
+failed accepted break cannot be traded as if that break remained accepted.
 
-Research translations: 5m/15m decision scales, two-right-bar public pivots,
+Research translations: 5m/15m formation scales, two-right-bar public pivots,
 first completed directional minute at the returned footprint. These are
-hypotheses, not claims about the source's exact discretionary rules.
+hypotheses, not the source's exact discretionary rules.
 """
 from __future__ import annotations
 from dataclasses import dataclass, replace
@@ -79,7 +79,6 @@ class Market:
         return max(self.tick, float(np.median([x.high-x.low for x in rows]))) if rows else self.tick
 
     def _public_challenges(self, b):
-        # The current bar cannot use a pivot published at its own timestamp.
         hits = []
         for tf in (15, 60):
             for z in self.frames[tf].levels:
@@ -117,12 +116,10 @@ class Market:
             formation_first = p.ts-tf*MINUTE if ob else a.ts-tf*MINUTE
             candidates = []
             for c in self.challenges.values():
-                # One causal formation/return, not a remotely inherited old sweep.
                 if c.started < formation_first or c.started > b.ts:
                     continue
                 rejection = c.kind == -side
-                controlled = side*(b.close-c.level) > 0
-                if controlled:
+                if side*(b.close-c.level) > 0:
                     candidates.append((rejection, c))
             if not candidates:
                 continue
@@ -135,7 +132,6 @@ class Market:
             if gap:
                 lo, hi = (a.high, b.low) if side > 0 else (b.high, a.low)
                 zones.append((lo, hi, (a, p, b), 'FVG'))
-            # Choose the source-nearest actual footprint, not a fitted R target.
             lo, hi, formation, kind = min(zones, key=lambda z: abs((z[0]+z[1])/2-c.level))
             if side*(b.close-(hi if side > 0 else lo)) <= 0:
                 continue
@@ -196,12 +192,12 @@ class Market:
                 self.stats['objective_spent_before_entry'] += 1
                 del self.waves[side]
                 continue
-            # A completed directional response at the intended area, not a
-            # delayed breakout entry after the available reward has been spent.
+            if side*(b.close-wave.source.level) <= 0:
+                self.stats['source_direction_currently_unresolved'] += 1
+                continue
             if side*(b.close-b.open) <= 0:
                 continue
-            located = b.low <= wave.high and b.high >= wave.low
-            if not located:
+            if not (b.low <= wave.high and b.high >= wave.low):
                 continue
             risk = side*(b.close-wave.stop)
             reward = side*(wave.target-b.close)
@@ -209,8 +205,7 @@ class Market:
                 self.stats['first_response_geometry_unavailable'] += 1
                 del self.waves[side]
                 continue
-            hist = list(self.history)
-            recent = hist[-60:]
+            recent = list(self.history)[-60:]
             low, high = min(v.low for v in recent), max(v.high for v in recent)
             volume_rate = wave.impulse_volume/max(wave.impulse_count, 1)
             f = dict(rejection=float(wave.rejection), scale=math.log2(wave.scale/5),
@@ -246,7 +241,6 @@ class Market:
         plans = self._return(b, peer)
         self._public_challenges(b)
         closed = {tf:f.append(b) for tf,f in self.frames.items()}
-        # A broader formation owns a simultaneous nested footprint.
         for tf in (15,5):
             if closed[tf] is not None:
                 self._footprints(tf, closed[tf])
