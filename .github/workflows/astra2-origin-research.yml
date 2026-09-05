@@ -32,12 +32,15 @@ jobs:
           python -m pip install --disable-pip-version-check -q numpy==2.3.5 pandas==2.3.3 nautilus_trader==1.230.0
           set -o pipefail
           python -u - <<'PY' 2>&1 | tee research_results/candidate_ml_easychart_astra2/expanded_console.txt
-          import json,sys
-          sys.path.insert(0,'research/candidate-ml-easychart-astra2')
-          from nautilus_account import run,OUT
+          import json,sys,subprocess
+          from pathlib import Path
+          root=Path('research_results/candidate_ml_easychart_astra2')
           windows=[('2024-08-03','2024-08-10'),('2025-08-10','2025-08-17'),('2025-11-17','2025-11-24'),('2025-02-10','2025-02-17'),('2026-04-13','2026-04-20'),('2026-07-13','2026-07-20')]
-          results=[run(a,b) for a,b in windows]
-          (OUT/'expanded_native_results.json').write_text(json.dumps(results,indent=2)+'\n')
+          results=[]
+          for a,b in windows:
+              subprocess.run([sys.executable,'research/candidate-ml-easychart-astra2/nautilus_account.py','--start',a,'--end',b],check=True)
+              results.append(json.loads((root/f'nautilus_transfer_{a}_1-MINUTE_summary.json').read_text()))
+          (root/'expanded_native_results.json').write_text(json.dumps(results,indent=2)+'\n')
           PY
       - name: Retain actual observations
         if: always()
