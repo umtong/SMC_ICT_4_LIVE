@@ -11,6 +11,9 @@ import fast_auction
 
 def run():
     request=json.loads((r.HERE/'request.json').read_text())
+    if request.get('driver')=='cash_dislocation':
+        import basis_research
+        return basis_research.run()
     if request.get('driver')=='evolving_auction':
         import episode_research
         return episode_research.run()
