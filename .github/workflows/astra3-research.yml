@@ -24,11 +24,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Apply requested source edit
-        run: |
-          if [ -f research/candidate-ml-easychart-astra3/edit.py ]; then
-            python research/candidate-ml-easychart-astra3/edit.py
-          fi
       - uses: actions/download-artifact@v4
         with:
           name: astra-inputs
@@ -62,7 +57,7 @@ jobs:
           python -m compileall -q research/candidate-ml-easychart-astra3
           mkdir -p research_results/candidate_ml_easychart_astra3
           set -o pipefail
-          python -u research/candidate-ml-easychart-astra3/path_research.py 2>&1 | tee research_results/candidate_ml_easychart_astra3/console-${{ github.run_id }}.txt
+          python -u research/candidate-ml-easychart-astra3/research_entry.py 2>&1 | tee research_results/candidate_ml_easychart_astra3/console-${{ github.run_id }}.txt
       - uses: actions/cache/save@v4
         if: always()
         with:
