@@ -18,15 +18,17 @@ base.CACHE.mkdir(parents=True,exist_ok=True)
 if __name__=='__main__':
     try:
         method=request.get('entry_method')
-        if method=='passive':
+        if request.get('experiment')=='pressure':
+            from pressure_model_experiment import execute
+            execute(base,request)
+        elif method=='passive':
             from passive_experiment import execute
             execute(base,request)
         elif method=='micro':
             from micro_experiment import execute
             execute(base,request)
         else:
-            if all(job.get('learned',True) is False for job in request['experiments']):
-                base.fit=lambda *args:None
+            if all(job.get('learned',True) is False for job in request['experiments']):base.fit=lambda *args:None
             base.main()
     except Exception:
         (base.OUT/'error.txt').write_text(traceback.format_exc());raise
