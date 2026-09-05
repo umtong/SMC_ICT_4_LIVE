@@ -45,6 +45,10 @@ class AuctionExecution(Strategy):
             entry_cost=.0002 if limit else .0005+self.costs.surcharge(row['symbol'],q*entry,now)
             unit=distance+entry*entry_cost+stop*(.0005+adverse)+float(inst.price_increment)
             q=nav*.03/unit
+        # Even a target hit must pay the entry and target costs. This is not an
+        # extra risk cap or a desired-win-rate filter: no alpha can rescue a
+        # plan whose best predeclared price outcome already loses money.
+        if s*(target-entry)<=entry*entry_cost+target*.0002: return False
         step=inst.size_increment.as_decimal(); quantity=(Decimal(str(q))/step).to_integral_value(rounding=ROUND_DOWN)*step
         if quantity<=0 or (inst.min_quantity and quantity<inst.min_quantity.as_decimal()): return False
         if inst.max_quantity and quantity>inst.max_quantity.as_decimal(): return False
