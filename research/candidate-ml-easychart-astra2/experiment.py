@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from market_io import prepare,bars,funding,months_between,SYMBOLS
-from defended_origin import candidates,FEATURES
+from tested_origin import candidates,market_context,FEATURES
 from first_passage import label,route,attach_episodes
 
 OUT=Path('research_results/candidate_ml_easychart_astra2')
@@ -22,6 +22,7 @@ def observe(start,end):
     rows=pd.concat([candidates(s,frames[s]) for s in SYMBOLS],ignore_index=True)
     if rows.empty: return rows,frames
     rows=rows[rows.ts>=pd.Timestamp(utc(start)).value].copy()
+    rows=market_context(rows,frames)
     rows=attach_episodes(rows,frames)
     return label(rows,frames,fs,marks),frames
 
@@ -40,20 +41,19 @@ def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--mode',default='short'); ap.parse_args()
     OUT.mkdir(parents=True,exist_ok=True); summaries=[]
     for a,b in WINDOWS:
-        print('OBSERVE',a,b,flush=True)
+        print('SECONDARY TEST',a,b,flush=True)
         rows,frames=observe(a,b)
-        rows.to_csv(OUT/f'origins_{a}.csv',index=False)
+        rows.to_csv(OUT/f'tested_origins_{a}.csv',index=False)
         if rows.empty: print('NO CANDIDATES',flush=True); continue
-        # Subsets answer different market questions, not a threshold optimization grid.
-        policies={'all_origins':np.ones(len(rows),bool),'with_hourly_direction':rows.trend_hour>0,'failed_extension_with_trend':(rows.sweep>0)&(rows.trend_fourhour>0),'retest_supply_contracts':(rows.pullback_volume<rows.impulse_volume)&(rows.trend_hour>0)}
+        policies={'all_tested':np.ones(len(rows),bool),'tested_direction':rows.trend_hour>0,'tested_sweep':rows.sweep>0,'tested_contracting':(rows.test_effort<1)&(rows.trend_hour>0)}
         for name,mask in policies.items():
             trades,summary=route(rows.loc[mask],utc(a),utc(b))
             summary.update(window=a,policy=name,candidates=int(mask.sum())); summaries.append(summary)
             print(json.dumps(summary),flush=True)
             trades.to_csv(OUT/f'trades_{name}_{a}.csv',index=False)
-            if name=='retest_supply_contracts': (OUT/f'cases_{a}.json').write_text(json.dumps(cases(trades,frames),indent=2,allow_nan=False))
+            if name=='tested_direction': (OUT/f'tested_cases_{a}.json').write_text(json.dumps(cases(trades,frames),indent=2,allow_nan=False))
         by=rows.assign(win=rows.net_r>0).groupby(['symbol','scale']).agg(n=('net_r','size'),win=('win','mean'),net_r=('net_r','mean'),rr=('rr','mean'),hold=('hold_minutes','mean'))
         print('COUNTERFACTUAL GEOMETRY (not account returns)\n',by.to_string(),flush=True)
-    (OUT/'short_results.json').write_text(json.dumps(summaries,indent=2,allow_nan=False)+'\n')
+    (OUT/'secondary_test_results.json').write_text(json.dumps(summaries,indent=2,allow_nan=False)+'\n')
 
 if __name__=='__main__':main()
