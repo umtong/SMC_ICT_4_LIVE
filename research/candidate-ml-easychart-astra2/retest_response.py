@@ -1,8 +1,6 @@
-"""The return is an observation period, not an immediate passive fill.
-Observe origin contact first. Then require a closed-bar break of the opposing
-micro extreme and recovery through the returning aggressors' execution VWAP.
-The parent stop and destination do not shrink to the confirmation candle.
-No account capital is reserved merely because a distant limit price is waiting.
+"""Observe origin contact, then price recovery through adverse execution VWAP.
+The parent stop/target stay fixed. Awaiting hypotheses do not reserve account
+capital; only the first selected, executable response becomes a position.
 """
 import numpy as np
 import pandas as pd
@@ -22,12 +20,11 @@ def candidates(symbol,d):
             invalid=(l[i]<=stop or h[i]>=target) if s==1 else (h[i]>=stop or l[i]<=target)
             if invalid: break
             if contact<0:
-                touched=l[i]<=r['root_high'] if s==1 else h[i]>=r['root_low']
-                if not touched: continue
+                if not (l[i]<=r['root_high'] and h[i]>=r['root_low']): continue
                 contact=i
-            aggressive_volume=v[i]-buy[i] if s==1 else buy[i]
-            aggressive_quote=q[i]-bq[i] if s==1 else bq[i]
-            volume+=max(aggressive_volume,0.); quote+=max(aggressive_quote,0.)
+            av=v[i]-buy[i] if s==1 else buy[i]
+            aq=q[i]-bq[i] if s==1 else bq[i]
+            volume+=max(av,0.); quote+=max(aq,0.)
             if i==contact or volume<=0: continue
             control_price=quote/volume
             reclaimed=s*(c[i]-control_price)>tick
