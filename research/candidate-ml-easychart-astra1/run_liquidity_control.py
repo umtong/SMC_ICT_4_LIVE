@@ -19,12 +19,12 @@ base.CACHE.mkdir(parents=True,exist_ok=True)
 if __name__=='__main__':
     try:
         method=request.get('entry_method')
-        if request.get('experiment')=='pressure':
-            from pressure_model_experiment import execute
-            execute(base,request)
-        elif request.get('experiment')=='inventory_direction':
-            from inventory_direction_experiment import execute
-            execute(base,request)
+        experiments={'pressure':'pressure_model_experiment',
+                     'inventory_direction':'inventory_direction_experiment',
+                     'chart_sequence':'chart_sequence_clock'}
+        experiment=request.get('experiment')
+        if experiment in experiments:
+            importlib.import_module(experiments[experiment]).execute(base,request)
         elif method=='passive':
             from passive_experiment import execute
             execute(base,request)
