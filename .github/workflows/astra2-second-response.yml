@@ -59,7 +59,11 @@ jobs:
         run: |
           git config user.name 'astra2-research'
           git config user.email 'astra2-research@users.noreply.github.com'
-          git add -f research_results/candidate_ml_easychart_astra2/adaptive_impact_seconds research_results/candidate_ml_easychart_astra2/excursion_repair_seconds
+          for path in adaptive_impact_seconds excursion_repair_seconds; do
+            if [ -d research_results/candidate_ml_easychart_astra2/$path ]; then
+              git add -f research_results/candidate_ml_easychart_astra2/$path
+            fi
+          done
           if ! git diff --cached --quiet; then
             git commit -m "Astra2: second-resolution observations for ${{ matrix.start }} at ${{ github.sha }}"
             for attempt in 1 2 3; do
