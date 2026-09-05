@@ -1,0 +1,25 @@
+name: Astra local source bundle
+on:
+  push:
+    branches: [research_candidate_ML_easychart_astra1]
+    paths: [.github/workflows/astra-local-research-bundle.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Pack existing research implementation
+        run: |
+          git rev-parse HEAD > source_commit.txt
+          tar czf astra-current-source.tar.gz source_commit.txt research/candidate-ml-easychart-astra1 research/candidate-easychart-v3 research/candidate-easychart-v5 research/candidate-easychart_re1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astra-current-source
+          path: astra-current-source.tar.gz
+          retention-days: 7
