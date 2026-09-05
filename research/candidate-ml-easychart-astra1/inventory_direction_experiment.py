@@ -1,15 +1,13 @@
-"""Identify the cause of pressure, rather than adding another candle filter.
+"""Cash/perpetual pressure observations with publication-lagged contract OI.
 
-Reuses Astra3's cash/perpetual/OI observation method: contract-count OI changes
-are unsigned and are available one five-minute publication interval late.
-OI decline alone is NOT labelled liquidation or assigned a trade direction.
-The directional model jointly observes spot demand, futures demand, transient
-premium and contract creation/destruction. Missing observations stay NaN.
+OI decline alone is not labelled liquidation or assigned a trading direction.
+The learner observes cash demand, futures demand, premium, and contract-count
+creation/destruction jointly. Missing observations remain NaN.
 """
 from pathlib import Path
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
-import calendar,datetime,hashlib,json,urllib.request,io
+import calendar,hashlib,json,urllib.request
 import numpy as np
 import pandas as pd
 import experiment
@@ -21,7 +19,6 @@ EXTRA=('inventory_change_5','inventory_change_15','inventory_change_60','invento
 UNSIGNED={'inventory_change_5','inventory_change_15','inventory_change_60',
           'inventory_change_surprise','spot_participation','futures_participation'}
 ROOT=Path('extended_market')
-
 
 def ensure_extra(months,output):
     jobs=[]
@@ -44,7 +41,6 @@ def ensure_extra(months,output):
         return {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
     with ThreadPoolExecutor(max_workers=10) as pool:hashes=list(pool.map(get,jobs))
     (output/'inventory_inputs.json').write_text(json.dumps(hashes,indent=2))
-
 
 class InventoryObservations:
     def __init__(self,month,raws):
@@ -91,11 +87,8 @@ class InventoryObservations:
         times,values=self.tables[p.symbol]
         i=np.searchsorted(times,p.observed_time_ns,side='right')-1
         if i<0 or times[i]!=p.observed_time_ns:raise ValueError('explanatory observation clock mismatch')
-        side=int(p.side.value);f={}
-        for name,value in zip(EXTRA,values[i]):
-            f[name]=float(value if name in UNSIGNED else side*value)
-        return f
-
+        side=int(p.side.value)
+        return {name:float(value if name in UNSIGNED else side*value) for name,value in zip(EXTRA,values[i])}
 
 def execute(base,request):
     original_tape=base.Tape
@@ -104,8 +97,9 @@ def execute(base,request):
             super().__init__(month)
             self.inventory=InventoryObservations(month,self.raw)
         def plans(self):
-            plans,stats=super().plans()
-            return [replace(p,features={**p.features,**self.inventory.at(p)}) for p in plans],stats
+            plans,stats,no_trades=super().plans()
+            attached=[replace(p,features={**p.features,**self.inventory.at(p)}) for p in plans]
+            return attached,stats,no_trades
     ensure_extra(request['months'],base.OUT)
     base.Tape=PositionedTape
     base.FEATURES=tuple(base.FEATURES)+EXTRA
