@@ -1,14 +1,10 @@
-"""An actual sweep is an excursion, not necessarily a large close-to-close return.
+"""A sweep is an excursion, not necessarily a large close-to-close return.
 
-The former washout detector selected large net moves and therefore omitted the
-very long-wick rejection described in EasyChart Fakeout pp1,6,10. This module
-changes that event measurement, keeping the same observed source, recovery,
-pre-entry invalidation/objective, and one-entry episode rules.
-
-Three prior-volatility units remains an unfitted research definition of an
-exceptional excursion. It is not a claim made by EasyChart. The optional test
-entry represents a second adverse auction failing to renew the original low /
-high; it is a distinct entry decision, not an after-the-fact PnL filter.
+The former detector selected large net moves, omitting long-wick rejection
+(EasyChart Fakeout pp1,6,10). Only this event measurement changes in the direct
+entry. A second entry experiment waits for a renewed adverse auction to fail.
+Three prior-volatility units is an unfitted machine hypothesis, not a source
+quote. Orders, three-percent sizing, fees and the one account are unchanged.
 """
 from __future__ import annotations
 import math
@@ -27,7 +23,7 @@ class ExcursionMarket(WashoutMarket):
         for direction in (-1,1):
             eligible=[z for z in sources if z[0]==direction]
             if not eligible:continue
-            extreme_bar=(max(impulse,key=lambda v:v.high) if direction>0 else min(impulse,key=lambda v:v.low))
+            extreme_bar=max(impulse,key=lambda v:v.high) if direction>0 else min(impulse,key=lambda v:v.low)
             extreme=extreme_bar.high if direction>0 else extreme_bar.low
             excursion=direction*math.log(extreme/first.close)
             if excursion/sigma<3.:continue
@@ -40,12 +36,9 @@ class ExcursionMarket(WashoutMarket):
         if baseline_volume<=0:return
         anchor=sum(v.quote for v in prior)/baseline_volume
         if side*(anchor-b.close)<=self.tick:return
-        # A completed recovery AFTER the known extreme ends that particular
-        # excursion. Earlier highs in the impulse cannot end a later washout.
         if any((v.high>=anchor if side>0 else v.low<=anchor) for v in impulse if v.ts>extreme_ts):return
         volume=sum(v.volume for v in impulse)
-        premium=x.get('x_premium',float('nan'))
-        change=x.get('x_premium_change',float('nan'))
+        premium=x.get('x_premium',float('nan'));change=x.get('x_premium_change',float('nan'))
         e=Washout(f'{self.symbol}:EXCURSION:{key}:{touched}',side,b.ts,touched,level,key,tf,
             extreme,anchor,max(self.tick,first.close*sigma),zscore,
             side*sum(v.delta for v in impulse)/max(volume,1e-12),
@@ -56,6 +49,7 @@ class ExcursionMarket(WashoutMarket):
         e.first_response=False;e.reaction_peak=b.high if side>0 else b.low
         e.test_started=0;e.test_volume=0.;e.test_count=0;e.test_extreme=b.close
         e.initial_extreme=extreme;e.test_effort=0.;e.test_depth=0.
+        e.initial_volume_rate=volume/5
         self.active=e;self.stats['exceptional_public_excursion']+=1
 
     def _advance(self,b,previous,x,peer):
@@ -65,10 +59,12 @@ class ExcursionMarket(WashoutMarket):
             plans=super()._advance(b,previous,x,peer)
         else:
             side=e.side
-            recovered=(b.high>=e.anchor if side>0 else b.low<=e.anchor)
-            if recovered:
-                self.active=None;self.stats['value_recovered_before_test']+=1;return []
-            # Before the first reaction the actual washout can still extend.
+            recovered=b.high>=e.anchor if side>0 else b.low<=e.anchor
+            settled=any(z.born>e.detected and z.pivot_time>e.detected and z.kind==-side
+                        and side*(z.price-e.source)<0 for z in self.frames[15].pivots[-6:])
+            if recovered or settled:
+                self.active=None;self.stats['value_recovered_or_auction_superseded']+=1;return []
+            if e.emitted:return []
             if not e.first_response:
                 e.extreme=min(e.extreme,b.low) if side>0 else max(e.extreme,b.high)
                 reclaimed=side*(b.close-e.source)>0
@@ -81,21 +77,19 @@ class ExcursionMarket(WashoutMarket):
             if b.low<=e.initial_extreme if side>0 else b.high>=e.initial_extreme:
                 self.active=None;self.stats['renewed_adverse_auction_broke_original_extreme']+=1;return []
             if not e.test_started:
-                starts=(b.close<previous.low if side>0 else b.close>previous.high)
+                starts=b.close<previous.low if side>0 else b.close>previous.high
                 if not starts:
                     e.reaction_peak=max(e.reaction_peak,b.high) if side>0 else min(e.reaction_peak,b.low)
                     return []
                 e.test_started=b.ts;e.test_extreme=b.low if side>0 else b.high
+                # The reaction peak is now an observed opposing swing. Do not
+                # skip it to manufacture the larger original anchor reward.
+                e.anchor=min(e.anchor,e.reaction_peak) if side>0 else max(e.anchor,e.reaction_peak)
             e.test_volume+=b.volume;e.test_count+=1
             e.test_extreme=min(e.test_extreme,b.low) if side>0 else max(e.test_extreme,b.high)
             if b.ts<=e.test_started:return []
-            # Two actually observed auction legs now exist. Keep the original
-            # washout invalidation; do not manufacture RR with a tighter stop.
             e.test_depth=side*(e.reaction_peak-e.test_extreme)/max(side*(e.reaction_peak-e.initial_extreme),self.tick)
-            baseline=e.activity
-            prior=list(self.history)[-66:-6]
-            volume_rate=sum(v.volume for v in prior)/max(len(prior),1)
-            e.test_effort=(e.test_volume/e.test_count)/max(volume_rate*baseline,1e-12)
+            e.test_effort=(e.test_volume/e.test_count)/max(e.initial_volume_rate,1e-12)
             plans=super()._advance(b,previous,x,peer)
         from dataclasses import replace
         result=[]
