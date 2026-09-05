@@ -58,7 +58,6 @@ def candidates(symbol,d,scales=(5,15,60)):
                 f['trend_'+name]=s*(c[i]-c[i-length])/r.atr
                 f['eff_'+name]=s*(c[i]-c[i-length])/max(accum[i+1]-accum[i+1-length],tick)
             result.append(dict(symbol=symbol,side=s,ts=int(ts[i]),root_ts=r.time,source=r.source,entry=c[i],stop=r.stop,target=r.target,root_low=r.low,root_high=r.high,first_test=int(ts[r.touched]),second_test=int(ts[r.test_start]),**f))
-            # One execution decision per root, never repeated ID fragments.
         active=alive
         for r in sorted(events.get(int(ts[i]),[]),key=lambda x:-x.scale):
             if not any(x.side==r.side and max(x.low,r.low)<=min(x.high,r.high) for x in active): active.append(r)
@@ -76,8 +75,10 @@ def market_context(rows,frames):
     for name in ['relative_strength','market_direction','market_breadth']: out[name]=0.
     for k,row in out.iterrows():
         t=pd.Timestamp(int(row.ts),tz='UTC'); s=row.side
-        values=normalized.loc[t]
-        out.at[k,'relative_strength']=float(s*(values[row.symbol]-market.loc[t]))
-        out.at[k,'market_direction']=float(s*market.loc[t])
+        j=normalized.index.searchsorted(t,side='right')-1
+        if j<0: raise ValueError('No completed market context before decision')
+        values=normalized.iloc[j]; common=market.iloc[j]
+        out.at[k,'relative_strength']=float(s*(values[row.symbol]-common))
+        out.at[k,'market_direction']=float(s*common)
         out.at[k,'market_breadth']=float((s*values>0).mean())
     return out
