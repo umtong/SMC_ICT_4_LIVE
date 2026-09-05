@@ -1,14 +1,8 @@
-"""A different information hypothesis, not another rescue threshold.
+"""Test independent spot/position information, with an unchanged chart ablation.
 
-Keep the dense original control/first-return opportunities, but learn whether
-independent spot demand, derivative dislocation, inventory change, and price-
-flow ordering distinguish their outcomes. This explicitly tests information
-which the original chart-only classifier did not observe.
-
-Development: 2024/2025 chronological completed labels. Calibration: November
-2025 only. All 2026 observations occur after both. Each reported portfolio is
-an actual four-market, one-position Nautilus account. The chart-only ablation
-is not added to the proposed system and its trades are never pooled with it.
+Development uses completed 2024/2025 labels; calibration is November 2025.
+Every 2026 observation follows both. Each portfolio is an actual four-market
+single-position Nautilus account. Ablation trades are never added to the system.
 """
 from pathlib import Path
 import json,pickle
@@ -16,7 +10,7 @@ import numpy as np
 import pandas as pd
 from control_v2 import ControlPolicy,FEATURES as CHART_FEATURES
 from control_model import fit_barrier
-from pressure_features import PressureHistory,PRESSURE_COLUMNS
+from pressure_features import PressureHistory,PRESSURE_COLUMNS,HORIZONS
 
 REQUIRED=('basis_bps','spot_flow_15','oi_change_15','basis_spot_bps')
 
@@ -27,6 +21,11 @@ def execute(base,request):
     for month in request['months']:
         tape=base.Tape(month);plans,stats,skips=tape.plans()
         pressure=PressureHistory(tape);pressure.attach(plans)
+        for p in plans:
+            if int(p.side.value)<0:
+                for n in HORIZONS:
+                    buy,sell=f'buy_value_distance_{n}',f'sell_value_distance_{n}'
+                    p.features[buy],p.features[sell]=p.features[sell],p.features[buy]
         plans=[p for p in plans if all(np.isfinite(p.features[c]) for c in REQUIRED)]
         tapes[month]=tape;proposals[month]=plans
         labeled=tape.labels(plans);labels.append(labeled)
@@ -35,7 +34,7 @@ def execute(base,request):
     train_end=base.ns(request['train_end']);cal_end=base.ns(request['calibration_end']);cal_start=base.ns(request['calibration_start'])
     train=data[data.label_closed<train_end].copy()
     cal=data[(data.observed_time_ns>=cal_start)&(data.label_closed<cal_end)].copy()
-    if len(train)<500 or len(cal)<100:raise ValueError(f'not enough distinct completed learning examples: {len(train)} / {len(cal)}')
+    if len(train)<500 or len(cal)<100:raise ValueError(f'not enough completed learning observations: {len(train)} / {len(cal)}')
     models={};metadata={}
     for name,columns in (('pressure',CHART_FEATURES+PRESSURE_COLUMNS),('chart_only',CHART_FEATURES)):
         model,details=fit_barrier(train,cal,columns,cal_end)
@@ -44,6 +43,7 @@ def execute(base,request):
         (base.OUT/f'{name}_decision.pkl').write_bytes(pickle.dumps(model))
         details.update(train_end=request['train_end'],calibration_start=request['calibration_start'],calibration_end=request['calibration_end'],
                        current_input_required=REQUIRED,positioning_publication_delay_minutes=5,
+                       aggressor_anchor_names='buy means with proposed side; sell means against proposed side',
                        opportunity_policy='unchanged causal control_v2; no category exclusions or target replacement')
     base.write(base.OUT/'models.json',metadata);base.write(base.OUT/'opportunities.json',coverage)
     results=[]
@@ -53,10 +53,10 @@ def execute(base,request):
             result=base.backtest(tapes[month],proposals[month],models[model_name],name=f'{name}_{model_name}',**cfg)
             result['decision_model']=model_name;results.append(result)
             base.write(base.OUT/'latest.json',results)
-    # These are candidate forecast diagnostics, NOT additional executed trades.
     forecast=[]
     for month in sorted(set(j['month'] for j in request['experiments'])):
-        d=data[(data.observed_time_ns>=base.ns(month+'-01')) & (data.observed_time_ns<base.ns(str(pd.Timestamp(month+'-01')+pd.offsets.MonthBegin(1)).split()[0]))]
+        ending=str(pd.Timestamp(month+'-01')+pd.offsets.MonthBegin(1)).split()[0]
+        d=data[(data.observed_time_ns>=base.ns(month+'-01'))&(data.observed_time_ns<base.ns(ending))]
         if not len(d):continue
         for name,model in models.items():
             p=model.predict_frame(d);null=1/(1+d.gross_rr)
