@@ -22,6 +22,9 @@ if __name__=='__main__':
         if request.get('experiment')=='pressure':
             from pressure_model_experiment import execute
             execute(base,request)
+        elif request.get('experiment')=='inventory_direction':
+            from inventory_direction_experiment import execute
+            execute(base,request)
         elif method=='passive':
             from passive_experiment import execute
             execute(base,request)
